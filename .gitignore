@@ -4,3 +4,4 @@ compile_commands.json
 .cache/
 *.png
 !docs/**/*.png
+!assets/**/*.png

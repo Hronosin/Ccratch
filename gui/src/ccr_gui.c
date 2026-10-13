@@ -66,6 +66,19 @@ bool ccr_gui_screenshot(const char *path)
     return ok;
 }
 
+bool ccr_gui_set_icon_png(const unsigned char *png, unsigned int size)
+{
+    if (!png || size == 0 || size > (unsigned int)INT32_MAX)
+        return false;
+    Image img = LoadImageFromMemory(".png", png, (int)size);
+    if (!IsImageValid(img))
+        return false;
+    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8); /* GLFW wants RGBA */
+    SetWindowIcon(img);
+    UnloadImage(img);
+    return true;
+}
+
 ccr_vec2 ccr_gui_mouse(void)
 {
     Vector2 v = GetMousePosition();

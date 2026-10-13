@@ -2,11 +2,22 @@
 
 find_package(LibClang REQUIRED)
 
+# The icon is baked into the library: no asset files to lose.
+set(CCR_ICON_SRC ${PROJECT_SOURCE_DIR}/assets/icon.png)
+set(CCR_ICON_C   ${CMAKE_CURRENT_BINARY_DIR}/generated/ccr_icon.c)
+add_custom_command(
+    OUTPUT  ${CCR_ICON_C}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${CCR_ICON_SRC} -DOUTPUT=${CCR_ICON_C}
+            -DNAME=ccr_icon_png -P ${PROJECT_SOURCE_DIR}/cmake/embed.cmake
+    DEPENDS ${CCR_ICON_SRC} ${PROJECT_SOURCE_DIR}/cmake/embed.cmake
+    COMMENT "Embedding the icon")
+
 add_library(ccratch SHARED
     src/ccr_app.c
     src/ccr_ast.c
     src/ccr_canvas.c
-    src/ccr_parse.c)
+    src/ccr_parse.c
+    ${CCR_ICON_C})
 
 target_include_directories(ccratch
     PUBLIC  ${PROJECT_SOURCE_DIR}/include

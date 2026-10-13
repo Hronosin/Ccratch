@@ -17,6 +17,10 @@
 #define COL_BLOCK     0xE6A23CFFu   /* "events" orange */
 #define COL_BLOCK_TXT 0x1E2028FFu
 
+/* Generated from assets/icon.png at build time */
+extern const unsigned char ccr_icon_png[];
+extern const unsigned int  ccr_icon_png_size;
+
 #define TOPBAR_H     40.0f
 #define STATUSBAR_H  26.0f
 
@@ -152,6 +156,8 @@ int ccr_run(int argc, char **argv)
         fprintf(stderr, "ccratch: could not open a window. Opyat' rabotat'...\n");
         return 1;
     }
+    if (!ccr_gui_set_icon_png(ccr_icon_png, ccr_icon_png_size))
+        fprintf(stderr, "ccratch: icon did not load, carrying on without it\n");
 
     ccr_canvas canvas;
     ccr_canvas_init(&canvas);

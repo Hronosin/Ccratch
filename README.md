@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon.png" width="160" alt="Ccratch icon"></p>
+
 # Ccratch
 
 Scratch, but for raw C. No ready-made loops, no hand-holding, no Cargo.
@@ -65,6 +67,15 @@ Tests run without a window:
 
 ```sh
 ctest --test-dir build/debug --output-on-failure
+```
+
+### If CMake complains about a different directory
+
+`build/` remembers absolute paths. After moving or renaming the project
+folder, delete it and configure again:
+
+```sh
+rm -rf build && cmake --preset debug
 ```
 
 ## Command line

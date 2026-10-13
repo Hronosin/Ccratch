@@ -35,6 +35,9 @@ void  ccr_gui_begin_frame(ccr_color clear);
 void  ccr_gui_end_frame(void);
 bool  ccr_gui_screenshot(const char *path);
 
+/* Window icon from an in-memory PNG. Returns false if it could not decode. */
+bool  ccr_gui_set_icon_png(const unsigned char *png, unsigned int size);
+
 /* Queries */
 int      ccr_gui_width(void);
 int      ccr_gui_height(void);
