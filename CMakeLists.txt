@@ -34,9 +34,15 @@ if(CCR_PARANOID)
     target_link_options(ccr_warnings INTERFACE -fsanitize=address,undefined)
 endif()
 
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 include(cmake/deps.cmake)
 
 add_subdirectory(gui)       # libccr_gui   - thin wrapper over raylib + raygui
 add_subdirectory(ccratch)   # libccratch   - the whole IDE, one library
 add_subdirectory(app)       # ccratch      - the launcher, one line of logic
 add_subdirectory(plugins)   # *.so         - everything optional
+
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

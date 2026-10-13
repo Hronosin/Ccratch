@@ -1,6 +1,8 @@
 #include "ccratch/ccratch.h"
+#include "ccr_ast.h"
 #include "ccr_canvas.h"
 #include "ccr_gui.h"
+#include "ccr_parse.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +23,9 @@
 typedef struct ccr_options {
     int         smoke_frames;   /* >0: quit after N frames (CI, headless) */
     const char *screenshot;     /* save the last frame here */
+    const char *dump_ast;       /* parse this file, print the tree, exit */
+    const char *const *clang_args;  /* everything after "--" */
+    int         clang_arg_count;
 } ccr_options;
 
 const char *ccr_version(void)
@@ -34,9 +39,32 @@ static void print_usage(const char *argv0)
            "usage: %s [options]\n\n"
            "  --help                 show this and leave\n"
            "  --version              print version\n"
+           "  --dump-ast FILE.c      parse FILE and print its syntax tree, no window\n"
+           "  -- ARGS...             pass ARGS to clang (e.g. -- -std=c99 -Iinclude)\n"
            "  --smoke-frames N       run N frames and exit (for CI)\n"
            "  --screenshot FILE.png  save the last frame before exiting\n",
            ccr_version(), argv0);
+}
+
+/* Exit codes: 0 clean, 1 the code has errors, 2 could not parse at all. */
+static int run_dump_ast(const ccr_options *opt)
+{
+    ccr_ast ast;
+    if (!ccr_ast_init(&ast)) {
+        fprintf(stderr, "ccratch: out of memory\n");
+        return 2;
+    }
+
+    if (!ccr_parse_file(opt->dump_ast, opt->clang_args, opt->clang_arg_count, &ast)) {
+        fprintf(stderr, "ccratch: clang could not read '%s'. Opyat' rabotat'...\n", opt->dump_ast);
+        ccr_ast_free(&ast);
+        return 2;
+    }
+
+    ccr_ast_dump(&ast, stdout);
+    int code = ccr_ast_count_diags(&ast, CCR_DIAG_ERROR) ? 1 : 0;
+    ccr_ast_free(&ast);
+    return code;
 }
 
 /* Returns -1 to keep running, otherwise an exit code. */
@@ -50,6 +78,12 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
         } else if (strcmp(a, "--version") == 0) {
             printf("%s\n", ccr_version());
             return 0;
+        } else if (strcmp(a, "--") == 0) {
+            opt->clang_args = (const char *const *)&argv[i + 1];
+            opt->clang_arg_count = argc - (i + 1);
+            break;
+        } else if (strcmp(a, "--dump-ast") == 0 && i + 1 < argc) {
+            opt->dump_ast = argv[++i];
         } else if (strcmp(a, "--smoke-frames") == 0 && i + 1 < argc) {
             opt->smoke_frames = atoi(argv[++i]);
         } else if (strcmp(a, "--screenshot") == 0 && i + 1 < argc) {
@@ -106,10 +140,13 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv)
 
 int ccr_run(int argc, char **argv)
 {
-    ccr_options opt = { 0, NULL };
+    ccr_options opt = { 0 };
     int early = parse_args(argc, argv, &opt);
     if (early >= 0)
         return early;
+
+    if (opt.dump_ast)
+        return run_dump_ast(&opt);
 
     if (!ccr_gui_init(1280, 800, "Ccratch")) {
         fprintf(stderr, "ccratch: could not open a window. Opyat' rabotat'...\n");
