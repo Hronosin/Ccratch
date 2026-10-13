@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "paranoid",
+      "displayName": "Paranoid (-Werror + ASan + UBSan)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CCR_PARANOID": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug",    "configurePreset": "debug" },
+    { "name": "release",  "configurePreset": "release" },
+    { "name": "paranoid", "configurePreset": "paranoid" }
+  ]
+}
