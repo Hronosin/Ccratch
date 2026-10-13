@@ -6,6 +6,8 @@
 #define RAYGUI_IMPLEMENTATION
 #include <raygui.h>
 
+static Texture2D g_shapes_tex;
+
 static Color to_rl(ccr_color c)
 {
     return (Color){
@@ -39,10 +41,33 @@ bool ccr_gui_init(int width, int height, const char *title)
     if (!IsWindowReady())
         return false;
     SetTargetFPS(60);
+
+    /* The default font is a 10px pixel font. Scaled down by the canvas zoom
+     * it drops whole pixel rows; mipmaps + trilinear keep it readable. */
+    Font font = GetFontDefault();
+    GenTextureMipmaps(&font.texture);
+    SetTextureFilter(font.texture, TEXTURE_FILTER_TRILINEAR);
+
+    /* raylib draws shapes with a white pixel borrowed from the font
+     * texture; the mipmaps above would smear it, so shapes get their own.
+     * raygui re-borrows the font pixel when it loads its style, so load
+     * that style first and override after. */
+    GuiLoadStyleDefault();
+    Image white = GenImageColor(1, 1, WHITE);
+    g_shapes_tex = LoadTextureFromImage(white);
+    UnloadImage(white);
+    SetShapesTexture(g_shapes_tex, (Rectangle){ 0, 0, 1, 1 });
     return true;
 }
 
-void ccr_gui_shutdown(void)         { CloseWindow(); }
+void ccr_gui_shutdown(void)
+{
+    if (g_shapes_tex.id != 0)
+        UnloadTexture(g_shapes_tex);
+    g_shapes_tex = (Texture2D){ 0 };
+    CloseWindow();
+}
+
 bool ccr_gui_should_close(void)     { return WindowShouldClose(); }
 void ccr_gui_end_frame(void)        { EndDrawing(); }
 int  ccr_gui_width(void)            { return GetScreenWidth(); }
@@ -106,19 +131,64 @@ void ccr_gui_rect_rounded(ccr_rect r, float roundness, ccr_color c)
     DrawRectangleRounded(rect_to_rl(r), roundness, 8, to_rl(c));
 }
 
+void ccr_gui_hex(ccr_rect r, ccr_color c)
+{
+    const float half = r.h * 0.5f;
+    const float cy = r.y + half;
+    const Color col = to_rl(c);
+
+    if (r.w <= r.h) {          /* degenerate: just a diamond-ish box */
+        DrawRectangleRec(rect_to_rl(r), col);
+        return;
+    }
+    DrawRectangleRec((Rectangle){ r.x + half, r.y, r.w - r.h, r.h }, col);
+    /* raylib wants counter-clockwise vertices */
+    DrawTriangle((Vector2){ r.x + half, r.y }, (Vector2){ r.x, cy },
+                 (Vector2){ r.x + half, r.y + r.h }, col);
+    DrawTriangle((Vector2){ r.x + r.w - half, r.y }, (Vector2){ r.x + r.w - half, r.y + r.h },
+                 (Vector2){ r.x + r.w, cy }, col);
+}
+
 void ccr_gui_circle(ccr_vec2 center, float radius, ccr_color c)
 {
     DrawCircleV((Vector2){ center.x, center.y }, radius, to_rl(c));
 }
 
-void ccr_gui_text(const char *text, float x, float y, int size, ccr_color c)
+/* The default raylib font is a 10px pixel font; spacing scales with size. */
+void ccr_gui_text(const char *text, float x, float y, float size, ccr_color c)
 {
-    DrawText(text, (int)x, (int)y, size, to_rl(c));
+    DrawTextEx(GetFontDefault(), text, (Vector2){ x, y }, size, size / 10.0f, to_rl(c));
 }
 
-float ccr_gui_text_width(const char *text, int size)
+float ccr_gui_text_width(const char *text, float size)
 {
-    return (float)MeasureText(text, size);
+    return MeasureTextEx(GetFontDefault(), text, size, size / 10.0f).x;
+}
+
+bool ccr_gui_key_pressed(ccr_key key)
+{
+    switch (key) {
+    case CCR_KEY_HOME: return IsKeyPressed(KEY_HOME);
+    case CCR_KEY_F5:   return IsKeyPressed(KEY_F5);
+    }
+    return false;
+}
+
+bool ccr_gui_file_dropped(char *out, unsigned int cap)
+{
+    if (!IsFileDropped() || cap == 0)
+        return false;
+    FilePathList files = LoadDroppedFiles();
+    bool ok = files.count > 0;
+    if (ok) {
+        const char *p = files.paths[0];
+        unsigned int i = 0;
+        for (; p[i] && i + 1 < cap; ++i)
+            out[i] = p[i];
+        out[i] = '\0';
+    }
+    UnloadDroppedFiles(files);
+    return ok;
 }
 
 bool ccr_gui_button(ccr_rect r, const char *label)

@@ -45,6 +45,7 @@ int main(void)
 
     p->x = MAX(numbers[0], numbers[2]);
     p->y = -sum(numbers, ARRAY_LEN);
+    *p = (point){ .x = p->x, .y = p->y };
 
     int countdown = 3;
     while (countdown > 0) {

@@ -15,6 +15,7 @@ add_custom_command(
 add_library(ccratch SHARED
     src/ccr_app.c
     src/ccr_ast.c
+    src/ccr_blocks.c
     src/ccr_canvas.c
     src/ccr_parse.c
     ${CCR_ICON_C})

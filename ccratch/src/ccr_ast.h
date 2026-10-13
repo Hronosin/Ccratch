@@ -31,6 +31,7 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(INCLUDE,          "Include")            \
     X(MACRO_DEFINE,     "MacroDefine")        \
     X(MACRO_USE,        "MacroUse")           \
+    X(MACRO_VALUE,      "MacroValue")         \
     /* declarations */                        \
     X(FUNCTION,         "Function")           \
     X(PARAM,            "Param")              \
@@ -67,6 +68,8 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(CAST,             "Cast")               \
     X(SIZEOF,           "Sizeof")             \
     X(INIT_LIST,        "InitList")           \
+    X(COMPOUND_LIT,     "CompoundLiteral")    \
+    X(DESIGNATOR,       "Designator")         \
     X(INT_LIT,          "Int")                \
     X(FLOAT_LIT,        "Float")              \
     X(CHAR_LIT,         "Char")               \
@@ -92,6 +95,8 @@ typedef struct ccr_node {
     ccr_str  type;    /* C type spelling, when it means something   */
     ccr_str  op;      /* operator for BinaryOp/UnaryOp              */
     ccr_str  raw;     /* original clang kind, for OTHER nodes       */
+    ccr_str  aux;     /* return type of a Function; source text of
+                         Other and type-only sizeof                 */
 
     uint32_t line;
     uint32_t column;
@@ -102,6 +107,8 @@ typedef struct ccr_node {
 #define CCR_FLAG_DEFINITION  (1u << 0)   /* function/struct has a body */
 #define CCR_FLAG_ANGLED      (1u << 1)   /* #include <...> */
 #define CCR_FLAG_POSTFIX     (1u << 2)   /* x++ rather than ++x */
+#define CCR_FLAG_ARROW       (1u << 3)   /* p->x rather than p.x */
+#define CCR_FLAG_INIT        (1u << 4)   /* this expression initializes its Var */
 
 typedef enum ccr_diag_severity {
     CCR_DIAG_NOTE,

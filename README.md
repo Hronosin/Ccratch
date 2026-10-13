@@ -11,18 +11,44 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 
 - Step 1: a window, a pannable canvas and one lonely block.
 - Step 2: libclang reads a `.c` file into Ccratch's own syntax tree.
-  Nothing is drawn from it yet; `--dump-ast` prints it.
+- Step 3: that tree is drawn as Scratch-style blocks. Read-only for now:
+  blocks cannot be dragged yet.
+
+![examples/tour.c as blocks](docs/tour.png)
+
+Real code works too. This is raylib's own `rshapes.c` (2400 lines):
+
+![rshapes.c as blocks](docs/rshapes.png)
+
+How the colors map to C:
+
+| Color | What |
+| --- | --- |
+| Yellow hat | function definition |
+| Gold | control flow: `if`, `for`, `while`, `switch`, `return`, `goto` |
+| Orange | variables, assignment, `->`, `[]` |
+| Green | operators; hexagons are conditions, like in Scratch |
+| Red | pointer `*` and `&` (future wires start here) |
+| Pink | function calls and declarations |
+| Blue | types: `struct`, `enum`, `typedef` |
+| Purple | preprocessor: `#include`, `#define`, macro values like `NULL` |
+| White | literals |
+| Grey | "here be dragons": no block for this yet, raw code shown |
+
+Object-like macros used as values (`NULL`, `true`, `DEG2RAD`) stay one
+purple block. Function-like macros (`MAX(a, b)`) are shown expanded,
+since their arguments are real code.
+
+`--dump-ast` prints the tree the blocks are built from:
 
 ```
 $ ccratch --dump-ast examples/tour.c
 ...
-      ├─ Call free  [62:5]
-      │  └─ Ref p  [62:10]
-      ├─ Goto done  [63:5]
-      └─ Label done  [64:1]
+      ├─ Call free  [63:5]
+      │  └─ Ref p  [63:10]
+      ├─ Goto done  [64:5]
+      └─ Label done  [65:1]
 ```
-
-Anything shown as `Other (...)` is a construct that has no block yet.
 
 ## Layout
 
@@ -31,10 +57,12 @@ app/        ccratch      - the launcher: main() calls ccr_run(), that's it
 ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_ast     own syntax tree: flat node array + string arena, no libclang
   ccr_parse   the only code that knows libclang exists
+  ccr_blocks  tree -> blocks: layout once into a flat display list
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so; hello/ is the template
 examples/   C files to feed the parser
+docs/       screenshots
 tests/      headless CTest suite
 cmake/      dependencies, fetched from git by tag; FindLibClang
 ```
@@ -82,8 +110,10 @@ rm -rf build && cmake --preset debug
 
 ```
 ccratch                                  open the editor
+ccratch file.c                           open a file as blocks
+ccratch file.c -- -Iinclude -DDEBUG      extra arguments go to clang
 ccratch --dump-ast file.c                print the syntax tree, no window
-ccratch --dump-ast file.c -- -std=c99    extra arguments go to clang
+ccratch file.c --zoom 50                 start zoomed out
 ```
 
 `--dump-ast` exits with 0 if the file is clean, 1 if it has errors,
@@ -91,5 +121,8 @@ ccratch --dump-ast file.c -- -std=c99    extra arguments go to clang
 
 ## Controls
 
+- Drop a `.c` file onto the window: open it
 - Right or middle mouse drag: pan the canvas
 - Mouse wheel: zoom around the cursor
+- Home: back to the start of the file at 100%
+- F5: reload the file from disk

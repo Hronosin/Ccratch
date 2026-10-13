@@ -18,6 +18,18 @@ add_test(NAME dump_ast_macro_body
 set_tests_properties(dump_ast_macro_body PROPERTIES
     PASS_REGULAR_EXPRESSION "Ternary")
 
+# An object-like macro used as a value stays one node, named after it...
+add_test(NAME dump_ast_macro_value
+         COMMAND ${CCR_BIN} --dump-ast ${PROJECT_SOURCE_DIR}/examples/tour.c)
+set_tests_properties(dump_ast_macro_value PROPERTIES
+    PASS_REGULAR_EXPRESSION "MacroValue ARRAY_LEN")
+# ...but literals passed to a function-like macro keep their own text.
+add_test(NAME dump_ast_macro_args
+         COMMAND ${CCR_BIN} --dump-ast ${PROJECT_SOURCE_DIR}/examples/tour.c)
+set_tests_properties(dump_ast_macro_args PROPERTIES
+    PASS_REGULAR_EXPRESSION "Int 2  \\[46:"
+    FAIL_REGULAR_EXPRESSION "Int MAX")
+
 # The callee is folded into the Call, but the arguments must stay.
 add_test(NAME dump_ast_call_args
          COMMAND ${CCR_BIN} --dump-ast ${PROJECT_SOURCE_DIR}/examples/tour.c)
@@ -39,6 +51,14 @@ set_tests_properties(dump_ast_broken_reports PROPERTIES
 add_test(NAME dump_ast_missing
          COMMAND ${CCR_BIN} --dump-ast ${PROJECT_SOURCE_DIR}/tests/data/nope.c)
 set_tests_properties(dump_ast_missing PROPERTIES WILL_FAIL TRUE)
+
+# Open the tour as blocks in a real window, if we can fake a display.
+find_program(XVFB_RUN xvfb-run)
+if(XVFB_RUN)
+    add_test(NAME gui_blocks_tour
+             COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
+                     ${CCR_BIN} ${PROJECT_SOURCE_DIR}/examples/tour.c --smoke-frames 3)
+endif()
 
 # C++ is picked by extension.
 add_test(NAME dump_ast_cpp

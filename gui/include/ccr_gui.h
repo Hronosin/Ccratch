@@ -27,6 +27,11 @@ typedef enum ccr_mouse_button {
     CCR_MOUSE_MIDDLE
 } ccr_mouse_button;
 
+typedef enum ccr_key {
+    CCR_KEY_HOME,
+    CCR_KEY_F5
+} ccr_key;
+
 /* Window and frame lifecycle */
 bool  ccr_gui_init(int width, int height, const char *title);
 void  ccr_gui_shutdown(void);
@@ -46,13 +51,19 @@ ccr_vec2 ccr_gui_mouse(void);
 ccr_vec2 ccr_gui_mouse_delta(void);
 float    ccr_gui_wheel(void);
 bool     ccr_gui_mouse_down(ccr_mouse_button button);
+bool     ccr_gui_key_pressed(ccr_key key);
 
-/* Drawing */
+/* If a file was dropped onto the window this frame, copies its path into
+ * `out` and returns true. Only the first file of a drop is reported. */
+bool     ccr_gui_file_dropped(char *out, unsigned int cap);
+
+/* Drawing. Text sizes are floats so the canvas can zoom smoothly. */
 void  ccr_gui_rect(ccr_rect r, ccr_color c);
 void  ccr_gui_rect_rounded(ccr_rect r, float roundness, ccr_color c);
+void  ccr_gui_hex(ccr_rect r, ccr_color c);   /* Scratch-style boolean shape */
 void  ccr_gui_circle(ccr_vec2 center, float radius, ccr_color c);
-void  ccr_gui_text(const char *text, float x, float y, int size, ccr_color c);
-float ccr_gui_text_width(const char *text, int size);
+void  ccr_gui_text(const char *text, float x, float y, float size, ccr_color c);
+float ccr_gui_text_width(const char *text, float size);
 
 /* Widgets */
 bool  ccr_gui_button(ccr_rect r, const char *label);

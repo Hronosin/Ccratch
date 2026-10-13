@@ -139,6 +139,16 @@ static void dump_node_line(const ccr_ast *ast, const ccr_node *n, FILE *out)
     case CCR_NODE_OTHER:
         fprintf(out, " (%s)%s%s", ccr_ast_str(ast, n->raw), *name ? " " : "", name);
         break;
+    case CCR_NODE_MEMBER:
+        fprintf(out, " %s%s", (n->flags & CCR_FLAG_ARROW) ? "->" : ".", name);
+        break;
+    case CCR_NODE_DESIGNATOR:
+        fprintf(out, " .%s", name);
+        break;
+    case CCR_NODE_SIZEOF:
+        if (n->first_child == CCR_NONE)
+            fprintf(out, " %s", ccr_ast_str(ast, n->aux));
+        break;
     default:
         if (*name)
             fprintf(out, " %s", name);
@@ -149,6 +159,8 @@ static void dump_node_line(const ccr_ast *ast, const ccr_node *n, FILE *out)
         fprintf(out, " : %s", type);
     if (n->kind == CCR_NODE_FUNCTION && !(n->flags & CCR_FLAG_DEFINITION))
         fputs("  (declaration)", out);
+    if (n->flags & CCR_FLAG_INIT)
+        fputs("  (init)", out);
     if (n->line)
         fprintf(out, "  [%u:%u]", n->line, n->column);
     fputc('\n', out);
