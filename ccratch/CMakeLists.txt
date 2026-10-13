@@ -25,6 +25,10 @@ target_include_directories(ccratch
     PRIVATE src)
 
 target_compile_definitions(ccratch PRIVATE CCR_BUILDING_LIB)
+if(LIBCLANG_RESOURCE_DIR)
+    target_compile_definitions(ccratch PRIVATE
+        CCR_CLANG_RESOURCE_DIR="${LIBCLANG_RESOURCE_DIR}")
+endif()
 target_link_libraries(ccratch PRIVATE ccr_gui ccr_warnings LibClang::LibClang m)
 
 # Keep raylib/glfw symbols from leaking out of the .so: plugins see only

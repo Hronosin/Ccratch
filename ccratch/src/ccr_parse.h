@@ -19,4 +19,15 @@
  */
 bool ccr_parse_file(const char *path, const char *const *args, int arg_count, ccr_ast *out);
 
+/*
+ * Where clang's builtin headers (stddef.h, stdarg.h...) are, or NULL to let
+ * libclang guess. Checked in order: $CCRATCH_CLANG_RESOURCE_DIR, then the
+ * directory found at build time. Passed to clang as -resource-dir unless
+ * the user gave one.
+ */
+const char *ccr_parse_resource_dir(void);
+
+/* "clang version 22.1.8 ..." of the libclang actually loaded. */
+void ccr_parse_clang_version(char *out, unsigned int cap);
+
 #endif /* CCR_PARSE_H */

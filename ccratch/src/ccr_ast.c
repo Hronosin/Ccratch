@@ -217,6 +217,17 @@ static const char *severity_name(ccr_diag_severity s)
     return "?";
 }
 
+void ccr_ast_dump_diags(const ccr_ast *ast, FILE *out)
+{
+    for (uint32_t i = 0; i < ast->diag_count; ++i) {
+        const ccr_diag *d = &ast->diags[i];
+        const char *file = ccr_ast_str(ast, d->file);
+        fprintf(out, "%s:%u:%u: %s: %s\n",
+                *file ? file : "<unknown>", d->line, d->column,
+                severity_name(d->severity), ccr_ast_str(ast, d->message));
+    }
+}
+
 void ccr_ast_dump(const ccr_ast *ast, FILE *out)
 {
     for (ccr_node_id id = 0; id < ast->node_count; ++id)
@@ -225,13 +236,7 @@ void ccr_ast_dump(const ccr_ast *ast, FILE *out)
 
     if (ast->diag_count) {
         fputc('\n', out);
-        for (uint32_t i = 0; i < ast->diag_count; ++i) {
-            const ccr_diag *d = &ast->diags[i];
-            const char *file = ccr_ast_str(ast, d->file);
-            fprintf(out, "%s:%u:%u: %s: %s\n",
-                    *file ? file : "<unknown>", d->line, d->column,
-                    severity_name(d->severity), ccr_ast_str(ast, d->message));
-        }
+        ccr_ast_dump_diags(ast, out);
     }
 
     fprintf(out, "\n%u nodes, %u errors, %u warnings\n",

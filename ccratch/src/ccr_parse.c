@@ -3,6 +3,7 @@
 #include <clang-c/Index.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define CCR_HAVE_OPERATOR_KIND_API \
@@ -582,6 +583,41 @@ static void collect_diags(CXTranslationUnit tu, ccr_ast *ast)
     }
 }
 
+static bool file_exists(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (f)
+        fclose(f);
+    return f != NULL;
+}
+
+/* Is `dir` a clang resource dir, i.e. does it hold the builtin headers? */
+static bool is_resource_dir(const char *dir)
+{
+    char probe[4096];
+    int w = snprintf(probe, sizeof probe, "%s/include/stddef.h", dir);
+    return w > 0 && (size_t)w < sizeof probe && file_exists(probe);
+}
+
+void ccr_parse_clang_version(char *out, unsigned int cap)
+{
+    CXString v = clang_getClangVersion();
+    snprintf(out, cap, "%s", clang_getCString(v));
+    clang_disposeString(v);
+}
+
+const char *ccr_parse_resource_dir(void)
+{
+    const char *env = getenv("CCRATCH_CLANG_RESOURCE_DIR");
+    if (env && *env && is_resource_dir(env))
+        return env;
+#ifdef CCR_CLANG_RESOURCE_DIR
+    if (is_resource_dir(CCR_CLANG_RESOURCE_DIR))
+        return CCR_CLANG_RESOURCE_DIR;
+#endif
+    return NULL;  /* let libclang guess */
+}
+
 bool ccr_parse_file(const char *path, const char *const *args, int arg_count, ccr_ast *out)
 {
     static const char *const c_defaults[]   = { "-std=c11" };
@@ -594,17 +630,38 @@ bool ccr_parse_file(const char *path, const char *const *args, int arg_count, cc
         arg_count = cpp ? 3 : 1;
     }
 
+    /* Tell libclang where its builtin headers are, unless the user did. */
+    bool user_set = false;
+    for (int i = 0; i < arg_count; ++i)
+        if (strncmp(args[i], "-resource-dir", 13) == 0)
+            user_set = true;
+    const char *resource = user_set ? NULL : ccr_parse_resource_dir();
+
+    const char **all = malloc(sizeof(char *) * (size_t)(arg_count + 2));
+    if (!all)
+        return false;
+    int all_count = 0;
+    for (int i = 0; i < arg_count; ++i)
+        all[all_count++] = args[i];
+    if (resource) {
+        all[all_count++] = "-resource-dir";
+        all[all_count++] = resource;
+    }
+
     CXIndex index = clang_createIndex(/*excludeDeclarationsFromPCH=*/0,
                                       /*displayDiagnostics=*/0);
-    if (!index)
+    if (!index) {
+        free(all);
         return false;
+    }
 
     unsigned flags = CXTranslationUnit_DetailedPreprocessingRecord
                    | CXTranslationUnit_KeepGoing;
 
     CXTranslationUnit tu = NULL;
     enum CXErrorCode err = clang_parseTranslationUnit2(
-        index, path, args, arg_count, NULL, 0, flags, &tu);
+        index, path, all, all_count, NULL, 0, flags, &tu);
+    free(all);
 
     if (err != CXError_Success || !tu) {
         clang_disposeIndex(index);

@@ -152,5 +152,7 @@ const char *ccr_node_kind_name(ccr_node_kind kind);
 
 /* Pretty tree, then diagnostics. */
 void        ccr_ast_dump(const ccr_ast *ast, FILE *out);
+/* Diagnostics only, one "file:line:col: severity: message" per line. */
+void        ccr_ast_dump_diags(const ccr_ast *ast, FILE *out);
 
 #endif /* CCR_AST_H */

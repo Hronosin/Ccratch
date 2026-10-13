@@ -58,12 +58,26 @@ static void print_usage(const char *argv0)
            "  FILE.c                 open this file as blocks (or drop it on the window)\n"
            "  --help                 show this and leave\n"
            "  --version              print version\n"
+           "  --about                show which libclang and headers are used\n"
            "  --dump-ast FILE.c      parse FILE and print its syntax tree, no window\n"
            "  -- ARGS...             pass ARGS to clang (e.g. -- -std=c99 -Iinclude)\n"
            "  --zoom PERCENT         start at this zoom (25..300)\n"
            "  --smoke-frames N       run N frames and exit (for CI)\n"
            "  --screenshot FILE.png  save the last frame before exiting\n",
            ccr_version(), argv0);
+}
+
+static void print_about(void)
+{
+    char clang_version[256];
+    ccr_parse_clang_version(clang_version, sizeof clang_version);
+    const char *resource = ccr_parse_resource_dir();
+    printf("Ccratch %s\n"
+           "libclang:     %s\n"
+           "resource dir: %s\n"
+           "              (override with CCRATCH_CLANG_RESOURCE_DIR)\n",
+           ccr_version(), clang_version,
+           resource ? resource : "(libclang's own guess)");
 }
 
 /* Exit codes: 0 clean, 1 the code has errors, 2 could not parse at all. */
@@ -97,6 +111,9 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             return 0;
         } else if (strcmp(a, "--version") == 0) {
             printf("%s\n", ccr_version());
+            return 0;
+        } else if (strcmp(a, "--about") == 0) {
+            print_about();
             return 0;
         } else if (strcmp(a, "--") == 0) {
             opt->clang_args = (const char *const *)&argv[i + 1];
@@ -170,10 +187,15 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     }
 
     next.loaded = true;
+    if (next.ast.diag_count) {
+        fprintf(stderr, "[ccratch] %s:\n", path);
+        ccr_ast_dump_diags(&next.ast, stderr);
+    }
     uint32_t errors = ccr_ast_count_diags(&next.ast, CCR_DIAG_ERROR);
     next.has_errors = errors > 0;
     if (errors)
-        snprintf(next.status, sizeof next.status, "%s: %u error%s. Opyat' rabotat'...",
+        snprintf(next.status, sizeof next.status,
+                 "%s: %u error%s (details in the terminal). Opyat' rabotat'...",
                  base_name(path), errors, errors == 1 ? "" : "s");
     else
         snprintf(next.status, sizeof next.status, "%s: no incidents. Donation box: still empty.",

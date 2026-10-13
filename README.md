@@ -106,6 +106,21 @@ folder, delete it and configure again:
 rm -rf build && cmake --preset debug
 ```
 
+### If parsing complains about `stddef.h` or `size_t`
+
+libclang could not find clang's builtin headers. CMake asks the `clang`
+driver where they are (`clang -print-resource-dir`) and bakes the answer
+in, so make sure `clang` is installed when you configure, then reconfigure.
+Check what Ccratch uses with:
+
+```sh
+ccratch --about
+```
+
+Override it at run time with `CCRATCH_CLANG_RESOURCE_DIR=/usr/lib/clang/22`,
+at configure time with `-DLIBCLANG_RESOURCE_DIR=...`, or per file with
+`ccratch file.c -- -resource-dir ...`.
+
 ## Command line
 
 ```

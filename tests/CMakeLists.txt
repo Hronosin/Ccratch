@@ -4,6 +4,13 @@ set(CCR_BIN $<TARGET_FILE:ccratch_app>)
 
 add_test(NAME cli_version COMMAND ${CCR_BIN} --version)
 
+# Clang's builtin headers were located at configure time.
+if(LIBCLANG_RESOURCE_DIR)
+    add_test(NAME cli_about_resource_dir COMMAND ${CCR_BIN} --about)
+    set_tests_properties(cli_about_resource_dir PROPERTIES
+        PASS_REGULAR_EXPRESSION "resource dir: /")
+endif()
+
 # The tour parses cleanly and nothing in it falls through to an
 # unmodelled "Other" node.
 add_test(NAME dump_ast_tour

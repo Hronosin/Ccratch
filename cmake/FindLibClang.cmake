@@ -41,4 +41,61 @@ if(LibClang_FOUND AND NOT TARGET LibClang::LibClang)
         INTERFACE_INCLUDE_DIRECTORIES "${LIBCLANG_INCLUDE_DIR}")
 endif()
 
-mark_as_advanced(LIBCLANG_INCLUDE_DIR LIBCLANG_LIBRARY LLVM_CONFIG_EXECUTABLE)
+# --- Clang's resource dir --------------------------------------------------
+# Builtin headers (stddef.h, stdarg.h, ...) live in clang's "resource dir".
+# libclang guesses it relative to its own .so, and some layouts break that
+# guess (Fedora: libclang in /usr/lib64, headers in /usr/lib/clang/N).
+# The clang driver knows the real answer, so ask it, and fall back to
+# looking around. The result is baked into Ccratch and passed to libclang
+# as -resource-dir. Override with -DLIBCLANG_RESOURCE_DIR=... or at run
+# time with the CCRATCH_CLANG_RESOURCE_DIR environment variable.
+
+if(NOT LIBCLANG_RESOURCE_DIR)
+    set(_clang_hints "")
+    if(LLVM_CONFIG_EXECUTABLE)
+        execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --bindir
+            OUTPUT_VARIABLE _llvm_bin OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        list(APPEND _clang_hints ${_llvm_bin})
+    endif()
+    find_program(LIBCLANG_CLANG_EXECUTABLE
+        NAMES clang clang-22 clang-21 clang-20 clang-19 clang-18 clang-17
+        HINTS ${_clang_hints})
+
+    set(_resource "")
+    if(LIBCLANG_CLANG_EXECUTABLE)
+        execute_process(COMMAND ${LIBCLANG_CLANG_EXECUTABLE} -print-resource-dir
+            OUTPUT_VARIABLE _rd OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_rd AND EXISTS "${_rd}/include/stddef.h")
+            get_filename_component(_resource "${_rd}" REALPATH)
+        endif()
+    endif()
+
+    # No clang driver around: look next to libclang and in the usual places.
+    if(NOT _resource AND LIBCLANG_LIBRARY)
+        get_filename_component(_libdir "${LIBCLANG_LIBRARY}" DIRECTORY)
+        file(GLOB _candidates
+            "${_libdir}/clang/*/include/stddef.h"
+            "${_libdir}/../lib/clang/*/include/stddef.h"
+            "/usr/lib/clang/*/include/stddef.h"
+            "/usr/lib64/clang/*/include/stddef.h")
+        if(_candidates)
+            list(SORT _candidates COMPARE NATURAL ORDER DESCENDING)
+            list(GET _candidates 0 _best)
+            get_filename_component(_resource "${_best}/../.." REALPATH)
+        endif()
+    endif()
+
+    if(_resource)
+        set(LIBCLANG_RESOURCE_DIR "${_resource}" CACHE PATH "Clang resource dir (builtin headers)")
+    endif()
+endif()
+
+if(LIBCLANG_RESOURCE_DIR)
+    message(STATUS "Clang resource dir: ${LIBCLANG_RESOURCE_DIR}")
+else()
+    message(WARNING "Clang's builtin headers (stddef.h) were not found. "
+                    "Parsing will report missing headers. Fedora: sudo dnf install clang")
+endif()
+
+mark_as_advanced(LIBCLANG_INCLUDE_DIR LIBCLANG_LIBRARY LLVM_CONFIG_EXECUTABLE
+                 LIBCLANG_CLANG_EXECUTABLE LIBCLANG_RESOURCE_DIR)
