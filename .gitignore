@@ -5,3 +5,7 @@ compile_commands.json
 *.png
 !docs/**/*.png
 !assets/**/*.png
+
+# Ccratch save backups and temp files
+*~
+*.ccratch-tmp
