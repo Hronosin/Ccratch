@@ -1,6 +1,7 @@
 #include "ccratch/ccratch.h"
 #include "ccr_ast.h"
 #include "ccr_canvas.h"
+#include "ccr_codegen.h"
 #include "ccr_editor.h"
 #include "ccr_gui.h"
 #include "ccr_parse.h"
@@ -30,6 +31,7 @@ typedef struct ccr_options {
     int         smoke_frames;   /* >0: quit after N frames (CI, headless) */
     const char *screenshot;     /* save the last frame here */
     const char *dump_ast;       /* parse this file, print the tree, exit */
+    const char *roundtrip;      /* parse, write back unchanged, compare */
     const char *open;           /* file to open in the editor */
     int         zoom_percent;   /* initial zoom, 0 = 100% */
     const char *const *clang_args;  /* everything after "--" */
@@ -41,7 +43,9 @@ typedef struct ccr_document {
     bool       loaded;
     char       path[PATH_MAX_LEN];
     ccr_editor ed;
-    char       status[256];
+    uint32_t   errors_at_load;
+    bool       backed_up;      /* the original was copied to FILE~ */
+    char       status[512];
     bool       has_errors;
 } ccr_document;
 
@@ -59,6 +63,8 @@ static void print_usage(const char *argv0)
            "  --version              print version\n"
            "  --about                show which libclang and headers are used\n"
            "  --dump-ast FILE.c      parse FILE and print its syntax tree, no window\n"
+           "  --roundtrip FILE.c     check that saving an unchanged FILE gives it back\n"
+           "                         byte for byte\n"
            "  -- ARGS...             pass ARGS to clang (e.g. -- -std=c99 -Iinclude)\n"
            "  --zoom PERCENT         start at this zoom (25..300)\n"
            "  --smoke-frames N       run N frames and exit (for CI)\n"
@@ -118,6 +124,37 @@ static int run_dump_ast(const ccr_options *opt)
     return code;
 }
 
+/* Exit codes: 0 identical, 1 different, 2 could not parse or generate. */
+static int run_roundtrip(const ccr_options *opt)
+{
+    ccr_ast ast;
+    if (!ccr_ast_init(&ast))
+        return 2;
+    if (!ccr_parse_file(opt->roundtrip, opt->clang_args, opt->clang_arg_count, &ast)) {
+        fprintf(stderr, "ccratch: clang could not read '%s'\n", opt->roundtrip);
+        ccr_ast_free(&ast);
+        return 2;
+    }
+    char *text = NULL, err[256];
+    size_t len = 0;
+    int code = 2;
+    if (!ccr_codegen(&ast, &text, &len, err, sizeof err)) {
+        fprintf(stderr, "ccratch: %s\n", err);
+    } else if (len == ast.source_len && memcmp(text, ast.source, len) == 0) {
+        printf("%s: identical (%zu bytes)\n", opt->roundtrip, len);
+        code = 0;
+    } else {
+        size_t i = 0;
+        while (i < len && i < ast.source_len && text[i] == ast.source[i])
+            ++i;
+        printf("%s: differs at byte %zu (%zu vs %u bytes)\n", opt->roundtrip, i, len, ast.source_len);
+        code = 1;
+    }
+    free(text);
+    ccr_ast_free(&ast);
+    return code;
+}
+
 /* Returns -1 to keep running, otherwise an exit code. */
 static int parse_args(int argc, char **argv, ccr_options *opt)
 {
@@ -138,6 +175,8 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             break;
         } else if (strcmp(a, "--dump-ast") == 0 && i + 1 < argc) {
             opt->dump_ast = argv[++i];
+        } else if (strcmp(a, "--roundtrip") == 0 && i + 1 < argc) {
+            opt->roundtrip = argv[++i];
         } else if (strcmp(a, "--smoke-frames") == 0 && i + 1 < argc) {
             opt->smoke_frames = atoi(argv[++i]);
         } else if (strcmp(a, "--screenshot") == 0 && i + 1 < argc) {
@@ -204,6 +243,7 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     }
     uint32_t errors = ccr_ast_count_diags(&ast, CCR_DIAG_ERROR);
 
+    next.errors_at_load = errors;
     if (!ccr_editor_init(&next.ed, &ast)) {   /* takes the ast either way */
         ccr_editor_free(&next.ed);
         snprintf(doc->status, sizeof doc->status, "Out of memory while laying out blocks.");
@@ -225,6 +265,89 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     return true;
 }
 
+static bool write_file(const char *path, const char *data, size_t len)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = fwrite(data, 1, len, f) == len;
+    ok = (fflush(f) == 0) && ok;
+    ok = (fclose(f) == 0) && ok;
+    return ok;
+}
+
+/*
+ * Ctrl+S. The text is written to FILE.ccratch-tmp and renamed over FILE,
+ * so a crash halfway never leaves half a file. The first save of a
+ * session copies the file as it was loaded to FILE~.
+ */
+static void document_save(ccr_document *doc, const ccr_options *opt)
+{
+    if (!doc->loaded)
+        return;
+    const char *name = base_name(doc->path);
+
+    char *text = NULL, err[256];
+    size_t len = 0;
+    if (!ccr_codegen(&doc->ed.ast, &text, &len, err, sizeof err)) {
+        snprintf(doc->status, sizeof doc->status, "Not saved: %s", err);
+        doc->has_errors = true;
+        fprintf(stderr, "[ccratch] %s not saved: %s\n", doc->path, err);
+        return;
+    }
+
+    char tmp[PATH_MAX_LEN + 32], backup[PATH_MAX_LEN + 8];
+    snprintf(tmp, sizeof tmp, "%s.ccratch-tmp", doc->path);
+    snprintf(backup, sizeof backup, "%s~", doc->path);
+
+    if (!doc->backed_up) {
+        if (!write_file(backup, doc->ed.ast.source, doc->ed.ast.source_len)) {
+            snprintf(doc->status, sizeof doc->status, "Not saved: could not write the backup %s~", name);
+            doc->has_errors = true;
+            free(text);
+            return;
+        }
+        doc->backed_up = true;
+    }
+    if (!write_file(tmp, text, len) || rename(tmp, doc->path) != 0) {
+        remove(tmp);
+        snprintf(doc->status, sizeof doc->status, "Not saved: could not write %s", name);
+        doc->has_errors = true;
+        free(text);
+        return;
+    }
+    free(text);
+    doc->ed.modified = false;
+
+    /* read it back: did the move make code clang no longer accepts? */
+    uint32_t errors = 0;
+    ccr_ast check;
+    if (ccr_ast_init(&check)) {
+        if (ccr_parse_file(doc->path, opt->clang_args, opt->clang_arg_count, &check))
+            errors = ccr_ast_count_diags(&check, CCR_DIAG_ERROR);
+        if (errors > doc->errors_at_load) {
+            fprintf(stderr, "[ccratch] after saving %s:\n", doc->path);
+            ccr_ast_dump_diags(&check, stderr);
+        }
+        ccr_ast_free(&check);
+    }
+
+    uint32_t loose = ccr_editor_loose_count(&doc->ed);
+    char extra[96] = "";
+    if (loose)
+        snprintf(extra, sizeof extra, " %u loose stack%s left out.", loose, loose == 1 ? "" : "s");
+    if (errors > doc->errors_at_load) {
+        snprintf(doc->status, sizeof doc->status,
+                 "Saved %s, but clang now sees %u error%s (details in the terminal).%s",
+                 name, errors, errors == 1 ? "" : "s", extra);
+        doc->has_errors = true;
+    } else {
+        snprintf(doc->status, sizeof doc->status, "Saved %s (original in %s~).%s",
+                 name, name, extra);
+        doc->has_errors = false;
+    }
+}
+
 /* -------------------------------------------------------- drawing */
 
 static void draw_topbar(int width, const ccr_document *doc)
@@ -232,8 +355,11 @@ static void draw_topbar(int width, const ccr_document *doc)
     ccr_gui_rect((ccr_rect){ 0, 0, (float)width, TOPBAR_H }, COL_BAR);
     ccr_gui_circle((ccr_vec2){ 22.0f, TOPBAR_H * 0.5f }, 8.0f, COL_ACCENT);
     ccr_gui_text("Ccratch", 38.0f, 10.0f, 20.0f, COL_TITLE);
-    if (doc->loaded)
-        ccr_gui_text(base_name(doc->path), 140.0f, 12.0f, 16.0f, COL_BAR_TEXT);
+    if (doc->loaded) {
+        char title[300];
+        snprintf(title, sizeof title, "%s%s", base_name(doc->path), doc->ed.modified ? " *" : "");
+        ccr_gui_text(title, 140.0f, 12.0f, 16.0f, COL_BAR_TEXT);
+    }
 
     float x = (float)width - 110.0f;
     if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, "Build"))
@@ -257,7 +383,7 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
         snprintf(loose_txt, sizeof loose_txt, "%u loose stack%s (not compiled)   |   ",
                  loose, loose == 1 ? "" : "s");
     snprintf(right, sizeof right,
-             "%szoom %d%%   |   LMB drag: blocks   RMB drag: pan   wheel: zoom   Home: fit   F5: reload",
+             "%szoom %d%%   |   LMB drag: blocks   RMB: pan   wheel: zoom   Ctrl+S: save   Home: fit   F5: reload",
              loose_txt, (int)(cv->zoom * 100.0f + 0.5f));
     float rw = ccr_gui_text_width(right, 12.0f);
     ccr_gui_text(right, (float)width - rw - 12.0f, y + 7.0f, 12.0f, COL_BAR_TEXT);
@@ -283,6 +409,8 @@ int ccr_run(int argc, char **argv)
 
     if (opt.dump_ast)
         return run_dump_ast(&opt);
+    if (opt.roundtrip)
+        return run_roundtrip(&opt);
 
     if (!ccr_gui_init(1280, 800, "Ccratch")) {
         fprintf(stderr, "ccratch: could not open a window. Opyat' rabotat'...\n");
@@ -317,6 +445,8 @@ int ccr_run(int argc, char **argv)
             snprintf(again, sizeof again, "%s", doc.path);
             document_open(&doc, again, &opt);
         }
+        if (doc.loaded && ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_S))
+            document_save(&doc, &opt);
         if (ccr_gui_key_pressed(CCR_KEY_HOME))
             fit_view(&canvas, &doc, viewport, 1.0f);
 

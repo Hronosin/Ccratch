@@ -672,6 +672,29 @@ static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w
         sz = emit_line_block(L, &head, CAT_VARIABLE, x, y, id);
         break;
     }
+    case CCR_NODE_DECL_GROUP: {
+        /* `int a = 1, b = 2;` on one line; with a struct inside, one under another */
+        bool all_vars = true;
+        for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
+            if (N(L, c)->kind != CCR_NODE_VAR)
+                all_vars = false;
+        if (all_vars) {
+            for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling) {
+                ccr_node_id init = var_init(L, c);
+                if (c != n->first_child)
+                    it_text(&head, ",");
+                it_decl(&head, S(L, N(L, c)->type), S(L, N(L, c)->name), init != CCR_NONE);
+                it_expr(&head, init);
+            }
+            sz = emit_line_block(L, &head, CAT_VARIABLE, x, y, id);
+        } else {
+            float h = 0.0f;
+            for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
+                h += emit_stmt(L, c, x, y + h, max_w);
+            return h;
+        }
+        break;
+    }
     case CCR_NODE_RETURN:
         it_text(&head, "return");
         it_expr(&head, n->first_child);

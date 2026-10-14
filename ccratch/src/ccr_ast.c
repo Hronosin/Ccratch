@@ -51,6 +51,7 @@ void ccr_ast_free(ccr_ast *ast)
     free(ast->nodes);
     free(ast->strings);
     free(ast->diags);
+    free(ast->source);
     memset(ast, 0, sizeof *ast);
 }
 
@@ -176,6 +177,8 @@ static void wrap_in_block(ccr_ast *ast, ccr_node_id child)
     ast->nodes[block].flags |= CCR_FLAG_IMPLICIT;
     ast->nodes[block].line = ast->nodes[child].line;
     ast->nodes[block].column = ast->nodes[child].column;
+    ast->nodes[block].src_b = ast->nodes[child].src_b;
+    ast->nodes[block].src_e = ast->nodes[child].src_e;
     ccr_ast_insert_after(ast, child, block);
     ccr_ast_append(ast, block, child);
 }
@@ -356,4 +359,290 @@ void ccr_ast_dump(const ccr_ast *ast, FILE *out)
             ast->node_count,
             ccr_ast_count_diags(ast, CCR_DIAG_ERROR),
             ccr_ast_count_diags(ast, CCR_DIAG_WARNING) - ccr_ast_count_diags(ast, CCR_DIAG_ERROR));
+}
+
+/* ------------------------------------------------------ source ranges */
+
+static bool needs_semicolon(ccr_node_kind k)
+{
+    switch (k) {
+    case CCR_NODE_RETURN: case CCR_NODE_BREAK: case CCR_NODE_CONTINUE:
+    case CCR_NODE_GOTO: case CCR_NODE_DO_WHILE: case CCR_NODE_OTHER:
+    case CCR_NODE_CALL: case CCR_NODE_BINARY_OP: case CCR_NODE_UNARY_OP:
+    case CCR_NODE_TERNARY: case CCR_NODE_REF: case CCR_NODE_MEMBER:
+    case CCR_NODE_INDEX: case CCR_NODE_CAST: case CCR_NODE_SIZEOF:
+    case CCR_NODE_COMPOUND_LIT: case CCR_NODE_MACRO_VALUE:
+    case CCR_NODE_INT_LIT: case CCR_NODE_FLOAT_LIT: case CCR_NODE_CHAR_LIT:
+    case CCR_NODE_STRING_LIT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool in_statement_position(const ccr_ast *ast, ccr_node_id id)
+{
+    ccr_node_id p = ast->nodes[id].parent;
+    if (p == CCR_NONE)
+        return false;
+    switch (ast->nodes[p].kind) {
+    case CCR_NODE_BLOCK: case CCR_NODE_CASE: case CCR_NODE_DEFAULT: case CCR_NODE_LABEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool is_hspace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+static bool is_space(char c)  { return is_hspace(c) || c == '\n' || c == '\f' || c == '\v'; }
+
+/* Children before parents, so every parent can cover its children. */
+static void cover_children(ccr_ast *ast, ccr_node_id id, unsigned depth)
+{
+    if (depth > 4000)
+        return;   /* absurd nesting: leave as is rather than blow the stack */
+    for (ccr_node_id c = ast->nodes[id].first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling) {
+        cover_children(ast, c, depth + 1);
+        ccr_node *n = &ast->nodes[id];
+        const ccr_node *k = &ast->nodes[c];
+        if (n->kind == CCR_NODE_TRANSLATION_UNIT || k->src_e <= k->src_b)
+            continue;
+        if (k->src_e > n->src_e)
+            n->src_e = k->src_e;
+    }
+    /* an implicit Block is exactly its one statement */
+    ccr_node *n = &ast->nodes[id];
+    if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_IMPLICIT) && n->first_child != CCR_NONE) {
+        n->src_b = ast->nodes[n->first_child].src_b;
+        n->src_e = ast->nodes[n->first_child].src_e;
+    }
+}
+
+/* Leading whitespace of the line holding `at`, if only whitespace precedes
+ * `at` on that line; otherwise NULL-length (len = UINT32_MAX). */
+static uint32_t line_indent(const ccr_ast *ast, uint32_t at, uint32_t *len)
+{
+    uint32_t start = at;
+    while (start > 0 && ast->source[start - 1] != '\n')
+        --start;
+    for (uint32_t i = start; i < at; ++i) {
+        if (!is_hspace(ast->source[i])) {
+            *len = UINT32_MAX;
+            return start;
+        }
+    }
+    *len = at - start;
+    return start;
+}
+
+static ccr_str intern_n(ccr_ast *ast, const char *s, uint32_t n)
+{
+    char buf[256];
+    if (n >= sizeof buf)
+        n = sizeof buf - 1;
+    memcpy(buf, s, n);
+    buf[n] = '\0';
+    return n ? ccr_ast_intern(ast, buf) : 0;
+}
+
+/* Indent of the line `at` is on, whatever precedes it on the line. */
+static ccr_str indent_of_line(ccr_ast *ast, uint32_t at)
+{
+    uint32_t start = at;
+    while (start > 0 && ast->source[start - 1] != '\n')
+        --start;
+    uint32_t end = start;
+    while (end < ast->source_len && is_hspace(ast->source[end]) && ast->source[end] != '\r')
+        ++end;
+    return intern_n(ast, ast->source + start, end - start);
+}
+
+/*
+ * Scans whitespace and comments in [from, to). Returns false if anything
+ * else is there (a #directive, code from a macro...). `first_comment`
+ * gets where the first comment after the last non-comment begins, or
+ * UINT32_MAX if none.
+ */
+static bool scan_gap(const ccr_ast *ast, uint32_t from, uint32_t to, uint32_t *first_comment)
+{
+    const char *s = ast->source;
+    bool clean = true;
+    *first_comment = UINT32_MAX;
+    uint32_t i = from;
+    while (i < to) {
+        if (is_space(s[i])) {
+            ++i;
+        } else if (i + 1 < to && s[i] == '/' && s[i + 1] == '/') {
+            if (*first_comment == UINT32_MAX)
+                *first_comment = i;
+            while (i < to && s[i] != '\n')
+                ++i;
+        } else if (i + 1 < to && s[i] == '/' && s[i + 1] == '*') {
+            if (*first_comment == UINT32_MAX)
+                *first_comment = i;
+            i += 2;
+            while (i + 1 < to && !(s[i] == '*' && s[i + 1] == '/'))
+                ++i;
+            i += 2;
+        } else {
+            clean = false;
+            *first_comment = UINT32_MAX;   /* comments above junk are not ours */
+            while (i < to && s[i] != '\n')
+                ++i;
+        }
+    }
+    return clean;
+}
+
+/* After `from`: spaces, then a comment on the same line, if any. */
+static uint32_t trailing_comment_end(const ccr_ast *ast, uint32_t from, uint32_t limit)
+{
+    const char *s = ast->source;
+    uint32_t i = from;
+    while (i < limit && is_hspace(s[i]) && s[i] != '\r')
+        ++i;
+    if (i + 1 < limit && s[i] == '/' && s[i + 1] == '/') {
+        while (i < limit && s[i] != '\n' && s[i] != '\r')
+            ++i;
+        return i;
+    }
+    if (i + 1 < limit && s[i] == '/' && s[i + 1] == '*') {
+        i += 2;
+        while (i + 1 < limit && !(s[i] == '*' && s[i + 1] == '/'))
+            ++i;
+        return i + 2 <= limit ? i + 2 : limit;
+    }
+    return from;
+}
+
+static void finish_block(ccr_ast *ast, ccr_node_id id)
+{
+    ccr_node *b = &ast->nodes[id];
+    const bool implicit = (b->flags & CCR_FLAG_IMPLICIT) != 0;
+    const char *s = ast->source;
+
+    uint32_t open = b->src_b, close = b->src_e;   /* interior is [open, close) */
+    if (!implicit) {
+        if (b->src_e <= b->src_b || s[b->src_b] != '{' || s[b->src_e - 1] != '}') {
+            b->flags |= CCR_FLAG_UNSAFE_GAP;      /* a block made by a macro */
+            return;
+        }
+        open = b->src_b + 1;
+        close = b->src_e - 1;
+    }
+
+    /* closing brace indent; implicit: the owner's line */
+    uint32_t len;
+    if (implicit) {
+        ccr_node_id owner = b->parent;
+        uint32_t at = owner != CCR_NONE ? ast->nodes[owner].src_b : b->src_b;
+        b->close_indent = indent_of_line(ast, at);
+    } else {
+        uint32_t start = line_indent(ast, close, &len);
+        b->close_indent = len != UINT32_MAX ? intern_n(ast, s + start, len)
+                                             : indent_of_line(ast, b->src_b);
+    }
+
+    /* statements: comments above belong to them, as does the rest of their line */
+    uint32_t cur = open;
+    bool first = true;
+    for (ccr_node_id c = b->first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling) {
+        ccr_node *k = &ast->nodes[c];
+        k->ext_b = k->src_b;
+        k->ext_e = k->src_e;
+        if (k->src_b < cur) {
+            b->flags |= CCR_FLAG_UNSAFE_GAP;      /* overlapping: macro magic */
+            continue;
+        }
+        if (!implicit) {
+            uint32_t comment;
+            if (!scan_gap(ast, cur, k->src_b, &comment))
+                b->flags |= CCR_FLAG_UNSAFE_GAP;
+            if (comment != UINT32_MAX)
+                k->ext_b = comment;
+            /* an empty line between it and the statement above */
+            unsigned newlines = 0;
+            for (uint32_t i = cur; i < k->ext_b; ++i)
+                if (s[i] == '\n')
+                    ++newlines;
+            if (!first && newlines >= 2)
+                k->flags |= CCR_FLAG_BLANK_BEFORE;
+        }
+        ccr_node_id next = k->next_sibling;
+        uint32_t limit = next != CCR_NONE ? ast->nodes[next].src_b : close;
+        if (limit > k->src_e)
+            k->ext_e = trailing_comment_end(ast, k->src_e, limit);
+        if (first) {
+            uint32_t start = line_indent(ast, k->src_b, &len);
+            b->indent = len != UINT32_MAX ? intern_n(ast, s + start, len) : 0;
+            first = false;
+        }
+        cur = k->ext_e;
+    }
+
+    if (!implicit) {
+        /* comments after the last statement stay at the end of the block */
+        uint32_t comment;
+        if (!scan_gap(ast, cur, close, &comment))
+            b->flags |= CCR_FLAG_UNSAFE_GAP;
+        else if (comment != UINT32_MAX) {
+            uint32_t end = close;
+            while (end > comment && is_space(s[end - 1]))
+                --end;
+            /* stored as a string: it does not move with any statement.
+             * Whole, however long (commented-out code can be kilobytes). */
+            uint32_t n = end - comment;
+            char *copy = malloc((size_t)n + 1);
+            if (copy) {
+                memcpy(copy, s + comment, n);
+                copy[n] = '\0';
+                b->aux = ccr_ast_intern(ast, copy);
+                free(copy);
+            }
+            if (!copy || b->aux == 0)
+                b->flags |= CCR_FLAG_UNSAFE_GAP;   /* would lose it: refuse instead */
+        }
+    }
+
+    /* each statement's indent beyond the block's own */
+    const char *base = ccr_ast_str(ast, b->indent);
+    const uint32_t base_n = (uint32_t)strlen(base);
+    for (ccr_node_id c = b->first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling) {
+        ccr_node *k = &ast->nodes[c];
+        uint32_t start = line_indent(ast, k->ext_b, &len);
+        if (len != UINT32_MAX && len > base_n && memcmp(s + start, base, base_n) == 0)
+            k->extra_indent = intern_n(ast, s + start + base_n, len - base_n);
+    }
+
+    if (b->indent == 0) {   /* empty block: one level deeper than the brace */
+        char buf[300];
+        snprintf(buf, sizeof buf, "%s    ", ccr_ast_str(ast, b->close_indent));
+        b->indent = ccr_ast_intern(ast, buf);
+    }
+}
+
+void ccr_ast_finish_ranges(ccr_ast *ast)
+{
+    if (!ast->source || ast->node_count == 0)
+        return;
+
+    /* statements that end with ';' get it */
+    for (ccr_node_id id = 0; id < ast->node_count; ++id) {
+        ccr_node *n = &ast->nodes[id];
+        if (!needs_semicolon(n->kind) || !in_statement_position(ast, id))
+            continue;
+        uint32_t i = n->src_e;
+        while (i < ast->source_len && is_space(ast->source[i]))
+            ++i;
+        if (i < ast->source_len && ast->source[i] == ';')
+            n->src_e = i + 1;
+    }
+
+    for (ccr_node_id id = 0; id < ast->node_count; ++id)
+        if (ast->nodes[id].parent == CCR_NONE)
+            cover_children(ast, id, 0);
+
+    for (ccr_node_id id = 0; id < ast->node_count; ++id)
+        if (ast->nodes[id].kind == CCR_NODE_BLOCK && !(ast->nodes[id].flags & CCR_FLAG_LOOSE))
+            finish_block(ast, id);
 }

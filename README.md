@@ -12,7 +12,8 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 1: a window, a pannable canvas and one lonely block.
 - Step 2: libclang reads a `.c` file into Ccratch's own syntax tree.
 - Step 3: that tree is drawn as Scratch-style blocks.
-- Step 4: blocks can be dragged. Not saved back to the file yet.
+- Step 4: blocks can be dragged.
+- Step 5: Ctrl+S writes the moves back to the `.c` file.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -45,8 +46,36 @@ Dragging works like Scratch:
   **Loose blocks are not part of the program**: dragging a block out is
   how you remove it from the code.
 
-Every move edits the syntax tree itself, so what you see is what will be
-written back once saving lands.
+Every move edits the syntax tree itself, and Ctrl+S writes it back.
+
+## Saving
+
+Saving splices instead of reprinting: everything you did not touch is
+copied from the file byte for byte, so comments, `#ifdef`s, macros and your
+formatting stay as they were. Only blocks whose statements moved are put
+back together, out of each statement's original text:
+
+- comments right above a statement, and at the end of its line, move with it;
+- an empty line above a statement moves with it too;
+- a statement keeps any extra indent it had (like inside `rlBegin`/`rlEnd`)
+  and is re-indented to its new depth;
+- dropping into a braceless `if (x) y;` turns it into `if (x) { ... }`;
+- loose blocks on the canvas are left out of the file.
+
+A block with something other than comments between its statements (an
+`#if`, a `#define`, code made by a macro) is refused rather than guessed
+at: the status bar says which line, and nothing is written.
+
+The first save of a session copies the file as it was opened to `FILE~`,
+and the file is written to a temporary name and renamed, so a crash never
+leaves half a file. After saving, Ccratch reads the file back with clang and
+tells you if your move made code clang rejects (say, a `return` moved out
+of its function's type).
+
+How sure is this? `ccratch --roundtrip FILE.c` checks an untouched file
+comes back byte for byte, and the test suite forces every block of
+raylib's sources (about 2000 of them) to be rebuilt and checks clang reads
+the result back into the same tree.
 
 ![dragging: sum's body lies loose, a stack is about to snap in](docs/drag.png)
 
@@ -74,6 +103,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_parse   the only code that knows libclang exists
   ccr_blocks  one script -> blocks: flat display list + snap points
   ccr_editor  scripts on the canvas, drag and drop, edits the tree
+  ccr_codegen tree -> C: copies untouched text, rebuilds changed blocks
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so; hello/ is the template
@@ -143,6 +173,7 @@ ccratch                                  open the editor
 ccratch file.c                           open a file as blocks
 ccratch file.c -- -Iinclude -DDEBUG      extra arguments go to clang
 ccratch --dump-ast file.c                print the syntax tree, no window
+ccratch --roundtrip file.c               check saving an untouched file is lossless
 ccratch file.c --zoom 50                 start zoomed out
 ```
 
@@ -153,7 +184,9 @@ ccratch file.c --zoom 50                 start zoomed out
 
 - Drop a `.c` file onto the window: open it
 - Left mouse drag: move blocks
+- Ctrl+S: save (Esc no longer quits, so it cannot eat unsaved work)
 - Right or middle mouse drag: pan the canvas
 - Mouse wheel: zoom around the cursor
 - Home: back to the start of the file at 100%
-- F5: reload the file from disk (throws away unsaved moves)
+- F5: reload the file from disk (throws away unsaved moves; the title shows
+  `*` while there are any)

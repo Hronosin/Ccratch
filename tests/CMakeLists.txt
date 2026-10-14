@@ -76,7 +76,40 @@ if(XVFB_RUN)
                      $<TARGET_FILE:test_editor> ${PROJECT_SOURCE_DIR}/examples/tour.c)
 endif()
 
+# Saving: moves land in the file, everything else stays as written.
+add_executable(test_save test_save.c)
+target_link_libraries(test_save PRIVATE ccratch_core)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/saved)
+if(XVFB_RUN)
+    add_test(NAME editor_save
+             COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
+                     $<TARGET_FILE:test_save> ${CMAKE_CURRENT_SOURCE_DIR}/data/save.c
+                     ${CMAKE_CURRENT_BINARY_DIR}/saved)
+endif()
+
+# Unchanged files come back byte for byte.
+foreach(f examples/tour.c tests/data/save.c)
+    add_test(NAME roundtrip_${f} COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/${f})
+endforeach()
+
 # C++ is picked by extension.
 add_test(NAME dump_ast_cpp
          COMMAND ${CCR_BIN} --dump-ast ${PROJECT_SOURCE_DIR}/tests/data/templates.cpp)
 set_tests_properties(dump_ast_cpp PROPERTIES PASS_REGULAR_EXPRESSION " 0 errors")
+
+# Rebuild every block of real files and read them back.
+add_executable(test_rebuild test_rebuild.c)
+target_link_libraries(test_rebuild PRIVATE ccratch_core)
+foreach(f examples/tour.c tests/data/save.c)
+    get_filename_component(stem ${f} NAME_WE)
+    add_test(NAME rebuild_${stem}
+             COMMAND test_rebuild ${CMAKE_CURRENT_BINARY_DIR}/saved/rebuilt_${stem}.c
+                     ${PROJECT_SOURCE_DIR}/${f})
+endforeach()
+set(RAYLIB_SRC ${raylib_SOURCE_DIR}/src)
+foreach(f rshapes rtextures rtext rmodels raudio rcore utils)
+    add_test(NAME rebuild_raylib_${f}
+             COMMAND test_rebuild ${CMAKE_CURRENT_BINARY_DIR}/saved/rebuilt_${f}.c
+                     ${RAYLIB_SRC}/${f}.c -- -std=c99 -I${RAYLIB_SRC}
+                     -I${RAYLIB_SRC}/external/glfw/include -DPLATFORM_DESKTOP)
+endforeach()

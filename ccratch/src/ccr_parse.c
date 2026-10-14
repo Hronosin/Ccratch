@@ -26,6 +26,12 @@ typedef struct visit_ctx {
     ccr_node_id       init_var;
     CXCursor          init_cursor;
     bool              init_hit;
+
+    /* `int x = 1;` is a DeclStmt holding one VarDecl. The Var stands for
+     * the whole statement, so it takes the DeclStmt's range (type, ';'). */
+    bool              decl_pending;
+    ccr_node_id       decl_owner;
+    uint32_t          decl_b, decl_e;
 } visit_ctx;
 
 /* Interns a CXString and disposes it. */
@@ -316,6 +322,14 @@ static void fill_node(visit_ctx *ctx, CXCursor c, enum CXCursorKind ck, ccr_node
     ast->nodes[id].line = line;
     ast->nodes[id].column = col;
 
+    /* byte range in the file; for code from macros, the macro call itself */
+    CXSourceRange ext = clang_getCursorExtent(c);
+    unsigned b = 0, e = 0;
+    clang_getExpansionLocation(clang_getRangeStart(ext), NULL, NULL, NULL, &b);
+    clang_getExpansionLocation(clang_getRangeEnd(ext), NULL, NULL, NULL, &e);
+    ast->nodes[id].src_b = b;
+    ast->nodes[id].src_e = e > b ? e : b;
+
     switch (kind) {
     case CCR_NODE_INCLUDE:
         fill_include(ctx, c, id);
@@ -462,6 +476,14 @@ static bool object_macro_value(visit_ctx *ctx, CXCursor c, ccr_str *name)
     return true;
 }
 
+static enum CXChildVisitResult count_child(CXCursor c, CXCursor parent, CXClientData data)
+{
+    (void)c;
+    (void)parent;
+    ++*(unsigned *)data;
+    return CXChildVisit_Continue;
+}
+
 static enum CXChildVisitResult visit(CXCursor c, CXCursor parent, CXClientData data)
 {
     (void)parent;
@@ -473,6 +495,19 @@ static enum CXChildVisitResult visit(CXCursor c, CXCursor parent, CXClientData d
     enum CXCursorKind ck = clang_getCursorKind(c);
     ccr_node_kind kind = CCR_NODE_OTHER;
     node_policy policy = classify(ck, &kind);
+
+    /* `int a = 1, b = 2;` stays one block: its parts cannot move apart */
+    bool single_decl = false;
+    if (ck == CXCursor_DeclStmt) {
+        unsigned kids = 0;
+        clang_visitChildren(c, count_child, &kids);
+        if (kids > 1) {
+            kind = CCR_NODE_DECL_GROUP;
+            policy = POLICY_NODE;
+        } else {
+            single_decl = true;
+        }
+    }
 
     ccr_str macro_name = 0;
     bool leaf = false;
@@ -499,6 +534,18 @@ static enum CXChildVisitResult visit(CXCursor c, CXCursor parent, CXClientData d
     ccr_node_id saved_parent = ctx->parent;
     ccr_node_id saved_init_var = ctx->init_var;
     CXCursor    saved_init_cursor = ctx->init_cursor;
+    const bool  saved_decl_pending = ctx->decl_pending;
+
+    if (single_decl) {
+        unsigned b = 0, e = 0;
+        CXSourceRange ext = clang_getCursorExtent(c);
+        clang_getExpansionLocation(clang_getRangeStart(ext), NULL, NULL, NULL, &b);
+        clang_getExpansionLocation(clang_getRangeEnd(ext), NULL, NULL, NULL, &e);
+        ctx->decl_pending = true;
+        ctx->decl_owner = ctx->parent;
+        ctx->decl_b = b;
+        ctx->decl_e = e > b ? e : b;
+    }
 
     if (policy == POLICY_NODE) {
         ccr_node_id id = ccr_ast_add(ctx->ast, kind, ctx->parent);
@@ -507,6 +554,11 @@ static enum CXChildVisitResult visit(CXCursor c, CXCursor parent, CXClientData d
         fill_node(ctx, c, ck, id);
         if (kind == CCR_NODE_MACRO_VALUE)
             ctx->ast->nodes[id].name = macro_name;
+        if (ctx->decl_pending && ctx->decl_owner == ctx->parent) {
+            ctx->ast->nodes[id].src_b = ctx->decl_b;
+            ctx->ast->nodes[id].src_e = ctx->decl_e;
+            ctx->decl_pending = false;
+        }
 
         if (ctx->init_hit && ctx->parent == ctx->init_var) {
             ctx->ast->nodes[id].flags |= CCR_FLAG_INIT;
@@ -541,6 +593,8 @@ static enum CXChildVisitResult visit(CXCursor c, CXCursor parent, CXClientData d
     ctx->parent = saved_parent;
     ctx->init_var = saved_init_var;
     ctx->init_cursor = saved_init_cursor;
+    if (single_decl)
+        ctx->decl_pending = saved_decl_pending;
     return CXChildVisit_Continue;
 }
 
@@ -807,7 +861,24 @@ bool ccr_parse_file(const char *path, const char *const *args, int arg_count, cc
         clang_visitChildren(clang_getTranslationUnitCursor(tu), visit, &ctx);
     }
 
+    /* keep the file as clang read it: saving splices from it */
+    size_t size = 0;
+    const char *contents = clang_getFileContents(tu, ctx.main_file, &size);
+    if (contents && size < UINT32_MAX) {
+        out->source = malloc(size + 1);
+        if (out->source) {
+            memcpy(out->source, contents, size);
+            out->source[size] = '\0';
+            out->source_len = (uint32_t)size;
+        }
+    }
+    if (root != CCR_NONE) {
+        out->nodes[root].src_b = 0;
+        out->nodes[root].src_e = out->source_len;
+    }
+
     ccr_ast_wrap_bodies(out);
+    ccr_ast_finish_ranges(out);
     collect_diags(tu, out);
 
     clang_disposeTranslationUnit(tu);

@@ -261,6 +261,13 @@ static uint32_t tear_off(ccr_editor *ed, ccr_node_id item, uint32_t from)
     if (!ccr_editor_node_rect(ed, item, &at))
         return UINT32_MAX;
 
+    /* the stack it leaves will be written anew on save */
+    ccr_node_id from_block = N(ed, item)->parent;
+    if (from_block != CCR_NONE && !(N(ed, from_block)->flags & CCR_FLAG_LOOSE)) {
+        ed->ast.nodes[from_block].flags |= CCR_FLAG_DIRTY;
+        ed->modified = true;
+    }
+
     ccr_node_id loose = ccr_ast_add(&ed->ast, CCR_NODE_BLOCK, CCR_NONE);
     if (loose == CCR_NONE)
         return UINT32_MAX;
@@ -342,6 +349,12 @@ static void drop_into_snap(ccr_editor *ed)
 {
     const ccr_node_id loose = ed->scripts[ed->dragged].root;
     const ccr_node_id target_root = script_root_of(ed, ed->snap.ref);
+
+    ccr_node_id into = ed->snap.kind == CCR_SNAP_AFTER ? N(ed, ed->snap.ref)->parent : ed->snap.ref;
+    if (into != CCR_NONE && !(N(ed, into)->flags & CCR_FLAG_LOOSE)) {
+        ed->ast.nodes[into].flags |= CCR_FLAG_DIRTY;
+        ed->modified = true;
+    }
 
     ccr_node_id prev = CCR_NONE;
     for (ccr_node_id c = N(ed, loose)->first_child; c != CCR_NONE;) {

@@ -44,6 +44,7 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(ENUM_CONST,       "EnumConst")          \
     /* statements */                          \
     X(BLOCK,            "Block")              \
+    X(DECL_GROUP,       "DeclGroup")          \
     X(IF,               "If")                 \
     X(WHILE,            "While")              \
     X(DO_WHILE,         "DoWhile")            \
@@ -101,6 +102,22 @@ typedef struct ccr_node {
     uint32_t line;
     uint32_t column;
     uint32_t flags;
+
+    /* Where the node is in ccr_ast.source, as byte offsets [b, e). For a
+     * statement, e includes its ';'. ext_b/ext_e also take in comments
+     * that belong to it (lines right above, rest of its line). Saving
+     * copies these ranges, so text that was not changed stays as written. */
+    uint32_t src_b, src_e;
+    uint32_t ext_b, ext_e;
+
+    /* Blocks only: indentation of the statements inside and of the
+     * closing brace, as found in the source. */
+    ccr_str  indent;
+    ccr_str  close_indent;
+
+    /* Statements: how much deeper than its block it was indented, so a
+     * deliberate visual indent (rlBegin/rlEnd...) survives a rebuild. */
+    ccr_str  extra_indent;
 } ccr_node;
 
 /* ccr_node.flags */
@@ -113,6 +130,14 @@ typedef struct ccr_node {
 #define CCR_FLAG_LOOSE       (1u << 6)   /* root Block of blocks lying on the
                                             canvas: not part of the program */
 #define CCR_FLAG_DEAD        (1u << 7)   /* emptied loose root, ignore */
+#define CCR_FLAG_DIRTY       (1u << 8)   /* Block whose statements were moved */
+#define CCR_FLAG_UNSAFE_GAP  (1u << 9)   /* Block with something other than
+                                            comments between its statements
+                                            (#if, #define...): cannot be
+                                            rebuilt safely */
+#define CCR_FLAG_BLANK_BEFORE (1u << 10) /* statement had an empty line above
+                                            it: the paragraph break moves
+                                            with it */
 
 typedef enum ccr_diag_severity {
     CCR_DIAG_NOTE,
@@ -140,6 +165,10 @@ typedef struct ccr_ast {
     uint32_t  diag_count, diag_cap;
 
     ccr_str   source_path;
+
+    /* The file as it was parsed. Saving splices from this. */
+    char     *source;
+    uint32_t  source_len;
 } ccr_ast;
 
 bool        ccr_ast_init(ccr_ast *ast);
@@ -160,6 +189,11 @@ void        ccr_ast_insert_after(ccr_ast *ast, ccr_node_id ref, ccr_node_id id);
 /* `if (x) y;` -> `if (x) { y; }`, same for else, while, for, do: every
  * body becomes a Block, so it always has a stack to drop blocks into. */
 void        ccr_ast_wrap_bodies(ccr_ast *ast);
+
+/* Needs ast->source and the src ranges from the parser: gives statements
+ * their ';' and comments, blocks their indents, and flags blocks that
+ * cannot be rebuilt safely. Call after ccr_ast_wrap_bodies. */
+void        ccr_ast_finish_ranges(ccr_ast *ast);
 const char *ccr_ast_str(const ccr_ast *ast, ccr_str s);
 bool        ccr_ast_add_diag(ccr_ast *ast, ccr_diag d);
 

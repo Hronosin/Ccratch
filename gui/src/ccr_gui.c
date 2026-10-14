@@ -41,6 +41,7 @@ bool ccr_gui_init(int width, int height, const char *title)
     if (!IsWindowReady())
         return false;
     SetTargetFPS(60);
+    SetExitKey(KEY_NULL);   /* raylib quits on Esc by default: not with unsaved work */
 
     /* The default font is a 10px pixel font. Scaled down by the canvas zoom
      * it drops whole pixel rows; mipmaps + trilinear keep it readable. */
@@ -179,9 +180,15 @@ bool ccr_gui_key_pressed(ccr_key key)
 {
     switch (key) {
     case CCR_KEY_HOME: return IsKeyPressed(KEY_HOME);
+    case CCR_KEY_S:    return IsKeyPressed(KEY_S);
     case CCR_KEY_F5:   return IsKeyPressed(KEY_F5);
     }
     return false;
+}
+
+bool ccr_gui_ctrl_down(void)
+{
+    return IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
 }
 
 bool ccr_gui_file_dropped(char *out, unsigned int cap)

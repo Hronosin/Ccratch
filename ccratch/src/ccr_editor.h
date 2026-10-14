@@ -52,6 +52,8 @@ typedef struct ccr_editor {
     ccr_vec2       grab;         /* mouse - script.pos */
     bool           snap_ok;
     ccr_snap       snap;         /* world coordinates in .at */
+
+    bool           modified;     /* the program changed since load/save */
 } ccr_editor;
 
 /* Takes ownership of `ast` (parsed, bodies wrapped). Needs an open window. */
