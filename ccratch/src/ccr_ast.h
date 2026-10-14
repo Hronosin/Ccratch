@@ -112,6 +112,12 @@ typedef struct ccr_node {
     uint32_t src_b, src_e;
     uint32_t ext_b, ext_e;
 
+    /* The bytes of its parent's text this node stands in for: where it was
+     * parsed, src, until an expression is moved into another slot. Saving
+     * an edited parent copies the text around its children's places and
+     * fills each place with that child's own text. */
+    uint32_t place_b, place_e;
+
     /* Blocks only: indentation of the statements inside and of the
      * closing brace, as found in the source. */
     ccr_str  indent;
@@ -144,6 +150,10 @@ typedef struct ccr_node {
 #define CCR_FLAG_BLANK_BEFORE (1u << 10) /* statement had an empty line above
                                             it: the paragraph break moves
                                             with it */
+#define CCR_FLAG_REPORTER    (1u << 13)  /* loose root holding one expression
+                                            (a Scratch reporter), not a stack */
+#define CCR_FLAG_MOVED       (1u << 14)  /* expression dropped into another
+                                            slot: its place is not its src */
 
 typedef enum ccr_diag_severity {
     CCR_DIAG_NOTE,
@@ -166,6 +176,7 @@ typedef struct ccr_node_links {
     ccr_node_id parent, first_child, last_child, next_sibling;
     uint32_t    flags;
     ccr_str     name;   /* text typed into a palette block's slot */
+    uint32_t    place_b, place_e;
 } ccr_node_links;
 
 /*

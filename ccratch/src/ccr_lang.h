@@ -82,7 +82,9 @@
       "line %u: this block has #if/#define or macro-made code between its statements, " \
       "so it cannot be rewritten safely yet")                                            \
     X(GEN_LOST,         "save.lost",             0,                                      \
-      "line %u: changed code in a place I cannot locate in the file")
+      "line %u: changed code in a place I cannot locate in the file")                    \
+    X(GEN_EMPTY_SLOT,   "save.empty_slot",       0,                                      \
+      "line %u: an empty slot; type into it or drop a block there")
 
 typedef enum ccr_text {
 #define X(id, key, plural, en) CCR_T_##id,

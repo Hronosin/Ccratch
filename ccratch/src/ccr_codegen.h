@@ -25,4 +25,12 @@
  */
 bool ccr_codegen(const ccr_ast *ast, char **out, size_t *out_len, char *err, size_t err_cap);
 
+/*
+ * Can expression `id` be taken out of the slot it fills (and something
+ * else put there) and the file still be saved safely? Its parent, and
+ * everything up to its statement, must have children that sit in its text
+ * one after another; code made by a macro does not, and stays whole.
+ */
+bool ccr_codegen_can_move(const ccr_ast *ast, ccr_node_id id);
+
 #endif /* CCR_CODEGEN_H */

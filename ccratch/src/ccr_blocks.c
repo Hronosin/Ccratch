@@ -52,7 +52,8 @@ typedef struct layout {
     int            dim;       /* > 0 inside a commented-out statement */
 } layout;
 
-static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w);
+static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w,
+                      float h);
 
 static const ccr_node *N(const layout *L, ccr_node_id id) { return &L->ast->nodes[id]; }
 static const char *S(const layout *L, ccr_str s)         { return ccr_ast_str(L->ast, s); }
@@ -442,6 +443,12 @@ static void emit_expr(layout *L, ccr_node_id id, float x, float y)
     const float w = L->ew[id], h = L->eh[id];
     push_shape(L, sh, cat, (ccr_rect){ x, y, w, h }, id);
 
+    /* an empty slot (not a code line, that is a statement): reporters drop in */
+    const ccr_node *n = N(L, id);
+    if (n->kind == CCR_NODE_TEXT && !*S(L, n->name) && n->parent != CCR_NONE &&
+        N(L, n->parent)->kind != CCR_NODE_BLOCK)
+        push_snap(L, CCR_SNAP_SLOT, id, x, y, w, h);
+
     items it = { .n = 0, .used = 0 };
     expr_items(L, id, &it);
     float pad = EXPR_PAD_X + (sh == SHAPE_HEX ? h * 0.25f : 0.0f);
@@ -477,7 +484,7 @@ static float emit_body(layout *L, ccr_node_id body, float x, float y, float *max
     if (body == CCR_NONE)
         return 0.0f;
     if (N(L, body)->kind == CCR_NODE_BLOCK) {
-        push_snap(L, CCR_SNAP_FIRST, body, x, y, 120.0f);
+        push_snap(L, CCR_SNAP_FIRST, body, x, y, 120.0f, 0.0f);
         return emit_stack(L, N(L, body)->first_child, x, y, max_w);
     }
     return emit_stmt(L, body, x, y, max_w);
@@ -773,7 +780,7 @@ static float emit_stack(layout *L, ccr_node_id first, float x, float y, float *m
     for (ccr_node_id c = first; c != CCR_NONE && !L->oom; c = N(L, c)->next_sibling) {
         float w = 0.0f;
         h += emit_stmt(L, c, x, y + h, &w);
-        push_snap(L, CCR_SNAP_AFTER, c, x, y + h, w);
+        push_snap(L, CCR_SNAP_AFTER, c, x, y + h, w, 0.0f);
         if (w > *max_w)
             *max_w = w;
     }
@@ -914,14 +921,15 @@ static size2 emit_decl_block(layout *L, ccr_node_id id, float x, float y, float 
 
 /* ---------------------------------------------------------- public */
 
-static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w)
+static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w,
+                      float h)
 {
     ccr_blocks *b = L->out;
     if (!grow((void **)&b->snaps, &b->snap_cap, b->snap_count + 1, sizeof(ccr_snap))) {
         L->oom = true;
         return;
     }
-    b->snaps[b->snap_count++] = (ccr_snap){ kind, ref, { x, y }, w };
+    b->snaps[b->snap_count++] = (ccr_snap){ kind, ref, { x, y }, w, h };
 }
 
 bool ccr_layout_cache_reserve(ccr_layout_cache *c, uint32_t node_count)
@@ -964,7 +972,10 @@ bool ccr_blocks_build_script(ccr_blocks *out, const ccr_ast *ast, ccr_node_id ro
     const ccr_node *n = N(&L, root);
     float w = 0.0f;
 
-    if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_LOOSE))
+    if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_REPORTER)) {
+        if (n->first_child != CCR_NONE)
+            emit_expr(&L, n->first_child, 0.0f, 0.0f);
+    } else if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_LOOSE))
         emit_stack(&L, n->first_child, 0.0f, 0.0f, &w);
     else if (n->kind == CCR_NODE_FUNCTION && (n->flags & CCR_FLAG_DEFINITION))
         emit_hat(&L, root, 0.0f, 0.0f, &w);

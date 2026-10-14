@@ -18,6 +18,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 7: a palette of new blocks, so you can write code, not only move it.
 - Step 8: a Blender-style pie menu, plus delete, duplicate and comment out.
 - Step 9: the interface speaks other languages, from packs you drop in a folder.
+- Step 10: expressions come out of their slots and go into other ones.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -78,6 +79,32 @@ around them is still copied as written:
         n = 100;
     }
 ```
+
+## Expressions
+
+Like Scratch reporters: grab `count` out of `i < count` and it comes out
+alone, leaving an empty white slot behind. Drop it into any empty slot
+(it lights up yellow), or leave it lying on the canvas for later. Grab the
+green `i < count` itself and the whole condition comes, into an `if` from
+the palette, say.
+
+![total on its way into the slot count left in i < _](docs/reporter.png)
+
+- An empty slot can also be typed into: click it.
+- A program with an empty slot is not saved: the status bar says which
+  line still has a hole.
+- **Delete** and **Duplicate** (pie menu, Del, Ctrl+D) on an expression
+  act on that expression: delete leaves its slot empty, the copy follows
+  the mouse until a click puts it in a slot.
+- Saving rewrites only the slots that changed; the text around them, your
+  spacing and comments included, is copied as it was.
+- Code a macro made (the `n` inside `TWICE(n)`) does not come apart: the
+  whole `TWICE(n)` comes out instead.
+
+How sure is this? The test suite takes every expression of raylib's
+sources that may move (about 64 000), and both moves each one into its
+own slot and deletes and retypes it: the file has to come back byte for
+byte.
 
 ## The pie menu
 

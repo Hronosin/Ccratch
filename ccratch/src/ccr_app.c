@@ -58,6 +58,7 @@ typedef struct ccr_options {
     int         smoke_frames;   /* >0: quit after N frames (CI, headless) */
     const char *screenshot;     /* save the last frame here */
     const char *dump_ast;       /* parse this file, print the tree, exit */
+    bool        ranges;         /* --ranges: with the source text of each node */
     const char *roundtrip;      /* parse, write back unchanged, compare */
     const char *open;           /* file to open in the editor */
     int         zoom_percent;   /* initial zoom, 0 = 100% */
@@ -91,6 +92,7 @@ static void print_usage(const char *argv0)
            "  --version              print version\n"
            "  --about                show which libclang and headers are used\n"
            "  --dump-ast FILE.c      parse FILE and print its syntax tree, no window\n"
+           "  --ranges               with --dump-ast: the source bytes of every node\n"
            "  --roundtrip FILE.c     check that saving an unchanged FILE gives it back\n"
            "                         byte for byte\n"
            "  -- ARGS...             pass ARGS to clang (e.g. -- -std=c99 -Iinclude)\n"
@@ -136,6 +138,26 @@ static void hint_missing_headers(const ccr_ast *ast)
 }
 
 /* Exit codes: 0 clean, 1 the code has errors, 2 could not parse at all. */
+/* --dump-ast --ranges: each node with the bytes it covers, for debugging
+ * what saving splices. */
+static void dump_ranges(const ccr_ast *a, ccr_node_id id, int depth)
+{
+    const ccr_node *n = &a->nodes[id];
+    int len = n->src_e > n->src_b ? (int)(n->src_e - n->src_b) : 0;
+    char text[64];
+    int k = 0;
+    for (int i = 0; i < len && k < 48; ++i) {
+        char c = a->source[n->src_b + i];
+        text[k++] = (c == '\n' || c == '\t') ? ' ' : c;
+    }
+    text[k] = '\0';
+    printf("%*s%s %s  [%u,%u) \"%s%s\"\n", depth * 2, "", ccr_node_kind_name(n->kind),
+           ccr_ast_str(a, n->name), n->src_b, n->src_e, text, len > 48 ? "..." : "");
+    if (depth < 200)
+        for (ccr_node_id c = n->first_child; c != CCR_NONE; c = a->nodes[c].next_sibling)
+            dump_ranges(a, c, depth + 1);
+}
+
 static int run_dump_ast(const ccr_options *opt)
 {
     ccr_ast ast;
@@ -150,7 +172,10 @@ static int run_dump_ast(const ccr_options *opt)
         return 2;
     }
 
-    ccr_ast_dump(&ast, stdout);
+    if (opt->ranges)
+        dump_ranges(&ast, 0, 0);
+    else
+        ccr_ast_dump(&ast, stdout);
     hint_missing_headers(&ast);
     int code = ccr_ast_count_diags(&ast, CCR_DIAG_ERROR) ? 1 : 0;
     ccr_ast_free(&ast);
@@ -214,6 +239,8 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             opt->smoke_frames = atoi(argv[++i]);
         } else if (strcmp(a, "--screenshot") == 0 && i + 1 < argc) {
             opt->screenshot = argv[++i];
+        } else if (strcmp(a, "--ranges") == 0) {
+            opt->ranges = true;
         } else if (strcmp(a, "--lang") == 0 && i + 1 < argc) {
             opt->lang = argv[++i];
         } else if (strcmp(a, "--list-langs") == 0) {
@@ -553,7 +580,7 @@ static void pie_enabled(const ccr_editor *ed, const ccr_context *ctx, bool en[CC
     en[CCR_ACTION_FIT_VIEW]  = true;
     en[CCR_ACTION_UNDO]      = ccr_editor_can_undo(ed);
     en[CCR_ACTION_REDO]      = ccr_editor_can_redo(ed);
-    en[CCR_ACTION_DELETE]    = ctx->can_delete;
+    en[CCR_ACTION_DELETE]    = ctx->can_delete;   /* on ctx->target */
     en[CCR_ACTION_DUPLICATE] = ctx->can_duplicate;
     en[CCR_ACTION_COMMENT]   = ctx->can_comment;
     en[CCR_ACTION_EDIT_TEXT] = edit_target(ed, ctx) != CCR_NONE;
@@ -571,8 +598,8 @@ static void run_action(ccr_action a, const ccr_context *ctx, ccr_vec2 world,
     case CCR_ACTION_UNDO:      ccr_editor_undo(ed); break;
     case CCR_ACTION_REDO:      ccr_editor_redo(ed); break;
     case CCR_ACTION_FIT_VIEW:  fit_view(cv, doc, viewport, 1.0f); break;
-    case CCR_ACTION_DELETE:    ccr_editor_delete(ed, ctx->item); break;
-    case CCR_ACTION_DUPLICATE: ccr_editor_duplicate(ed, ctx->item, world); break;
+    case CCR_ACTION_DELETE:    ccr_editor_delete(ed, ctx->target); break;
+    case CCR_ACTION_DUPLICATE: ccr_editor_duplicate(ed, ctx->target, world); break;
     case CCR_ACTION_COMMENT:   ccr_editor_toggle_comment(ed, ctx->item); break;
     case CCR_ACTION_EDIT_TEXT: {
         ccr_node_id slot = edit_target(ed, ctx);

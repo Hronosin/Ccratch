@@ -37,7 +37,8 @@ typedef struct ccr_prim {
 
 typedef enum ccr_snap_kind {
     CCR_SNAP_AFTER,        /* insert right after statement `ref` */
-    CCR_SNAP_FIRST         /* insert as the first statement of Block `ref` */
+    CCR_SNAP_FIRST,        /* insert as the first statement of Block `ref` */
+    CCR_SNAP_SLOT          /* an expression replaces the empty slot `ref` */
 } ccr_snap_kind;
 
 typedef struct ccr_snap {
@@ -45,6 +46,7 @@ typedef struct ccr_snap {
     ccr_node_id   ref;
     ccr_vec2      at;      /* script-local: where the dropped stack's top-left goes */
     float         width;   /* for the drop indicator */
+    float         height;  /* SLOT: the slot's height */
 } ccr_snap;
 
 typedef struct ccr_blocks {
@@ -74,7 +76,8 @@ void ccr_layout_cache_free(ccr_layout_cache *c);
 
 /*
  * Lays out the script rooted at `root`: a top-level declaration, or a
- * Block flagged CCR_FLAG_LOOSE. Needs an open window: text is measured
+ * Block flagged CCR_FLAG_LOOSE (a stack; with CCR_FLAG_REPORTER, one lone
+ * expression). Needs an open window: text is measured
  * with the GUI font.
  */
 bool ccr_blocks_build_script(ccr_blocks *out, const ccr_ast *ast, ccr_node_id root,

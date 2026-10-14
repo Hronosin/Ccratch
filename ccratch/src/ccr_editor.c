@@ -1,4 +1,5 @@
 #include "ccr_editor.h"
+#include "ccr_codegen.h"
 #include "ccr_lang.h"
 
 #include <math.h>
@@ -17,6 +18,8 @@ static const ccr_node *N(const ccr_editor *ed, ccr_node_id id) { return &ed->ast
 static void begin_change(ccr_editor *ed);
 static void find_snap(ccr_editor *ed);
 static void commit_change(ccr_editor *ed);
+static void forget_sizes(ccr_editor *ed, ccr_node_id id);
+static ccr_node_id new_node(ccr_editor *ed, ccr_node_kind kind, ccr_node_id parent);
 
 /* -------------------------------------------------------- scripts */
 
@@ -140,6 +143,72 @@ static ccr_node_id stack_item_of(const ccr_editor *ed, ccr_node_id id)
         id = p;
     }
     return CCR_NONE;
+}
+
+/* ------------------------------------------------------ expressions */
+
+/* Saving decides what can come out of a slot (ccr_codegen_can_move). */
+static bool expr_movable(const ccr_editor *ed, ccr_node_id id)
+{
+    return ccr_codegen_can_move(&ed->ast, id);
+}
+
+/* The expression a press on `hit` grabs: the innermost movable one around
+ * it, below its statement. CCR_NONE: grab the statement instead. */
+static ccr_node_id expr_to_grab(const ccr_editor *ed, ccr_node_id hit)
+{
+    for (ccr_node_id a = hit; a != CCR_NONE; a = N(ed, a)->parent) {
+        ccr_node_id p = N(ed, a)->parent;
+        if (p == CCR_NONE || N(ed, p)->kind == CCR_NODE_BLOCK)
+            return CCR_NONE;
+        if (expr_movable(ed, a))
+            return a;
+    }
+    return CCR_NONE;
+}
+
+/* A new loose root for one expression, lying on the canvas. */
+static ccr_node_id new_reporter_root(ccr_editor *ed)
+{
+    ccr_node_id loose = ccr_ast_add(&ed->ast, CCR_NODE_BLOCK, CCR_NONE);
+    if (loose == CCR_NONE)
+        return CCR_NONE;
+    ccr_ast_touch(&ed->ast, loose);
+    ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE | CCR_FLAG_REPORTER;
+    return loose;
+}
+
+/* Takes `x` out of its slot, leaving an empty one (a white field) where it
+ * was. Returns the empty slot, or CCR_NONE. */
+static ccr_node_id vacate(ccr_editor *ed, ccr_node_id x)
+{
+    ccr_node_id hole = new_node(ed, CCR_NODE_TEXT, CCR_NONE);
+    if (hole == CCR_NONE)
+        return CCR_NONE;
+    ccr_ast_touch(&ed->ast, hole);
+    ed->ast.nodes[hole].place_b = N(ed, x)->place_b;
+    ed->ast.nodes[hole].place_e = N(ed, x)->place_e;
+    const ccr_node_id parent = N(ed, x)->parent;
+    ccr_ast_insert_after(&ed->ast, x, hole);
+    ccr_ast_unlink(&ed->ast, x);
+    forget_sizes(ed, parent);
+    return hole;
+}
+
+/* Lifts expression `x` out of script `from` into a loose reporter. */
+static uint32_t lift_expr(ccr_editor *ed, ccr_node_id x, uint32_t from)
+{
+    ccr_rect at;
+    if (!ccr_editor_node_rect(ed, x, &at))
+        return UINT32_MAX;
+    ccr_node_id loose = new_reporter_root(ed);
+    if (loose == CCR_NONE || vacate(ed, x) == CCR_NONE)
+        return UINT32_MAX;
+    ccr_ast_append(&ed->ast, loose, x);
+    relayout(ed, from);
+    if (!push_script(ed, loose, (ccr_vec2){ at.x, at.y }))
+        return UINT32_MAX;
+    return ed->script_count - 1;
 }
 
 /* ----------------------------------------------------------- init */
@@ -317,12 +386,15 @@ static void begin_drag(ccr_editor *ed, ccr_vec2 mouse)
     }
 
     ccr_node_id item = stack_item_of(ed, hit);
+    ccr_node_id expr = expr_to_grab(ed, hit);
     uint32_t moving;
     const ccr_node_id root = ed->scripts[si].root;
 
     begin_change(ed);   /* everything until the drop is one undo step */
 
-    if (item != CCR_NONE &&
+    if (expr != CCR_NONE) {
+        moving = lift_expr(ed, expr, si);   /* Scratch: a reporter comes out of its slot */
+    } else if (item != CCR_NONE &&
         !(is_loose_root(ed, root) && N(ed, root)->first_child == item)) {
         moving = tear_off(ed, item, si);    /* part of a stack: take the tail */
     } else {
@@ -637,7 +709,7 @@ ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed)
 
 ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse)
 {
-    ccr_context c = { CCR_NONE, CCR_NONE, CCR_NONE, false, false, false, false };
+    ccr_context c = { CCR_NONE, CCR_NONE, CCR_NONE, CCR_NONE, false, false, false, false };
     if (ed->drag != CCR_DRAG_IDLE)
         return c;
     uint32_t si;
@@ -647,17 +719,21 @@ ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse)
     if (N(ed, c.node)->kind == CCR_NODE_TEXT)
         c.text = c.node;
     c.item = stack_item_of(ed, c.node);
+    const ccr_node_id expr = expr_to_grab(ed, c.node);
+    c.target = expr != CCR_NONE ? expr : c.item;
     if (c.item == CCR_NONE) {
         /* a whole script: only loose stacks can go (the file's own
          * functions and structs stay; deleting those is not supported) */
         ccr_node_id root = ed->scripts[si].root;
         if (is_loose_root(ed, root) && N(ed, root)->first_child != CCR_NONE) {
-            c.item = N(ed, root)->first_child;
+            c.item = c.target = N(ed, root)->first_child;
             c.can_delete = true;
         }
         return c;
     }
-    c.can_delete = c.can_duplicate = c.can_comment = true;
+    const bool reporter = (N(ed, N(ed, c.item)->parent)->flags & CCR_FLAG_REPORTER) != 0;
+    c.can_delete = c.can_duplicate = true;
+    c.can_comment = !reporter;   /* a lone expression is no statement to switch off */
     c.commented = (N(ed, c.item)->flags & CCR_FLAG_COMMENTED) != 0;
     return c;
 }
@@ -679,8 +755,23 @@ static bool is_stack_item(const ccr_editor *ed, ccr_node_id id)
 
 bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
 {
-    if (ed->drag != CCR_DRAG_IDLE || !is_stack_item(ed, item))
+    if (ed->drag != CCR_DRAG_IDLE)
         return false;
+    if (!is_stack_item(ed, item)) {
+        /* an expression in a slot: the slot stays, empty */
+        if (item >= ed->ast.node_count || !expr_movable(ed, item))
+            return false;
+        uint32_t si = script_index_of_root(ed, script_root_of(ed, item));
+        begin_change(ed);
+        if (vacate(ed, item) != CCR_NONE) {
+            ccr_ast_touch(&ed->ast, item);
+            ed->ast.nodes[item].flags |= CCR_FLAG_DEAD;
+        }
+        if (si != UINT32_MAX)
+            relayout(ed, si);
+        commit_change(ed);
+        return true;
+    }
     const ccr_node_id block = N(ed, item)->parent;
     const ccr_node_id root = script_root_of(ed, item);
     uint32_t si = script_index_of_root(ed, root);
@@ -729,7 +820,14 @@ static ccr_node_id clone(ccr_editor *ed, ccr_node_id src, unsigned depth)
 
 bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse)
 {
-    if (ed->drag != CCR_DRAG_IDLE || !is_stack_item(ed, item))
+    if (ed->drag != CCR_DRAG_IDLE || item >= ed->ast.node_count)
+        return false;
+    /* a statement copies as a stack, an expression (in a slot, or lying
+     * loose) as a reporter */
+    const bool stmt = is_stack_item(ed, item);
+    const bool reporter = !stmt ||
+        (N(ed, N(ed, item)->parent)->flags & CCR_FLAG_REPORTER) != 0;
+    if (!stmt && !expr_movable(ed, item))
         return false;
     begin_change(ed);
     ccr_node_id copy = clone(ed, item, 0);
@@ -740,7 +838,7 @@ bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse)
         return false;
     }
     ccr_ast_touch(&ed->ast, loose);
-    ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE;
+    ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE | (reporter ? CCR_FLAG_REPORTER : 0u);
     ccr_ast_append(&ed->ast, loose, copy);
     if (!push_script(ed, loose, mouse)) {
         commit_change(ed);
@@ -757,7 +855,8 @@ bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse)
 
 bool ccr_editor_toggle_comment(ccr_editor *ed, ccr_node_id item)
 {
-    if (ed->drag != CCR_DRAG_IDLE || !is_stack_item(ed, item))
+    if (ed->drag != CCR_DRAG_IDLE || !is_stack_item(ed, item) ||
+        (N(ed, N(ed, item)->parent)->flags & CCR_FLAG_REPORTER))
         return false;
     uint32_t si = script_index_of_root(ed, script_root_of(ed, item));
     begin_change(ed);
@@ -787,9 +886,8 @@ bool ccr_editor_undo(ccr_editor *ed)
     const ccr_change *c = &ed->history[--ed->history_len];
     for (uint32_t i = c->node_count; i-- > 0;)
         ccr_ast_set_links(&ed->ast, &c->before[i]);
-    for (uint32_t i = 0; i < c->node_count; ++i)
-        if (c->before[i].name != c->after[i].name)
-            forget_sizes(ed, c->before[i].id);
+    for (uint32_t i = 0; i < c->node_count; ++i)   /* slots refilled: sizes change */
+        forget_sizes(ed, c->before[i].id);
     /* nodes this step created (a loose stack's root) are gone again */
     for (uint32_t i = 0; i < c->node_count; ++i)
         if (c->before[i].id >= c->nodes_before)
@@ -806,8 +904,7 @@ bool ccr_editor_redo(ccr_editor *ed)
     for (uint32_t i = 0; i < c->node_count; ++i)
         ccr_ast_set_links(&ed->ast, &c->after[i]);
     for (uint32_t i = 0; i < c->node_count; ++i)
-        if (c->before[i].name != c->after[i].name)
-            forget_sizes(ed, c->after[i].id);
+        forget_sizes(ed, c->after[i].id);
     restore_scripts(ed, c->scripts_after, c->na);
     return true;
 }
@@ -830,6 +927,7 @@ static void find_snap(ccr_editor *ed)
     if (!is_loose_root(ed, d->root))
         return;   /* functions and structs do not snap into stacks */
 
+    const bool reporter = (N(ed, d->root)->flags & CCR_FLAG_REPORTER) != 0;
     float best = SNAP_RADIUS * SNAP_RADIUS;
     for (uint32_t i = 0; i < ed->script_count; ++i) {
         if (i == ed->dragged)
@@ -837,6 +935,8 @@ static void find_snap(ccr_editor *ed)
         const ccr_script *s = &ed->scripts[i];
         for (uint32_t k = 0; k < s->blocks.snap_count; ++k) {
             ccr_snap sn = s->blocks.snaps[k];
+            if ((sn.kind == CCR_SNAP_SLOT) != reporter)
+                continue;   /* expressions go into slots, statements into stacks */
             sn.at.x += s->pos.x;
             sn.at.y += s->pos.y;
             float dx = sn.at.x - d->pos.x, dy = sn.at.y - d->pos.y;
@@ -850,9 +950,45 @@ static void find_snap(ccr_editor *ed)
     }
 }
 
+/* The dragged reporter fills the empty slot at the current snap. */
+static void drop_into_slot(ccr_editor *ed)
+{
+    const ccr_node_id loose = ed->scripts[ed->dragged].root;
+    const ccr_node_id hole = ed->snap.ref;
+    const ccr_node_id x = N(ed, loose)->first_child;
+    const ccr_node_id target_root = script_root_of(ed, hole);
+    const ccr_node_id parent = N(ed, hole)->parent;
+    if (x == CCR_NONE || parent == CCR_NONE)
+        return;
+
+    /* it now stands where the slot was in its parent's text */
+    ccr_ast_touch(&ed->ast, x);
+    ed->ast.nodes[x].place_b = N(ed, hole)->place_b;
+    ed->ast.nodes[x].place_e = N(ed, hole)->place_e;
+    ed->ast.nodes[x].flags |= CCR_FLAG_MOVED;
+    ccr_ast_insert_after(&ed->ast, hole, x);
+    ccr_ast_unlink(&ed->ast, hole);
+    ccr_ast_touch(&ed->ast, hole);
+    ed->ast.nodes[hole].flags |= CCR_FLAG_DEAD;
+    forget_sizes(ed, parent);
+
+    ccr_ast_touch(&ed->ast, loose);
+    ed->ast.nodes[loose].flags |= CCR_FLAG_DEAD;
+    remove_script(ed, ed->dragged);
+    ed->dragged = UINT32_MAX;
+
+    uint32_t ti = script_index_of_root(ed, target_root);
+    if (ti != UINT32_MAX)
+        relayout(ed, ti);
+}
+
 /* Moves the dragged loose stack into place at the current snap. */
 static void drop_into_snap(ccr_editor *ed)
 {
+    if (ed->snap.kind == CCR_SNAP_SLOT) {
+        drop_into_slot(ed);
+        return;
+    }
     const ccr_node_id loose = ed->scripts[ed->dragged].root;
     const ccr_node_id target_root = script_root_of(ed, ed->snap.ref);
 
@@ -953,8 +1089,15 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
         bool dragging = ed->drag == CCR_DRAG_MOVING && i == ed->dragged;
         float alpha = (loose && !(dragging && ed->snap_ok)) ? LOOSE_ALPHA : 1.0f;
 
-        /* where the stack will land: a white bar under the snap point */
-        if (dragging && ed->snap_ok) {
+        /* where a reporter will land: the slot lights up */
+        if (dragging && ed->snap_ok && ed->snap.kind == CCR_SNAP_SLOT) {
+            ccr_vec2 p = ccr_canvas_to_screen(cv, ed->snap.at);
+            const float w = ed->snap.width * cv->zoom, h = ed->snap.height * cv->zoom;
+            const float m = 5.0f * (cv->zoom < 1.0f ? 1.0f : cv->zoom);
+            ccr_gui_rect_rounded((ccr_rect){ p.x - m, p.y - m, w + 2 * m, h + 2 * m }, 1.0f,
+                                 0xFFE066FFu);
+            ccr_gui_rect_rounded((ccr_rect){ p.x, p.y, w, h }, 1.0f, 0x2A2E37FFu);
+        } else if (dragging && ed->snap_ok) {
             ccr_vec2 p = ccr_canvas_to_screen(cv, ed->snap.at);
             float w = (ed->snap.width > 60.0f ? ed->snap.width : 60.0f) * cv->zoom;
             float h = 6.0f * (cv->zoom < 1.0f ? 1.0f : cv->zoom);

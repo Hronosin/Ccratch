@@ -736,6 +736,185 @@ static void test_comment_out(void)
     ccr_editor_free(&ed);
 }
 
+/* ------------------------------------------------- expressions in slots */
+
+/* The n-th expression (not a statement) whose own text is exactly `text`. */
+static ccr_node_id expr_node(const ccr_editor *ed, const char *text, int nth)
+{
+    size_t n = strlen(text);
+    for (ccr_node_id i = 0; i < ed->ast.node_count; ++i) {
+        const ccr_node *k = N(ed, i);
+        if (k->parent == CCR_NONE || N(ed, k->parent)->kind == CCR_NODE_BLOCK ||
+            N(ed, k->parent)->kind == CCR_NODE_TRANSLATION_UNIT || (k->flags & CCR_FLAG_DEAD))
+            continue;
+        if (k->src_e - k->src_b == n && memcmp(ed->ast.source + k->src_b, text, n) == 0 &&
+            nth-- == 0)
+            return i;
+    }
+    fprintf(stderr, "no expression \"%s\"\n", text);
+    ++g_failures;
+    return CCR_NONE;
+}
+
+/* The empty slot an expression left behind: its parent's child at `index`. */
+static ccr_node_id hole_in(const ccr_editor *ed, ccr_node_id parent, int index)
+{
+    ccr_node_id h = kid(ed, parent, index);
+    CHECK(h != CCR_NONE && N(ed, h)->kind == CCR_NODE_TEXT &&
+          !*ccr_ast_str(&ed->ast, N(ed, h)->name), "no empty slot where expected");
+    return h;
+}
+
+static void put_in_slot(ccr_editor *ed, ccr_node_id x, ccr_node_id hole)
+{
+    ccr_vec2 at;
+    if (snap_at(ed, CCR_SNAP_SLOT, hole, &at))
+        drag(ed, corner(ed, x), at);
+}
+
+/* Scratch: grab a reporter and it comes out of its slot, leaving it empty. */
+static void test_expression_swap(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id three = expr_node(&ed, "3", 0);   /* if (n > 3) */
+    ccr_node_id ten = expr_node(&ed, "10", 0);    /* while (b < 10) */
+    ccr_node_id gt = N(&ed, three)->parent, lt = N(&ed, ten)->parent;
+
+    drag(&ed, corner(&ed, three), far_away(0));
+    CHECK(N(&ed, three)->parent != gt, "3 did not come out of n > 3");
+    CHECK(ccr_editor_loose_count(&ed) == 1, "3 is not lying on the canvas");
+    ccr_node_id hole1 = hole_in(&ed, gt, 1);
+
+    char err[256];
+    char *text = save_to(&ed, "expr_hole.c", err, sizeof err);
+    CHECK(!text && strstr(err, "empty slot"), "a program with a hole was saved: %s", err);
+    free(text);
+
+    put_in_slot(&ed, ten, hole1);                  /* n > 10, b < _ */
+    CHECK(N(&ed, ten)->parent == gt, "10 did not go into the slot");
+    ccr_node_id hole2 = hole_in(&ed, lt, 1);
+    put_in_slot(&ed, three, hole2);                /* b < 3 */
+    CHECK(N(&ed, three)->parent == lt && ccr_editor_loose_count(&ed) == 0,
+          "3 did not go into the other slot");
+
+    text = save_to(&ed, "expr_swap.c", err, sizeof err);
+    CHECK(text && strstr(text, "if (n > 10)\n        n--;") && strstr(text, "while (b < 3) {"),
+          "swapped expressions not saved: %s", text ? "" : err);
+    CHECK(text && strstr(text, "// braceless then") && strstr(text, "// nothing else here"),
+          "comments around the slots lost");
+    free(text);
+    check_compiles("expr_swap.c");
+
+    for (int i = 0; i < 3; ++i)
+        CHECK(ccr_editor_undo(&ed), "undo %d failed", i);
+    text = generate(&ed);
+    CHECK(text && strcmp(text, ed.ast.source) == 0, "undoing the swaps did not restore the file");
+    free(text);
+    CHECK(ccr_editor_redo(&ed) && ccr_editor_redo(&ed) && ccr_editor_redo(&ed), "redo failed");
+    text = generate(&ed);
+    CHECK(text && strstr(text, "while (b < 3) {"), "redo lost the swap");
+    free(text);
+    ccr_editor_free(&ed);
+}
+
+/* Code made by a macro is grabbed whole: TWICE(n), never the n inside. */
+static void test_expression_macro(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id twice = expr_node(&ed, "TWICE(n)", 0);
+    ccr_node_id two = kid(&ed, twice, 1);          /* the 2 inside ((x) * 2) */
+    ccr_vec2 c = corner(&ed, two);
+    ccr_context ctx = ccr_editor_context(&ed, c);
+    CHECK(ctx.target == twice, "grabbing inside a macro did not take the whole macro "
+          "(hit %u %s, target %u %s, twice %u)", ctx.node,
+          ctx.node != CCR_NONE ? ccr_node_kind_name(N(&ed, ctx.node)->kind) : "-", ctx.target,
+          ctx.target != CCR_NONE ? ccr_node_kind_name(N(&ed, ctx.target)->kind) : "-", twice);
+
+    CHECK(ccr_editor_delete(&ed, ctx.target), "delete of TWICE(n) refused");
+    char err[256];
+    char *text = save_to(&ed, "expr_macro.c", err, sizeof err);
+    CHECK(!text, "saved with an empty slot");
+    free(text);
+    ccr_node_id hole = hole_in(&ed, N(&ed, expr_node(&ed, "counter", 0))->parent, 1);
+    CHECK(ccr_editor_set_text(&ed, hole, "TWICE(n) + 1"), "typing into the slot failed");
+    text = save_to(&ed, "expr_macro.c", err, sizeof err);
+    CHECK(text && strstr(text, "    counter += TWICE(n) + 1;\n"), "typed slot not saved: %s",
+          text ? "" : err);
+    free(text);
+    check_compiles("expr_macro.c");
+    CHECK(ccr_editor_undo(&ed) && ccr_editor_undo(&ed), "undo failed");
+    text = generate(&ed);
+    CHECK(text && strcmp(text, ed.ast.source) == 0, "undo did not restore the macro");
+    free(text);
+    ccr_editor_free(&ed);
+}
+
+/* Duplicate a reporter into a slot; drop one into a palette block. */
+static void test_expression_copy_and_palette(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+
+    /* if from the palette, after `int a = 1, b = 2;` */
+    ccr_node_id hello = stmt(&ed, "int a = 1");
+    ccr_vec2 after;
+    ccr_node_id fresh = spawn_at(&ed, CCR_TEMPLATE_IF, far_away(0));
+    if (snap_at(&ed, CCR_SNAP_AFTER, hello, &after))
+        drag(&ed, corner(&ed, fresh), after);
+    CHECK(N(&ed, fresh)->parent == N(&ed, hello)->parent, "the if did not snap in");
+
+    /* the while's condition goes into the if; a copy of it back into the while */
+    ccr_node_id cond = expr_node(&ed, "b < 10", 0);
+    ccr_node_id loop = N(&ed, cond)->parent;
+    put_in_slot(&ed, cond, kid(&ed, fresh, 0));
+    CHECK(N(&ed, cond)->parent == fresh, "the condition did not go into the palette if");
+
+    CHECK(ccr_editor_duplicate(&ed, cond, corner(&ed, cond)), "duplicate refused");
+    ccr_vec2 at;
+    if (snap_at(&ed, CCR_SNAP_SLOT, hole_in(&ed, loop, 0), &at)) {
+        frame(&ed, (ccr_vec2){ at.x + 10.0f, at.y + 10.0f }, false, false, false);
+        frame(&ed, (ccr_vec2){ at.x + 10.0f, at.y + 10.0f }, true, true, false);
+        frame(&ed, (ccr_vec2){ at.x + 10.0f, at.y + 10.0f }, false, false, true);
+    }
+    CHECK(ed.drag == CCR_DRAG_IDLE && ccr_editor_loose_count(&ed) == 0, "the copy did not land");
+
+    char err[256];
+    char *text = save_to(&ed, "expr_copy.c", err, sizeof err);
+    CHECK(text && strstr(text, "if (b < 10) {") && strstr(text, "while (b < 10) {"),
+          "copied condition not saved: %s", text ? "" : err);
+    free(text);
+    check_compiles("expr_copy.c");
+    ccr_editor_free(&ed);
+}
+
+/* Things that are not reporters do not come out: a declaration's name,
+ * a statement, an initializer whose parent is not plain text. */
+static void test_expression_not_movable(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id bump = stmt(&ed, "counter += TWICE(n)");
+    ccr_context ctx = ccr_editor_context(&ed, corner(&ed, bump));
+    CHECK(ctx.target == bump, "the statement's own corner grabbed an expression");
+
+    /* `{ a, b }` lives in `struct pair {...} pr = ...`, whose struct is not
+     * inside the variable's text: not safe to rewrite, so it stays */
+    ccr_node_id a = expr_node(&ed, "a", 0);
+    ccr_node_id pr_a = CCR_NONE;
+    for (int i = 0; i < 8 && a != CCR_NONE; ++i, a = expr_node(&ed, "a", i))
+        if (N(&ed, N(&ed, a)->parent)->kind == CCR_NODE_INIT_LIST) {
+            pr_a = a;
+            break;
+        }
+    if (pr_a != CCR_NONE) {
+        ctx = ccr_editor_context(&ed, corner(&ed, pr_a));
+        CHECK(ctx.target != pr_a, "an expression in an unsafe place came out");
+    }
+    ccr_editor_free(&ed);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -763,6 +942,10 @@ int main(int argc, char **argv)
     test_delete();
     test_duplicate();
     test_comment_out();
+    test_expression_swap();
+    test_expression_macro();
+    test_expression_copy_and_palette();
+    test_expression_not_movable();
 
     ccr_gui_shutdown();
     if (g_failures)

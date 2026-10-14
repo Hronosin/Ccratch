@@ -138,6 +138,9 @@ ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed);
 typedef struct ccr_context {
     ccr_node_id node;        /* topmost node under the mouse, or CCR_NONE */
     ccr_node_id item;        /* the statement in a stack it belongs to */
+    ccr_node_id target;      /* what Delete/Duplicate act on: the expression
+                                under the mouse if it can come out of its
+                                slot, else `item` */
     ccr_node_id text;        /* a white text field, if that is what was hit */
     bool        can_delete;
     bool        can_duplicate;
@@ -148,11 +151,13 @@ typedef struct ccr_context {
 ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse);
 
 /* Deletes one block from its stack; the blocks under it move up. A whole
- * loose stack goes if its top block is picked. One undo step. */
+ * loose stack goes if its top block is picked. An expression in a slot
+ * goes and leaves the slot empty. One undo step. */
 bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item);
 
-/* Copies a block; the copy follows the mouse until the next click, then
- * snaps or lies loose like any dropped block. */
+/* Copies a block (a statement, or an expression in a slot); the copy
+ * follows the mouse until the next click, then snaps or lies loose like
+ * any dropped block. */
 bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse);
 
 /* Comments a block out (grey, saved as // lines), or back in. */

@@ -7,6 +7,11 @@
  *
  * Blocks that cannot be rebuilt safely (#if between statements, blocks
  * made by macros) are left alone and counted.
+ *
+ * Then expressions: every one that may be taken out of its slot is (1)
+ * marked as moved into that same slot, and (2) replaced by typed text
+ * equal to its own, as if deleted and typed back. Both must give back the
+ * file byte for byte: what is copied around a slot is exactly right.
  */
 #include "ccr_ast.h"
 #include "ccr_codegen.h"
@@ -15,6 +20,79 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Generates, and compares with the original file. */
+static int same_as_source(const ccr_ast *ast, const char *what, const char *path)
+{
+    char *text = NULL, err[256];
+    size_t len = 0;
+    if (!ccr_codegen(ast, &text, &len, err, sizeof err)) {
+        fprintf(stderr, "%s: %s: codegen refused: %s\n", path, what, err);
+        return 1;
+    }
+    int bad = len != ast->source_len || memcmp(text, ast->source, len) != 0;
+    if (bad) {
+        size_t i = 0;
+        while (i < len && i < ast->source_len && text[i] == ast->source[i])
+            ++i;
+        fprintf(stderr, "%s: %s: differs at byte %zu: \"%.40s\" vs \"%.40s\"\n", path, what, i,
+                text + i, ast->source + i);
+    }
+    free(text);
+    return bad;
+}
+
+static int expressions(const char *path, const char *const *args, int nargs)
+{
+    ccr_ast ast;
+    ccr_ast_init(&ast);
+    if (!ccr_parse_file(path, args, nargs, &ast))
+        return 1;
+    unsigned movable = 0;
+    for (ccr_node_id i = 0; i < ast.node_count; ++i)
+        if (ccr_codegen_can_move(&ast, i)) {
+            ast.nodes[i].flags |= CCR_FLAG_MOVED;
+            ++movable;
+        }
+    int fails = same_as_source(&ast, "every expression moved into its own slot", path);
+    ccr_ast_free(&ast);
+
+    ccr_ast_init(&ast);
+    if (!ccr_parse_file(path, args, nargs, &ast))
+        return 1;
+    unsigned retyped = 0;
+    const uint32_t parsed = ast.node_count;
+    for (ccr_node_id i = 0; i < parsed; ++i) {
+        if (!ccr_codegen_can_move(&ast, i))
+            continue;
+        ccr_node_id up = i;   /* inside one retyped already: not in the file any more */
+        while (ast.nodes[up].parent != CCR_NONE)
+            up = ast.nodes[up].parent;
+        if (up != 0)
+            continue;
+        char text[4096];
+        uint32_t n = ast.nodes[i].src_e - ast.nodes[i].src_b;
+        if (n >= sizeof text)
+            continue;
+        memcpy(text, ast.source + ast.nodes[i].src_b, n);
+        text[n] = '\0';
+        ccr_node_id t = ccr_ast_add(&ast, CCR_NODE_TEXT, CCR_NONE);
+        if (t == CCR_NONE)
+            return 1;
+        ast.nodes[t].flags |= CCR_FLAG_NEW;
+        ast.nodes[t].name = ccr_ast_intern(&ast, text);
+        ast.nodes[t].place_b = ast.nodes[i].place_b;
+        ast.nodes[t].place_e = ast.nodes[i].place_e;
+        ccr_ast_insert_after(&ast, i, t);
+        ccr_ast_unlink(&ast, i);
+        ++retyped;
+    }
+    fails += same_as_source(&ast, "every expression deleted and typed back", path);
+    printf("%s: %u expressions can move, %u retyped, %s\n", path, movable, retyped,
+           fails ? "MISMATCH" : "byte for byte");
+    ccr_ast_free(&ast);
+    return fails;
+}
 
 static void histogram(const ccr_ast *ast, unsigned *h)
 {
@@ -107,5 +185,6 @@ int main(int argc, char **argv)
            fails ? "MISMATCH" : "same tree");
     ccr_ast_free(&back);
     ccr_ast_free(&ast);
+    fails += expressions(in_path, args, nargs);
     return fails ? 1 : 0;
 }

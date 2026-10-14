@@ -67,7 +67,7 @@ static bool has_dirty(gen *g, ccr_node_id id, unsigned depth)
 {
     if (g->dirty[id])
         return g->dirty[id] == 2;
-    bool d = (N(g, id)->flags & (CCR_FLAG_DIRTY | CCR_FLAG_NEW)) != 0;
+    bool d = (N(g, id)->flags & (CCR_FLAG_DIRTY | CCR_FLAG_NEW | CCR_FLAG_MOVED)) != 0;
     if (depth < 4000)
         for (ccr_node_id c = N(g, id)->first_child; c != CCR_NONE && !d; c = N(g, c)->next_sibling)
             d = has_dirty(g, c, depth + 1);
@@ -242,6 +242,14 @@ static void print_new(gen *g, ccr_node_id id, unsigned depth)
 
     switch (n->kind) {
     case CCR_NODE_TEXT:
+        if (!statement && !*ccr_ast_str(g->ast, n->name) &&
+            (p == CCR_NONE || N(g, p)->kind != CCR_NODE_FOR)) {   /* for (;;) is fine */
+            uint32_t line = 0;
+            for (ccr_node_id a = p; a != CCR_NONE && !line; a = N(g, a)->parent)
+                line = N(g, a)->line;
+            fail(g, ccr_tr(CCR_T_GEN_EMPTY_SLOT), line);
+            break;
+        }
         puts_(g, ccr_ast_str(g->ast, n->name));
         if (statement)
             puts_(g, ";");
@@ -312,7 +320,8 @@ static bool lives_in_gaps(ccr_node_kind k)
     return k == CCR_NODE_MACRO_USE || k == CCR_NODE_INCLUDE || k == CCR_NODE_MACRO_DEFINE;
 }
 
-/* Children sorted by where they start in the file (insertion sort: usually sorted). */
+/* Children sorted by the place they fill in the parent's text (insertion
+ * sort: usually sorted already). */
 static ccr_node_id *sorted_children(gen *g, ccr_node_id id, uint32_t *count)
 {
     uint32_t n = 0;
@@ -327,7 +336,7 @@ static ccr_node_id *sorted_children(gen *g, ccr_node_id id, uint32_t *count)
     uint32_t i = 0;
     for (ccr_node_id c = N(g, id)->first_child; c != CCR_NONE; c = N(g, c)->next_sibling) {
         uint32_t j = i++;
-        while (j > 0 && N(g, v[j - 1])->src_b > N(g, c)->src_b) {
+        while (j > 0 && N(g, v[j - 1])->place_b > N(g, c)->place_b) {
             v[j] = v[j - 1];
             --j;
         }
@@ -361,34 +370,128 @@ static void emit(gen *g, ccr_node_id id, unsigned depth)
     }
 
     /* unchanged node with a change somewhere inside: copy the text between
-     * its children, and go down into them */
+     * its children's places, and fill each place with that child */
     uint32_t count;
     ccr_node_id *kids = sorted_children(g, id, &count);
     uint32_t cur = n->src_b;
     for (uint32_t i = 0; i < count && g->ok; ++i) {
         const ccr_node *k = N(g, kids[i]);
         const bool dirty = has_dirty(g, kids[i], 0);
-        if (lives_in_gaps(k->kind) || k->src_e <= k->src_b) {
+        if (lives_in_gaps(k->kind) || k->place_e <= k->place_b) {
             if (dirty)
                 fail(g, ccr_tr(CCR_T_GEN_LOST), k->line);
             continue;
         }
-        if (k->src_b < cur) {
-            if (k->src_e <= cur && !dirty)
+        if (k->place_b < cur) {
+            if (k->place_e <= cur && !dirty)
                 continue;   /* inside text already copied (struct inside typedef) */
             fail(g, "line %u: overlapping code (from a macro?) around a change", k->line);
             break;
         }
-        if (k->src_e > n->src_e) {
+        if (k->place_e > n->src_e) {
             fail(g, "line %u: code outside its parent (from a macro?) around a change", k->line);
             break;
         }
-        put_src(g, cur, k->src_b);
+        put_src(g, cur, k->place_b);
         emit(g, kids[i], depth + 1);
-        cur = k->src_e;
+        cur = k->place_e;
     }
     put_src(g, cur, n->src_e);
     free(kids);
+}
+
+/* --------------------------------------------- what may be moved */
+
+static const ccr_node *AN(const ccr_ast *a, ccr_node_id id) { return &a->nodes[id]; }
+
+static bool is_expr_kind(ccr_node_kind k)
+{
+    switch (k) {
+    case CCR_NODE_CALL: case CCR_NODE_BINARY_OP: case CCR_NODE_UNARY_OP:
+    case CCR_NODE_TERNARY: case CCR_NODE_REF: case CCR_NODE_MEMBER:
+    case CCR_NODE_INDEX: case CCR_NODE_CAST: case CCR_NODE_SIZEOF:
+    case CCR_NODE_INIT_LIST: case CCR_NODE_COMPOUND_LIT: case CCR_NODE_MACRO_VALUE:
+    case CCR_NODE_TEXT:
+    case CCR_NODE_INT_LIT: case CCR_NODE_FLOAT_LIT:
+    case CCR_NODE_CHAR_LIT: case CCR_NODE_STRING_LIT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * Saving can rewrite one child of `id` only if its children sit in its
+ * text one after another, each inside it: then the text between them is
+ * the parent's own (operators, commas, parens). Code made by a macro
+ * breaks this: tokens of the macro's body all claim the whole macro call,
+ * its arguments claim nothing at all. That is left alone.
+ */
+static bool spliceable(const ccr_ast *ast, ccr_node_id id)
+{
+    const ccr_node *n = AN(ast, id);
+    if (n->flags & CCR_FLAG_NEW)
+        return true;   /* printed, not spliced */
+    if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_DIRTY))
+        return !(n->flags & CCR_FLAG_UNSAFE_GAP);   /* rebuilt statement by statement */
+    if (n->src_e <= n->src_b)
+        return false;
+    uint32_t cur = n->src_b;
+    for (ccr_node_id c = n->first_child; c != CCR_NONE; c = AN(ast, c)->next_sibling) {
+        const ccr_node *k = AN(ast, c);
+        if (k->place_e <= k->place_b || k->place_b < cur || k->place_e > n->src_e)
+            return false;
+        /* a child that is all of its parent: the parent has no text of its
+         * own (a macro), unless it is the Block around a braceless body */
+        if (n->kind != CCR_NODE_BLOCK && !(k->flags & CCR_FLAG_NEW) &&
+            k->place_b == n->src_b && k->place_e == n->src_e)
+            return false;
+        cur = k->place_e;
+    }
+    return true;
+}
+
+/*
+ * Can `id` be taken out of the slot it fills? It must be an expression in
+ * an expression or statement (not a statement itself), with text of its own
+ * to carry, and everything from its parent up to its function must be
+ * safe to rewrite.
+ */
+bool ccr_codegen_can_move(const ccr_ast *ast, ccr_node_id id)
+{
+    const ccr_node *n = AN(ast, id);
+    if (!is_expr_kind(n->kind) || n->parent == CCR_NONE)
+        return false;
+    if (AN(ast, n->parent)->kind == CCR_NODE_BLOCK)
+        return false;   /* a statement, or a loose reporter itself */
+    if (n->kind == CCR_NODE_TEXT ? !*ccr_ast_str(ast, n->name)
+                                 : (!(n->flags & CCR_FLAG_NEW) && n->src_e <= n->src_b))
+        return false;   /* an empty slot: nothing to take */
+    /* everything around it is spliced on the way down to it, up to its
+     * function (blocks included: a block a macro made has statements that
+     * overlap); the file itself and loose roots are not */
+    ccr_node_id top = CCR_NONE;
+    for (ccr_node_id a = n->parent; a != CCR_NONE && AN(ast, a)->parent != CCR_NONE;
+         a = AN(ast, a)->parent) {
+        if (!spliceable(ast, a))
+            return false;
+        top = a;
+    }
+    /* and the file must hold its top-level declaration on its own: not
+     * `typedef enum {...} name;`, where the enum and the typedef share text */
+    if (top != CCR_NONE && AN(ast, top)->parent != CCR_NONE &&
+        AN(ast, AN(ast, top)->parent)->kind == CCR_NODE_TRANSLATION_UNIT) {
+        const ccr_node *t = AN(ast, top);
+        for (ccr_node_id c = AN(ast, t->parent)->first_child; c != CCR_NONE;
+             c = AN(ast, c)->next_sibling) {
+            const ccr_node *k = AN(ast, c);
+            if (c == top || lives_in_gaps(k->kind) || k->place_e <= k->place_b)
+                continue;
+            if (k->place_b < t->place_e && t->place_b < k->place_e)
+                return false;
+        }
+    }
+    return true;
 }
 
 bool ccr_codegen(const ccr_ast *ast, char **out, size_t *out_len, char *err, size_t err_cap)
