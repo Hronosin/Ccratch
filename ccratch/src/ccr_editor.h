@@ -39,6 +39,23 @@ typedef struct ccr_change {
     uint32_t        nodes_before;     /* nodes from here on were created by it */
 } ccr_change;
 
+/* What the palette offers. */
+typedef enum ccr_template {
+    CCR_TEMPLATE_CODE,       /* a line of code: call, assignment, declaration */
+    CCR_TEMPLATE_IF,
+    CCR_TEMPLATE_IF_ELSE,
+    CCR_TEMPLATE_WHILE,
+    CCR_TEMPLATE_FOR,
+    CCR_TEMPLATE_DO_WHILE,
+    CCR_TEMPLATE_RETURN,
+    CCR_TEMPLATE_BREAK,
+    CCR_TEMPLATE_CONTINUE,
+    CCR_TEMPLATE_COUNT
+} ccr_template;
+
+/* Palette label, e.g. "if / else". */
+const char *ccr_template_label(ccr_template t);
+
 typedef enum ccr_drag_state {
     CCR_DRAG_IDLE,
     CCR_DRAG_PRESSED,      /* button down, not moved far enough yet */
@@ -51,6 +68,7 @@ typedef struct ccr_editor_input {
     bool     down;
     bool     released;
     float    zoom;         /* so "moved far enough" is in screen pixels */
+    bool     over_trash;   /* over the palette: a stack dropped here is deleted */
 } ccr_editor_input;
 
 typedef struct ccr_editor {
@@ -79,6 +97,9 @@ typedef struct ccr_editor {
     ccr_placed    *pending;
     uint32_t       pending_count;
     uint32_t       pending_nodes;
+
+    /* a text slot was clicked: the app opens a text box for it */
+    ccr_node_id    edit_request;
 } ccr_editor;
 
 /* Takes ownership of `ast` (parsed, bodies wrapped). Needs an open window. */
@@ -96,6 +117,19 @@ bool ccr_editor_node_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out)
 
 /* How many loose stacks lie on the canvas. */
 uint32_t ccr_editor_loose_count(const ccr_editor *ed);
+
+/*
+ * Takes a new block from the palette: it appears under the mouse (world
+ * coordinates) and is being dragged, as if picked up from the canvas.
+ * Call while the mouse button is down; normal updates carry on the drag.
+ */
+bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse);
+
+/* Text slot under edit: set its code (one undo step). */
+bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text);
+
+/* The text slot to edit after a click, or CCR_NONE. Clears the request. */
+ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed);
 
 /* Undo/redo one drag. False if there is nothing to do (or a drag is on). */
 bool ccr_editor_undo(ccr_editor *ed);

@@ -61,7 +61,7 @@ static ccr_node_id stmt(const ccr_editor *ed, const char *prefix)
 
 static void frame(ccr_editor *ed, ccr_vec2 m, bool pressed, bool down, bool released)
 {
-    ccr_editor_input in = { m, pressed, down, released, 1.0f };
+    ccr_editor_input in = { m, pressed, down, released, 1.0f, false };
     ccr_editor_update(ed, &in);
 }
 
@@ -442,6 +442,186 @@ static void test_undo_and_save_point(void)
     ccr_editor_free(&ed);
 }
 
+/* ---------------------------------------------------------- palette */
+
+/* Takes a block from the palette and drops it so its top-left lands on
+ * `target` (a snap point from snap_at, which adds the 6-unit grip). */
+static ccr_node_id spawn_at(ccr_editor *ed, ccr_template t, ccr_vec2 target)
+{
+    ccr_vec2 start = far_away(-900.0f);
+    CHECK(ccr_editor_spawn(ed, t, start), "could not take %s from the palette",
+          ccr_template_label(t));
+    ccr_node_id loose = ed->scripts[ed->script_count - 1].root;
+    ccr_node_id made = ed->ast.nodes[loose].first_child;
+    /* spawn holds the block 16 units in from its corner */
+    ccr_vec2 drop = { target.x - 6.0f + 16.0f, target.y - 6.0f + 16.0f };
+    for (int i = 1; i <= 6; ++i) {
+        float k = (float)i / 6.0f;
+        frame(ed, (ccr_vec2){ start.x + (drop.x - start.x) * k, start.y + (drop.y - start.y) * k },
+              false, true, false);
+    }
+    frame(ed, drop, false, false, true);
+    return made;
+}
+
+static ccr_node_id kid(const ccr_editor *ed, ccr_node_id id, int index)
+{
+    ccr_node_id c = N(ed, id)->first_child;
+    while (c != CCR_NONE && index-- > 0)
+        c = N(ed, c)->next_sibling;
+    return c;
+}
+
+/* new if + code line, an old statement moved in; new for loop */
+static void test_palette_blocks(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_vec2 at;
+
+    /* `if` after the struct declaration, condition typed in */
+    snap_at(&ed, CCR_SNAP_AFTER, stmt(&ed, "struct pair"), &at);
+    ccr_node_id iff = spawn_at(&ed, CCR_TEMPLATE_IF, at);
+    CHECK(N(&ed, iff)->kind == CCR_NODE_IF, "the palette gave something else");
+    CHECK(ccr_editor_loose_count(&ed) == 0, "the new if did not snap in");
+    ccr_rect empty_slot, typed_slot, undone_slot;
+    ccr_editor_node_rect(&ed, kid(&ed, iff, 0), &empty_slot);
+    CHECK(ccr_editor_set_text(&ed, kid(&ed, iff, 0), "n > 100"), "could not type the condition");
+    ccr_editor_node_rect(&ed, kid(&ed, iff, 0), &typed_slot);
+    CHECK(typed_slot.w > empty_slot.w + 40.0f, "the field did not grow with its text (%.0f -> %.0f)",
+          empty_slot.w, typed_slot.w);
+    ccr_editor_undo(&ed);
+    ccr_editor_node_rect(&ed, kid(&ed, iff, 0), &undone_slot);
+    CHECK(undone_slot.w == empty_slot.w, "undo did not shrink the field back");
+    ccr_editor_redo(&ed);
+
+    /* printf("hello") with its comment goes inside it */
+    ccr_node_id hello = stmt(&ed, "printf(\"hello");
+    lift_one(&ed, hello, 0);
+    ccr_node_id then = kid(&ed, iff, 1);
+    if (snap_at(&ed, CCR_SNAP_FIRST, then, &at))
+        drag(&ed, corner(&ed, hello), at);
+    CHECK(N(&ed, hello)->parent == then, "printf did not go into the new if");
+
+    /* and a code line under it */
+    snap_at(&ed, CCR_SNAP_AFTER, hello, &at);
+    ccr_node_id line = spawn_at(&ed, CCR_TEMPLATE_CODE, at);
+    CHECK(N(&ed, line)->parent == then, "the code line did not go into the if");
+    ccr_editor_set_text(&ed, line, "n = 100");
+
+    /* a for loop before return, with a line inside */
+    snap_at(&ed, CCR_SNAP_AFTER, stmt(&ed, "do b--;"), &at);
+    ccr_node_id loop = spawn_at(&ed, CCR_TEMPLATE_FOR, at);
+    snap_at(&ed, CCR_SNAP_FIRST, kid(&ed, loop, 3), &at);
+    ccr_node_id inner = spawn_at(&ed, CCR_TEMPLATE_CODE, at);
+    ccr_editor_set_text(&ed, inner, "b += i");
+    CHECK(ccr_editor_loose_count(&ed) == 0, "something was left loose");
+
+    char err[256];
+    char *text = save_to(&ed, "palette.c", err, sizeof err);
+    CHECK(text != NULL, "save failed: %s", err);
+    if (text) {
+        CHECK(strstr(text, "    struct pair { int x; int y; } pr = { a, b };\n"
+                           "    if (n > 100) {\n"
+                           "        // first: say hello\n"
+                           "        printf(\"hello\\n\");\n"
+                           "        n = 100;\n"
+                           "    }\n"
+                           "\n"
+                           "    /* bump it */\n") != NULL, "the new if is not as expected");
+        CHECK(strstr(text, "    do b--; while (b > 5);\n"
+                           "    for (int i = 0; i < n; i++) {\n"
+                           "        b += i;\n"
+                           "    }\n"
+                           "\n"
+                           "    return a + b") != NULL, "the new for is not as expected");
+        check_comments_kept(&ed, text);
+        free(text);
+        check_compiles("palette.c");
+    }
+
+    /* all of it undone: the file as it was */
+    while (ccr_editor_undo(&ed))
+        ;
+    char *back = generate(&ed);
+    CHECK(back && strcmp(back, ed.ast.source) == 0, "undoing palette work did not restore the file");
+    free(back);
+    ccr_editor_free(&ed);
+}
+
+/* every palette block prints as valid C */
+static void test_every_template(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    static const char *const fill[] = { "n++", "n > 0", "n > 0", "n > 0", NULL, "n > 0", "n", NULL, NULL };
+    ccr_node_id after = stmt(&ed, "do b--;");
+    for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t) {
+        if (t == CCR_TEMPLATE_BREAK || t == CCR_TEMPLATE_CONTINUE)
+            continue;   /* need a loop around them; covered inside the while below */
+        ccr_vec2 at;
+        snap_at(&ed, CCR_SNAP_AFTER, after, &at);
+        ccr_node_id made = spawn_at(&ed, (ccr_template)t, at);
+        CHECK(N(&ed, made)->parent == N(&ed, after)->parent, "%s did not snap",
+              ccr_template_label((ccr_template)t));
+        ccr_node_id slot = t == CCR_TEMPLATE_CODE ? made
+                         : t == CCR_TEMPLATE_DO_WHILE ? kid(&ed, made, 1)
+                         : t == CCR_TEMPLATE_FOR ? CCR_NONE : kid(&ed, made, 0);
+        if (slot != CCR_NONE && fill[t])
+            ccr_editor_set_text(&ed, slot, fill[t]);
+        if (t == CCR_TEMPLATE_WHILE) {   /* break and continue inside it */
+            ccr_vec2 in;
+            snap_at(&ed, CCR_SNAP_FIRST, kid(&ed, made, 1), &in);
+            ccr_node_id brk = spawn_at(&ed, CCR_TEMPLATE_BREAK, in);
+            snap_at(&ed, CCR_SNAP_AFTER, brk, &in);
+            spawn_at(&ed, CCR_TEMPLATE_CONTINUE, in);
+        }
+        if (t != CCR_TEMPLATE_RETURN)
+            after = made;   /* keep the return last, the rest would be dead code */
+    }
+
+    char err[256];
+    char *text = save_to(&ed, "templates.c", err, sizeof err);
+    CHECK(text != NULL, "save failed: %s", err);
+    if (text) {
+        CHECK(strstr(text, "if (n > 0) {\n    }") && strstr(text, "} else {\n    }") &&
+              strstr(text, "while (n > 0) {\n        break;\n        continue;\n    }") &&
+              strstr(text, "do {\n    } while (n > 0);") && strstr(text, "return n;") &&
+              strstr(text, "n++;"), "a template printed wrong");
+        free(text);
+        check_compiles("templates.c");
+    }
+    ccr_editor_free(&ed);
+}
+
+/* thrown onto the palette: gone; from the code too */
+static void test_trash(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_vec2 start = far_away(0);
+    ccr_editor_spawn(&ed, CCR_TEMPLATE_WHILE, start);
+    ccr_editor_input in = { start, false, false, true, 1.0f, true };
+    ccr_editor_update(&ed, &in);
+    CHECK(ccr_editor_loose_count(&ed) == 0, "a block dropped on the palette stayed");
+
+    ccr_node_id bump = stmt(&ed, "counter += TWICE(n)");
+    lift_one(&ed, bump, 0);
+    ccr_vec2 c = corner(&ed, bump);
+    frame(&ed, c, true, true, false);
+    frame(&ed, (ccr_vec2){ c.x + 50.0f, c.y }, false, true, false);
+    ccr_editor_input drop = { { c.x + 60.0f, c.y }, false, false, true, 1.0f, true };
+    ccr_editor_update(&ed, &drop);
+    CHECK(ccr_editor_loose_count(&ed) == 0, "the thrown-away statement is still loose");
+
+    char err[256];
+    char *text = save_to(&ed, "trash.c", err, sizeof err);
+    CHECK(text && !strstr(text, "counter += TWICE"), "the deleted statement was saved");
+    free(text);
+    CHECK(ccr_editor_undo(&ed) && ccr_editor_loose_count(&ed) == 1, "undo did not bring it back");
+    ccr_editor_free(&ed);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -463,6 +643,9 @@ int main(int argc, char **argv)
     test_refuses_directives();
     test_undo_everything();
     test_undo_and_save_point();
+    test_palette_blocks();
+    test_every_template();
+    test_trash();
 
     ccr_gui_shutdown();
     if (g_failures)

@@ -32,6 +32,7 @@ typedef enum ccr_key {
     CCR_KEY_S,
     CCR_KEY_Y,
     CCR_KEY_Z,
+    CCR_KEY_ESCAPE,
     CCR_KEY_F5
 } ccr_key;
 
@@ -74,6 +75,13 @@ float ccr_gui_text_width(const char *text, float size);
 
 /* Widgets */
 bool  ccr_gui_button(ccr_rect r, const char *label);
+
+/* A text box being edited. Returns true when editing ends (Enter, or a
+ * click outside it); `buf` holds the text. Every character typed during a
+ * frame is taken, so fast typing never loses letters. Call
+ * ccr_gui_textbox_reset() when a new edit starts (cursor goes to the end). */
+bool  ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size);
+void  ccr_gui_textbox_reset(void);
 
 #ifdef __cplusplus
 }

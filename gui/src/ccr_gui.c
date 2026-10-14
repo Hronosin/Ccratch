@@ -2,6 +2,9 @@
 
 #include <raylib.h>
 #include <rlgl.h>
+#include <GLFW/glfw3.h>
+
+#include <string.h>
 
 #define RAYGUI_IMPLEMENTATION
 #include <raygui.h>
@@ -36,6 +39,13 @@ static int button_to_rl(ccr_mouse_button b)
 bool ccr_gui_init(int width, int height, const char *title)
 {
     SetTraceLogLevel(LOG_WARNING);
+
+    /* raylib 5.5 carries on after GLFW fails to reach a display and then
+     * calls OpenGL that was never loaded: a segfault. Ask GLFW first. */
+    if (!glfwInit())
+        return false;
+    glfwTerminate();
+
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
     InitWindow(width, height, title);
     if (!IsWindowReady())
@@ -181,6 +191,7 @@ bool ccr_gui_key_pressed(ccr_key key)
     switch (key) {
     case CCR_KEY_HOME: return IsKeyPressed(KEY_HOME);
     case CCR_KEY_S:    return IsKeyPressed(KEY_S);
+    case CCR_KEY_ESCAPE: return IsKeyPressed(KEY_ESCAPE);
     case CCR_KEY_Y:    return IsKeyPressed(KEY_Y) || IsKeyPressedRepeat(KEY_Y);
     case CCR_KEY_Z:    return IsKeyPressed(KEY_Z) || IsKeyPressedRepeat(KEY_Z);
     case CCR_KEY_F5:   return IsKeyPressed(KEY_F5);
@@ -218,4 +229,120 @@ bool ccr_gui_file_dropped(char *out, unsigned int cap)
 bool ccr_gui_button(ccr_rect r, const char *label)
 {
     return GuiButton(rect_to_rl(r), label) != 0;
+}
+
+/* ---- text box ----
+ * Not raygui's: it reads one character per frame, and raylib empties its
+ * character queue every frame, so two keys landing in one frame lost one. */
+
+static int g_tb_cursor = -1;   /* byte offset; -1 = put it at the end */
+
+void ccr_gui_textbox_reset(void)
+{
+    g_tb_cursor = -1;
+}
+
+static bool key_hit(int key)
+{
+    return IsKeyPressed(key) || IsKeyPressedRepeat(key);
+}
+
+/* start of the UTF-8 codepoint before / after byte `i` */
+static int utf8_prev(const char *s, int i)
+{
+    if (i <= 0)
+        return 0;
+    --i;
+    while (i > 0 && ((unsigned char)s[i] & 0xC0) == 0x80)
+        --i;
+    return i;
+}
+
+static int utf8_next(const char *s, int i, int len)
+{
+    if (i >= len)
+        return len;
+    ++i;
+    while (i < len && ((unsigned char)s[i] & 0xC0) == 0x80)
+        ++i;
+    return i;
+}
+
+bool ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size)
+{
+    int len = (int)strlen(buf);
+    if (g_tb_cursor < 0 || g_tb_cursor > len)
+        g_tb_cursor = len;
+    int cur = g_tb_cursor;
+
+    /* everything typed this frame */
+    for (int cp = GetCharPressed(); cp > 0; cp = GetCharPressed()) {
+        if (cp < 32)
+            continue;
+        int n = 0;
+        const char *enc = CodepointToUTF8(cp, &n);
+        if (len + n >= cap)
+            continue;
+        memmove(buf + cur + n, buf + cur, (size_t)(len - cur + 1));
+        memcpy(buf + cur, enc, (size_t)n);
+        cur += n;
+        len += n;
+    }
+    /* Ctrl+V: paste, on one line */
+    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_V)) {
+        const char *clip = GetClipboardText();
+        for (const char *c = clip; c && *c && len + 1 < cap; ++c) {
+            char ch = (*c == '\n' || *c == '\r' || *c == '\t') ? ' ' : *c;
+            memmove(buf + cur + 1, buf + cur, (size_t)(len - cur + 1));
+            buf[cur++] = ch;
+            ++len;
+        }
+    }
+    if (key_hit(KEY_BACKSPACE) && cur > 0) {
+        int p = utf8_prev(buf, cur);
+        memmove(buf + p, buf + cur, (size_t)(len - cur + 1));
+        len -= cur - p;
+        cur = p;
+    }
+    if (key_hit(KEY_DELETE) && cur < len) {
+        int nx = utf8_next(buf, cur, len);
+        memmove(buf + cur, buf + nx, (size_t)(len - nx + 1));
+        len -= nx - cur;
+    }
+    if (key_hit(KEY_LEFT))  cur = utf8_prev(buf, cur);
+    if (key_hit(KEY_RIGHT)) cur = utf8_next(buf, cur, len);
+    if (IsKeyPressed(KEY_HOME)) cur = 0;
+    if (IsKeyPressed(KEY_END))  cur = len;
+    g_tb_cursor = cur;
+
+    /* draw: white field, accent border, text scrolled so the cursor shows */
+    Font font = GetFontDefault();
+    const float spacing = font_size / 10.0f;
+    char saved = buf[cur];
+    buf[cur] = '\0';
+    float cursor_x = MeasureTextEx(font, buf, font_size, spacing).x;
+    buf[cur] = saved;
+    const float pad = 8.0f;
+    float scroll = cursor_x - (r.w - pad * 2.0f);
+    if (scroll < 0.0f)
+        scroll = 0.0f;
+
+    DrawRectangleRec(rect_to_rl(r), (Color){ 0x2E, 0x8E, 0xB8, 0xFF });
+    DrawRectangleRec((Rectangle){ r.x + 2, r.y + 2, r.w - 4, r.h - 4 }, RAYWHITE);
+    BeginScissorMode((int)r.x + 2, (int)r.y + 2, (int)r.w - 4, (int)r.h - 4);
+    const float ty = r.y + (r.h - font_size) * 0.5f;
+    DrawTextEx(font, buf, (Vector2){ r.x + pad - scroll, ty }, font_size, spacing,
+               (Color){ 0x30, 0x34, 0x40, 0xFF });
+    if (((int)(GetTime() * 2.0)) % 2 == 0)   /* blinking cursor */
+        DrawRectangleRec((Rectangle){ r.x + pad - scroll + cursor_x, ty, 2.0f, font_size },
+                         (Color){ 0x30, 0x34, 0x40, 0xFF });
+    EndScissorMode();
+
+    Vector2 m = GetMousePosition();
+    bool outside = !CheckCollisionPointRec(m, rect_to_rl(r));
+    bool done = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
+                (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && outside);
+    if (done)
+        g_tb_cursor = -1;
+    return done;
 }

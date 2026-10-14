@@ -75,6 +75,8 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(FLOAT_LIT,        "Float")              \
     X(CHAR_LIT,         "Char")               \
     X(STRING_LIT,       "String")             \
+    /* code typed into a block from the palette, kept as text */ \
+    X(TEXT,             "Text")               \
     /* anything we do not model yet ("here be dragons") */ \
     X(OTHER,            "Other")
 
@@ -135,6 +137,8 @@ typedef struct ccr_node {
                                             comments between its statements
                                             (#if, #define...): cannot be
                                             rebuilt safely */
+#define CCR_FLAG_NEW         (1u << 11)  /* made in the editor (palette): has
+                                            no source text, saving prints it */
 #define CCR_FLAG_BLANK_BEFORE (1u << 10) /* statement had an empty line above
                                             it: the paragraph break moves
                                             with it */
@@ -159,6 +163,7 @@ typedef struct ccr_node_links {
     ccr_node_id id;
     ccr_node_id parent, first_child, last_child, next_sibling;
     uint32_t    flags;
+    ccr_str     name;   /* text typed into a palette block's slot */
 } ccr_node_links;
 
 /*

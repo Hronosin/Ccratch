@@ -245,6 +245,7 @@ static void expr_look(const layout *L, ccr_node_id id, shape *sh, category *cat)
         }
         break;
     case CCR_NODE_MACRO_VALUE: *cat = CAT_PREPROC; break;
+    case CCR_NODE_TEXT:      *cat = CAT_LITERAL; break;   /* a white field to type in */
     case CCR_NODE_OTHER:     *cat = CAT_DRAGON; break;
     default:                 *cat = CAT_OPERATOR; break;
     }
@@ -274,6 +275,9 @@ static void expr_items(const layout *L, ccr_node_id id, items *it)
     ccr_node_id c2 = c1 != CCR_NONE ? N(L, c1)->next_sibling : CCR_NONE;
 
     switch (n->kind) {
+    case CCR_NODE_TEXT:
+        it_text(it, *name ? name : "   ");   /* empty slot: still something to click */
+        break;
     case CCR_NODE_REF:
     case CCR_NODE_MACRO_VALUE:
     case CCR_NODE_INT_LIT:
@@ -540,6 +544,7 @@ static bool is_expression(ccr_node_kind k)
     case CCR_NODE_TERNARY: case CCR_NODE_REF: case CCR_NODE_MEMBER:
     case CCR_NODE_INDEX: case CCR_NODE_CAST: case CCR_NODE_SIZEOF:
     case CCR_NODE_INIT_LIST: case CCR_NODE_COMPOUND_LIT: case CCR_NODE_MACRO_VALUE:
+    case CCR_NODE_TEXT:
     case CCR_NODE_INT_LIT: case CCR_NODE_FLOAT_LIT:
     case CCR_NODE_CHAR_LIT: case CCR_NODE_STRING_LIT:
         return true;
@@ -715,7 +720,11 @@ static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w
         sz = emit_decl_block(L, id, x, y, max_w);
         break;
     default:
-        if (is_expression(n->kind)) {
+        if (n->kind == CCR_NODE_TEXT) {
+            /* a line of code from the palette: a block holding one text field */
+            it_expr(&head, id);
+            sz = emit_line_block(L, &head, CAT_CALL, x, y, id);
+        } else if (is_expression(n->kind)) {
             /* expression statement: the expression's own items, block-shaped */
             expr_items(L, id, &head);
             sz = emit_line_block(L, &head, stmt_expr_category(L, id), x, y, id);

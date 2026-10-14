@@ -14,6 +14,7 @@
 static const ccr_node *N(const ccr_editor *ed, ccr_node_id id) { return &ed->ast.nodes[id]; }
 
 static void begin_change(ccr_editor *ed);
+static void find_snap(ccr_editor *ed);
 static void commit_change(ccr_editor *ed);
 
 /* -------------------------------------------------------- scripts */
@@ -148,6 +149,7 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     ed->ast = *ast;
     memset(ast, 0, sizeof *ast);   /* ownership moved */
     ed->dragged = UINT32_MAX;
+    ed->edit_request = CCR_NONE;
     if (ed->ast.node_count == 0)
         return true;
 
@@ -457,6 +459,15 @@ static void commit_change(ccr_editor *ed)
     ed->history_len = ed->history_count;
 }
 
+/* Text changed under `id`: its measured size, and every container's, is stale. */
+static void forget_sizes(ccr_editor *ed, ccr_node_id id)
+{
+    for (; id != CCR_NONE && id < ed->cache.cap; id = N(ed, id)->parent) {
+        ed->cache.w[id] = 0.0f;
+        ed->cache.h[id] = 0.0f;
+    }
+}
+
 /* Puts the canvas back: these scripts, these positions, laid out anew. */
 static void restore_scripts(ccr_editor *ed, const ccr_placed *v, uint32_t n)
 {
@@ -467,6 +478,158 @@ static void restore_scripts(ccr_editor *ed, const ccr_placed *v, uint32_t n)
         push_script(ed, v[i].root, v[i].pos);
 }
 
+/* ---------------------------------------------------------- palette */
+
+static const char *const g_template_labels[CCR_TEMPLATE_COUNT] = {
+    [CCR_TEMPLATE_CODE]     = "code line",
+    [CCR_TEMPLATE_IF]       = "if",
+    [CCR_TEMPLATE_IF_ELSE]  = "if / else",
+    [CCR_TEMPLATE_WHILE]    = "while",
+    [CCR_TEMPLATE_FOR]      = "for",
+    [CCR_TEMPLATE_DO_WHILE] = "do / while",
+    [CCR_TEMPLATE_RETURN]   = "return",
+    [CCR_TEMPLATE_BREAK]    = "break",
+    [CCR_TEMPLATE_CONTINUE] = "continue",
+};
+
+const char *ccr_template_label(ccr_template t)
+{
+    return (unsigned)t < CCR_TEMPLATE_COUNT ? g_template_labels[t] : "?";
+}
+
+static ccr_node_id new_node(ccr_editor *ed, ccr_node_kind kind, ccr_node_id parent)
+{
+    ccr_node_id id = ccr_ast_add(&ed->ast, kind, CCR_NONE);
+    if (id == CCR_NONE)
+        return CCR_NONE;
+    ed->ast.nodes[id].flags |= CCR_FLAG_NEW;
+    if (kind == CCR_NODE_BLOCK) {
+        /* printed with relative indents; the block it lands in shifts it */
+        ed->ast.nodes[id].indent = ccr_ast_intern(&ed->ast, "    ");
+        ed->ast.nodes[id].flags |= CCR_FLAG_DIRTY;
+    }
+    if (parent != CCR_NONE)
+        ccr_ast_append(&ed->ast, parent, id);
+    return id;
+}
+
+static ccr_node_id new_text(ccr_editor *ed, ccr_node_id parent, const char *text)
+{
+    ccr_node_id id = new_node(ed, CCR_NODE_TEXT, CCR_NONE);
+    if (id == CCR_NONE)
+        return CCR_NONE;
+    ed->ast.nodes[id].name = ccr_ast_intern(&ed->ast, text);
+    ccr_ast_append(&ed->ast, parent, id);
+    return id;
+}
+
+/* Builds a template's nodes under `parent`. False if out of memory. */
+static bool build_template(ccr_editor *ed, ccr_template t, ccr_node_id parent)
+{
+    ccr_node_id s = CCR_NONE;
+    switch (t) {
+    case CCR_TEMPLATE_CODE:
+        return new_text(ed, parent, "") != CCR_NONE;
+    case CCR_TEMPLATE_IF:
+    case CCR_TEMPLATE_IF_ELSE:
+        s = new_node(ed, CCR_NODE_IF, parent);
+        new_text(ed, s, "");
+        new_node(ed, CCR_NODE_BLOCK, s);
+        if (t == CCR_TEMPLATE_IF_ELSE)
+            new_node(ed, CCR_NODE_BLOCK, s);
+        break;
+    case CCR_TEMPLATE_WHILE:
+        s = new_node(ed, CCR_NODE_WHILE, parent);
+        new_text(ed, s, "");
+        new_node(ed, CCR_NODE_BLOCK, s);
+        break;
+    case CCR_TEMPLATE_FOR:
+        s = new_node(ed, CCR_NODE_FOR, parent);
+        new_text(ed, s, "int i = 0");
+        new_text(ed, s, "i < n");
+        new_text(ed, s, "i++");
+        new_node(ed, CCR_NODE_BLOCK, s);
+        break;
+    case CCR_TEMPLATE_DO_WHILE:
+        s = new_node(ed, CCR_NODE_DO_WHILE, parent);
+        new_node(ed, CCR_NODE_BLOCK, s);
+        new_text(ed, s, "");
+        break;
+    case CCR_TEMPLATE_RETURN:
+        s = new_node(ed, CCR_NODE_RETURN, parent);
+        new_text(ed, s, "");
+        break;
+    case CCR_TEMPLATE_BREAK:
+        s = new_node(ed, CCR_NODE_BREAK, parent);
+        break;
+    case CCR_TEMPLATE_CONTINUE:
+        s = new_node(ed, CCR_NODE_CONTINUE, parent);
+        break;
+    case CCR_TEMPLATE_COUNT:
+        break;
+    }
+    return s != CCR_NONE && !ed->journal.oom;
+}
+
+bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse)
+{
+    if (ed->drag != CCR_DRAG_IDLE || (unsigned)t >= CCR_TEMPLATE_COUNT)
+        return false;
+    begin_change(ed);
+
+    ccr_node_id loose = ccr_ast_add(&ed->ast, CCR_NODE_BLOCK, CCR_NONE);
+    if (loose == CCR_NONE) {
+        commit_change(ed);
+        return false;
+    }
+    ccr_ast_touch(&ed->ast, loose);
+    ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE;
+    if (!build_template(ed, t, loose) || !push_script(ed, loose, mouse)) {
+        commit_change(ed);
+        return false;
+    }
+
+    /* held a little in from its corner, as if grabbed there */
+    ed->dragged = ed->script_count - 1;
+    ed->grab = (ccr_vec2){ 16.0f, 16.0f };
+    ed->scripts[ed->dragged].pos = (ccr_vec2){ mouse.x - ed->grab.x, mouse.y - ed->grab.y };
+    ed->drag = CCR_DRAG_MOVING;
+    find_snap(ed);
+    return true;
+}
+
+bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text)
+{
+    if (ed->drag != CCR_DRAG_IDLE || slot >= ed->ast.node_count ||
+        N(ed, slot)->kind != CCR_NODE_TEXT)
+        return false;
+    if (strcmp(ccr_ast_str(&ed->ast, N(ed, slot)->name), text) == 0)
+        return true;   /* unchanged: not worth an undo step */
+
+    begin_change(ed);
+    ccr_ast_touch(&ed->ast, slot);
+    ed->ast.nodes[slot].name = ccr_ast_intern(&ed->ast, text);
+    /* the block it sits in changes, so saving rebuilds that part */
+    ccr_node_id p = N(ed, slot)->parent;
+    if (p != CCR_NONE && N(ed, p)->kind == CCR_NODE_BLOCK && !(N(ed, p)->flags & CCR_FLAG_LOOSE)) {
+        ccr_ast_touch(&ed->ast, p);
+        ed->ast.nodes[p].flags |= CCR_FLAG_DIRTY;
+    }
+    forget_sizes(ed, slot);
+    uint32_t i = script_index_of_root(ed, script_root_of(ed, slot));
+    if (i != UINT32_MAX)
+        relayout(ed, i);
+    commit_change(ed);
+    return true;
+}
+
+ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed)
+{
+    ccr_node_id id = ed->edit_request;
+    ed->edit_request = CCR_NONE;
+    return id;
+}
+
 bool ccr_editor_undo(ccr_editor *ed)
 {
     if (ed->drag != CCR_DRAG_IDLE || ed->history_len == 0)
@@ -474,6 +637,9 @@ bool ccr_editor_undo(ccr_editor *ed)
     const ccr_change *c = &ed->history[--ed->history_len];
     for (uint32_t i = c->node_count; i-- > 0;)
         ccr_ast_set_links(&ed->ast, &c->before[i]);
+    for (uint32_t i = 0; i < c->node_count; ++i)
+        if (c->before[i].name != c->after[i].name)
+            forget_sizes(ed, c->before[i].id);
     /* nodes this step created (a loose stack's root) are gone again */
     for (uint32_t i = 0; i < c->node_count; ++i)
         if (c->before[i].id >= c->nodes_before)
@@ -489,6 +655,9 @@ bool ccr_editor_redo(ccr_editor *ed)
     const ccr_change *c = &ed->history[ed->history_len++];
     for (uint32_t i = 0; i < c->node_count; ++i)
         ccr_ast_set_links(&ed->ast, &c->after[i]);
+    for (uint32_t i = 0; i < c->node_count; ++i)
+        if (c->before[i].name != c->after[i].name)
+            forget_sizes(ed, c->after[i].id);
     restore_scripts(ed, c->scripts_after, c->na);
     return true;
 }
@@ -583,6 +752,8 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
     case CCR_DRAG_PRESSED: {
         if (!in->down) {
             ed->drag = CCR_DRAG_IDLE;   /* a click, not a drag */
+            if (ed->press_node != CCR_NONE && N(ed, ed->press_node)->kind == CCR_NODE_TEXT)
+                ed->edit_request = ed->press_node;
             break;
         }
         float zoom = in->zoom > 0.0f ? in->zoom : 1.0f;
@@ -599,9 +770,18 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
         ed->scripts[ed->dragged].pos =
             (ccr_vec2){ in->mouse.x - ed->grab.x, in->mouse.y - ed->grab.y };
         find_snap(ed);
+        if (in->over_trash)
+            ed->snap_ok = false;
         if (!in->down || in->released) {
-            if (ed->snap_ok)
+            const ccr_node_id root = ed->scripts[ed->dragged].root;
+            if (in->over_trash && is_loose_root(ed, root)) {
+                /* thrown back onto the palette: gone (Ctrl+Z brings it back) */
+                ccr_ast_touch(&ed->ast, root);
+                ed->ast.nodes[root].flags |= CCR_FLAG_DEAD;
+                remove_script(ed, ed->dragged);
+            } else if (ed->snap_ok) {
                 drop_into_snap(ed);
+            }
             ed->snap_ok = false;
             ed->dragged = UINT32_MAX;
             ed->drag = CCR_DRAG_IDLE;

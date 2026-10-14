@@ -4,6 +4,12 @@ set(CCR_BIN $<TARGET_FILE:ccratch_app>)
 
 add_test(NAME cli_version COMMAND ${CCR_BIN} --version)
 
+# No display: a clear message, not a crash (raylib 5.5 segfaults there).
+add_test(NAME gui_no_display
+         COMMAND ${CMAKE_COMMAND} -E env DISPLAY=:254 WAYLAND_DISPLAY= ${CCR_BIN} --smoke-frames 1)
+set_tests_properties(gui_no_display PROPERTIES
+    PASS_REGULAR_EXPRESSION "could not open a window")
+
 # Clang's builtin headers were located at configure time.
 if(LIBCLANG_RESOURCE_DIR)
     add_test(NAME cli_about_resource_dir COMMAND ${CCR_BIN} --about)

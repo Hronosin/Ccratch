@@ -24,6 +24,12 @@ extern const unsigned char ccr_icon_png[];
 extern const unsigned int  ccr_icon_png_size;
 
 #define TOPBAR_H     40.0f
+#define PALETTE_W   176.0f
+#define COL_PALETTE  0x1A1C23FFu
+#define COL_CONTROL  0xFFAB19FFu
+#define COL_CONTROL_EDGE 0xCF8B17FFu
+#define COL_CODE     0xFF6680FFu
+#define COL_CODE_EDGE 0xFF3355FFu
 #define STATUSBAR_H  26.0f
 #define PATH_MAX_LEN 4096
 
@@ -384,10 +390,57 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
         snprintf(loose_txt, sizeof loose_txt, "%u loose stack%s (not compiled)   |   ",
                  loose, loose == 1 ? "" : "s");
     snprintf(right, sizeof right,
-             "%szoom %d%%   |   LMB: blocks   RMB: pan   wheel: zoom   Ctrl+S save  Z undo  Y redo   Home: fit   F5: reload",
+             "%szoom %d%%  |  click white field: type  |  RMB pan  wheel zoom  |  Ctrl+S save  Z undo  Y redo  |  Home  F5",
              loose_txt, (int)(cv->zoom * 100.0f + 0.5f));
     float rw = ccr_gui_text_width(right, 12.0f);
     ccr_gui_text(right, (float)width - rw - 12.0f, y + 7.0f, 12.0f, COL_BAR_TEXT);
+}
+
+/* ------------------------------------------------------------ palette */
+
+#define PALETTE_ITEM_H   34.0f
+#define PALETTE_GAP      10.0f
+#define PALETTE_TOP     (TOPBAR_H + 44.0f)
+
+static ccr_rect palette_item(int i)
+{
+    return (ccr_rect){ 14.0f, PALETTE_TOP + (float)i * (PALETTE_ITEM_H + PALETTE_GAP),
+                       PALETTE_W - 28.0f, PALETTE_ITEM_H };
+}
+
+static bool point_in(ccr_vec2 p, ccr_rect r)
+{
+    return p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h;
+}
+
+/* Which palette block is under the mouse, or -1. */
+static int palette_hit(ccr_vec2 m)
+{
+    for (int i = 0; i < CCR_TEMPLATE_COUNT; ++i)
+        if (point_in(m, palette_item(i)))
+            return i;
+    return -1;
+}
+
+static void draw_palette(int height, bool dragging_over)
+{
+    ccr_gui_rect((ccr_rect){ 0, TOPBAR_H, PALETTE_W, (float)height - TOPBAR_H - STATUSBAR_H },
+                 dragging_over ? 0x2A1E22FFu : COL_PALETTE);
+    ccr_gui_text(dragging_over ? "drop to delete" : "Blocks", 16.0f, TOPBAR_H + 14.0f, 16.0f,
+                 dragging_over ? COL_ACCENT : COL_BAR_TEXT);
+
+    for (int i = 0; i < CCR_TEMPLATE_COUNT; ++i) {
+        ccr_rect r = palette_item(i);
+        bool code = i == CCR_TEMPLATE_CODE;
+        bool mouth = i >= CCR_TEMPLATE_IF && i <= CCR_TEMPLATE_DO_WHILE;
+        ccr_color fill = code ? COL_CODE : COL_CONTROL;
+        ccr_color edge = code ? COL_CODE_EDGE : COL_CONTROL_EDGE;
+        ccr_gui_rect_rounded(r, 0.25f, edge);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 0.25f, fill);
+        if (mouth)   /* a hint of the C shape: there is room inside */
+            ccr_gui_rect((ccr_rect){ r.x + 14.0f, r.y + r.h - 7.0f, r.w - 28.0f, 4.0f }, edge);
+        ccr_gui_text(ccr_template_label((ccr_template)i), r.x + 12.0f, r.y + 8.0f, 16.0f, 0xFFFFFFFFu);
+    }
 }
 
 static void draw_empty_hint(ccr_rect viewport)
@@ -425,7 +478,7 @@ int ccr_run(int argc, char **argv)
 
     /* static: a document holds a 4 KB path and is reused all session */
     static ccr_document doc;
-    ccr_rect viewport = { 0, TOPBAR_H, (float)ccr_gui_width(),
+    ccr_rect viewport = { PALETTE_W, TOPBAR_H, (float)ccr_gui_width() - PALETTE_W,
                           (float)ccr_gui_height() - TOPBAR_H - STATUSBAR_H };
     const float start_zoom = opt.zoom_percent > 0 ? (float)opt.zoom_percent / 100.0f : 1.0f;
     if (opt.open)
@@ -434,10 +487,18 @@ int ccr_run(int argc, char **argv)
 
     int frame = 0;
     char dropped[PATH_MAX_LEN];
+
+    /* a text slot being typed into */
+    ccr_node_id editing = CCR_NONE;
+    static char edit_buf[1024];
+
     while (!ccr_gui_should_close()) {
         const int w = ccr_gui_width();
         const int h = ccr_gui_height();
-        viewport = (ccr_rect){ 0, TOPBAR_H, (float)w, (float)h - TOPBAR_H - STATUSBAR_H };
+        viewport = (ccr_rect){ PALETTE_W, TOPBAR_H, (float)w - PALETTE_W,
+                               (float)h - TOPBAR_H - STATUSBAR_H };
+        if (!doc.loaded)
+            editing = CCR_NONE;
 
         if (ccr_gui_file_dropped(dropped, sizeof dropped) && document_open(&doc, dropped, &opt))
             fit_view(&canvas, &doc, viewport, 1.0f);
@@ -446,7 +507,7 @@ int ccr_run(int argc, char **argv)
             snprintf(again, sizeof again, "%s", doc.path);
             document_open(&doc, again, &opt);
         }
-        if (doc.loaded && ccr_gui_ctrl_down()) {
+        if (doc.loaded && editing == CCR_NONE && ccr_gui_ctrl_down()) {
             if (ccr_gui_key_pressed(CCR_KEY_S))
                 document_save(&doc, &opt);
             /* Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo */
@@ -464,18 +525,30 @@ int ccr_run(int argc, char **argv)
 
         ccr_canvas_update(&canvas, viewport);
 
-        if (doc.loaded) {
-            ccr_vec2 m = ccr_gui_mouse();
-            bool inside = m.x >= viewport.x && m.y >= viewport.y &&
-                          m.x < viewport.x + viewport.w && m.y < viewport.y + viewport.h;
+        const ccr_vec2 m = ccr_gui_mouse();
+        const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
+        if (doc.loaded && editing == CCR_NONE) {
+            bool inside = point_in(m, viewport);
+            int spawn = (over_palette && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) ? palette_hit(m) : -1;
+            if (spawn >= 0)
+                ccr_editor_spawn(&doc.ed, (ccr_template)spawn, ccr_canvas_to_world(&canvas, m));
             ccr_editor_input in = {
-                .mouse    = ccr_canvas_to_world(&canvas, m),
-                .pressed  = inside && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT),
-                .down     = ccr_gui_mouse_down(CCR_MOUSE_LEFT),
-                .released = ccr_gui_mouse_released(CCR_MOUSE_LEFT),
-                .zoom     = canvas.zoom,
+                .mouse      = ccr_canvas_to_world(&canvas, m),
+                .pressed    = inside && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT),
+                .down       = ccr_gui_mouse_down(CCR_MOUSE_LEFT),
+                .released   = ccr_gui_mouse_released(CCR_MOUSE_LEFT),
+                .zoom       = canvas.zoom,
+                .over_trash = over_palette,
             };
             ccr_editor_update(&doc.ed, &in);
+
+            ccr_node_id req = ccr_editor_take_edit_request(&doc.ed);
+            if (req != CCR_NONE) {
+                editing = req;
+                ccr_gui_textbox_reset();
+                snprintf(edit_buf, sizeof edit_buf, "%s",
+                         ccr_ast_str(&doc.ed.ast, doc.ed.ast.nodes[req].name));
+            }
         }
 
         ccr_gui_begin_frame(COL_BG);
@@ -484,6 +557,26 @@ int ccr_run(int argc, char **argv)
             ccr_editor_draw(&doc.ed, &canvas, viewport);
         else
             draw_empty_hint(viewport);
+        if (doc.loaded)
+            draw_palette(h, doc.ed.drag == CCR_DRAG_MOVING && over_palette);
+
+        /* the text box over the slot being edited */
+        if (editing != CCR_NONE) {
+            ccr_rect r;
+            if (!ccr_editor_node_rect(&doc.ed, editing, &r)) {
+                editing = CCR_NONE;
+            } else {
+                ccr_vec2 tl = ccr_canvas_to_screen(&canvas, (ccr_vec2){ r.x, r.y });
+                float bw = r.w * canvas.zoom;
+                ccr_rect box = { tl.x - 4.0f, tl.y - 4.0f, bw < 320.0f ? 320.0f : bw + 40.0f, 34.0f };
+                if (ccr_gui_key_pressed(CCR_KEY_ESCAPE)) {
+                    editing = CCR_NONE;                     /* cancel */
+                } else if (ccr_gui_textbox(box, edit_buf, (int)sizeof edit_buf, 20.0f)) {
+                    ccr_editor_set_text(&doc.ed, editing, edit_buf);
+                    editing = CCR_NONE;
+                }
+            }
+        }
         draw_topbar(w, &doc);
         draw_statusbar(w, h, &canvas, &doc);
 

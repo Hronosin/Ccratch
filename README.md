@@ -15,6 +15,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 4: blocks can be dragged.
 - Step 5: Ctrl+S writes the moves back to the `.c` file.
 - Step 6: Ctrl+Z / Ctrl+Y undo and redo.
+- Step 7: a palette of new blocks, so you can write code, not only move it.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -48,6 +49,33 @@ Dragging works like Scratch:
   how you remove it from the code.
 
 Every move edits the syntax tree itself, and Ctrl+S writes it back.
+
+## Writing new code
+
+The palette on the left has `if`, `if / else`, `while`, `for`,
+`do / while`, `return`, `break`, `continue` and a **code line** for
+anything else (a call, an assignment, a declaration). Drag one out and it
+behaves like any block: it snaps into stacks, takes other blocks inside it,
+and old statements can be dropped into it.
+
+The white fields are typed into: click one, type, Enter keeps it, Esc
+throws it away, Ctrl+V pastes. Each edit is one undo step.
+
+Drop a block back onto the palette to delete it (Ctrl+Z brings it back).
+That works for statements from the file too.
+
+![the palette, and an if typed into sum()](docs/palette.png)
+
+New blocks have no text in the file, so saving prints them; everything
+around them is still copied as written:
+
+```c
+    if (count > 0 && count < 1000) {
+        // a comment that moved in with its statement
+        printf("hello\n");
+        n = 100;
+    }
+```
 
 ## Saving
 

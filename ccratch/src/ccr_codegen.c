@@ -66,7 +66,7 @@ static bool has_dirty(gen *g, ccr_node_id id, unsigned depth)
 {
     if (g->dirty[id])
         return g->dirty[id] == 2;
-    bool d = (N(g, id)->flags & CCR_FLAG_DIRTY) != 0;
+    bool d = (N(g, id)->flags & (CCR_FLAG_DIRTY | CCR_FLAG_NEW)) != 0;
     if (depth < 4000)
         for (ccr_node_id c = N(g, id)->first_child; c != CCR_NONE && !d; c = N(g, c)->next_sibling)
             d = has_dirty(g, c, depth + 1);
@@ -175,6 +175,109 @@ static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
     puts_(g, "}");
 }
 
+/* --------------------------------------------------- new statements */
+
+static ccr_node_id kid(const gen *g, ccr_node_id id, uint32_t index)
+{
+    ccr_node_id c = N(g, id)->first_child;
+    while (c != CCR_NONE && index-- > 0)
+        c = N(g, c)->next_sibling;
+    return c;
+}
+
+/* What a slot holds: typed text, or whatever expression was put there. */
+static void slot(gen *g, ccr_node_id id, unsigned depth)
+{
+    if (id != CCR_NONE)
+        emit(g, id, depth + 1);
+}
+
+/* A body: a Block is printed `{ ... }`; anything else as one statement. */
+static void body(gen *g, ccr_node_id id, unsigned depth)
+{
+    if (id == CCR_NONE)
+        puts_(g, "{\n}");
+    else
+        emit(g, id, depth + 1);
+}
+
+/*
+ * Code made in the editor has no source text, so it is printed. Indents
+ * are relative (the first line starts at column 0, nested blocks add 4
+ * spaces); the block it is dropped into shifts the whole thing into place.
+ */
+static void print_new(gen *g, ccr_node_id id, unsigned depth)
+{
+    const ccr_node *n = N(g, id);
+    const ccr_node_id p = n->parent;
+    const bool statement = p != CCR_NONE && N(g, p)->kind == CCR_NODE_BLOCK;
+
+    switch (n->kind) {
+    case CCR_NODE_TEXT:
+        puts_(g, ccr_ast_str(g->ast, n->name));
+        if (statement)
+            puts_(g, ";");
+        break;
+    case CCR_NODE_BLOCK:
+        rebuild_block(g, id, depth);
+        break;
+    case CCR_NODE_IF:
+        puts_(g, "if (");
+        slot(g, kid(g, id, 0), depth);
+        puts_(g, ") ");
+        body(g, kid(g, id, 1), depth);
+        if (kid(g, id, 2) != CCR_NONE) {
+            puts_(g, " else ");
+            body(g, kid(g, id, 2), depth);
+        }
+        break;
+    case CCR_NODE_WHILE:
+        puts_(g, "while (");
+        slot(g, kid(g, id, 0), depth);
+        puts_(g, ") ");
+        body(g, kid(g, id, 1), depth);
+        break;
+    case CCR_NODE_DO_WHILE:
+        puts_(g, "do ");
+        body(g, kid(g, id, 0), depth);
+        puts_(g, " while (");
+        slot(g, kid(g, id, 1), depth);
+        puts_(g, ");");
+        break;
+    case CCR_NODE_FOR:
+        puts_(g, "for (");
+        slot(g, kid(g, id, 0), depth);
+        puts_(g, "; ");
+        slot(g, kid(g, id, 1), depth);
+        puts_(g, "; ");
+        slot(g, kid(g, id, 2), depth);
+        puts_(g, ") ");
+        body(g, kid(g, id, 3), depth);
+        break;
+    case CCR_NODE_RETURN: {
+        ccr_node_id v = n->first_child;
+        bool empty = v == CCR_NONE ||
+                     (N(g, v)->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, v)->name));
+        puts_(g, "return");
+        if (!empty) {
+            puts_(g, " ");
+            slot(g, v, depth);
+        }
+        puts_(g, ";");
+        break;
+    }
+    case CCR_NODE_BREAK:
+        puts_(g, "break;");
+        break;
+    case CCR_NODE_CONTINUE:
+        puts_(g, "continue;");
+        break;
+    default:
+        fail(g, "internal: cannot print a new %s block yet", ccr_node_kind_name(n->kind));
+        break;
+    }
+}
+
 static bool lives_in_gaps(ccr_node_kind k)
 {
     /* their text is copied with the gaps around real code */
@@ -218,6 +321,10 @@ static void emit(gen *g, ccr_node_id id, unsigned depth)
     }
     if (depth > 4000) {
         fail(g, "code nested too deeply");
+        return;
+    }
+    if (n->flags & CCR_FLAG_NEW) {
+        print_new(g, id, depth);
         return;
     }
     if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_DIRTY)) {
