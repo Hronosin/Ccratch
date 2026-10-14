@@ -16,6 +16,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 5: Ctrl+S writes the moves back to the `.c` file.
 - Step 6: Ctrl+Z / Ctrl+Y undo and redo.
 - Step 7: a palette of new blocks, so you can write code, not only move it.
+- Step 8: a Blender-style pie menu, plus delete, duplicate and comment out.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -77,6 +78,49 @@ around them is still copied as written:
     }
 ```
 
+## The pie menu
+
+Everything the keyboard does, the mouse does too. Right click (without
+dragging: a drag still pans) and a pie opens around the cursor. Each action
+always sits in the same direction, so it turns into a flick and a click:
+
+![the pie over a commented-out block](docs/pie.png)
+
+| Direction | Action | Key |
+| --- | --- | --- |
+| up | Save | Ctrl+S |
+| up-right | Comment out / Uncomment | Ctrl+/ |
+| right | Redo | Ctrl+Y |
+| down-right | Edit text | click a white field |
+| down | Delete | Del |
+| down-left | Fit view | Home |
+| left | Undo | Ctrl+Z |
+| up-left | Duplicate | Ctrl+D |
+
+Only the direction counts, not hitting the button: anywhere past the small
+ring in the middle picks the slice the mouse points into. Esc, right click
+or a click in the ring closes it. Greyed out slices make no sense for what
+is under the cursor (nothing to undo, no block there).
+
+The block actions work on the block under the mouse, keys included:
+
+- **Delete** takes out one statement (an `if` goes with everything inside
+  it); the rest of the stack closes up. On a loose stack's top block, the
+  whole stack goes.
+- **Duplicate** makes a copy that follows the mouse, no button held, until
+  you click: into a stack, anywhere on the canvas, or onto the palette to
+  change your mind. One undo step, copy and drop together.
+- **Comment out** turns a statement grey and keeps it in the file as `//`
+  lines, its own comments and any blocks inside included. Uncomment
+  brings it back exactly as it was:
+
+```c
+    // while (b < 10) {
+    //     b++;
+    //     // nothing else here
+    // }
+```
+
 ## Saving
 
 Saving splices instead of reprinting: everything you did not touch is
@@ -133,6 +177,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_blocks  one script -> blocks: flat display list + snap points
   ccr_editor  scripts on the canvas, drag and drop, edits the tree
   ccr_codegen tree -> C: copies untouched text, rebuilds changed blocks
+  ccr_pie     the pie menu: picks an action by direction, knows no editor
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so; hello/ is the template
@@ -213,6 +258,8 @@ ccratch file.c --zoom 50                 start zoomed out
 
 - Drop a `.c` file onto the window: open it
 - Left mouse drag: move blocks
+- Right click: the pie menu (above)
+- Del, Ctrl+D, Ctrl+/: delete, duplicate, comment out the block under the mouse
 - Ctrl+S: save (Esc no longer quits, so it cannot eat unsaved work)
 - Ctrl+Z: undo one drag; Ctrl+Y or Ctrl+Shift+Z: redo. Undoing back to
   the saved state clears the `*`, and an undone change is gone from the

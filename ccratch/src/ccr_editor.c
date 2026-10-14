@@ -630,6 +630,153 @@ ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed)
     return id;
 }
 
+/* --------------------------------------------------- block actions */
+
+ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse)
+{
+    ccr_context c = { CCR_NONE, CCR_NONE, CCR_NONE, false, false, false, false };
+    if (ed->drag != CCR_DRAG_IDLE)
+        return c;
+    uint32_t si;
+    c.node = pick(ed, mouse, &si);
+    if (c.node == CCR_NONE)
+        return c;
+    if (N(ed, c.node)->kind == CCR_NODE_TEXT)
+        c.text = c.node;
+    c.item = stack_item_of(ed, c.node);
+    if (c.item == CCR_NONE) {
+        /* a whole script: only loose stacks can go (the file's own
+         * functions and structs stay; deleting those is not supported) */
+        ccr_node_id root = ed->scripts[si].root;
+        if (is_loose_root(ed, root) && N(ed, root)->first_child != CCR_NONE) {
+            c.item = N(ed, root)->first_child;
+            c.can_delete = true;
+        }
+        return c;
+    }
+    c.can_delete = c.can_duplicate = c.can_comment = true;
+    c.commented = (N(ed, c.item)->flags & CCR_FLAG_COMMENTED) != 0;
+    return c;
+}
+
+static void mark_dirty(ccr_editor *ed, ccr_node_id block)
+{
+    if (block != CCR_NONE && N(ed, block)->kind == CCR_NODE_BLOCK &&
+        !(N(ed, block)->flags & CCR_FLAG_LOOSE)) {
+        ccr_ast_touch(&ed->ast, block);
+        ed->ast.nodes[block].flags |= CCR_FLAG_DIRTY;
+    }
+}
+
+static bool is_stack_item(const ccr_editor *ed, ccr_node_id id)
+{
+    return id < ed->ast.node_count && N(ed, id)->parent != CCR_NONE &&
+           N(ed, N(ed, id)->parent)->kind == CCR_NODE_BLOCK;
+}
+
+bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
+{
+    if (ed->drag != CCR_DRAG_IDLE || !is_stack_item(ed, item))
+        return false;
+    const ccr_node_id block = N(ed, item)->parent;
+    const ccr_node_id root = script_root_of(ed, item);
+    uint32_t si = script_index_of_root(ed, root);
+    if (si == UINT32_MAX)
+        return false;
+
+    begin_change(ed);
+    if (is_loose_root(ed, block) && N(ed, block)->first_child == item) {
+        /* the top of a loose stack: the whole stack goes */
+        ccr_ast_touch(&ed->ast, block);
+        ed->ast.nodes[block].flags |= CCR_FLAG_DEAD;
+        remove_script(ed, si);
+    } else {
+        mark_dirty(ed, block);
+        ccr_ast_unlink(&ed->ast, item);   /* the rest of the stack closes up */
+        ccr_ast_touch(&ed->ast, item);
+        ed->ast.nodes[item].flags |= CCR_FLAG_DEAD;
+        relayout(ed, si);
+    }
+    commit_change(ed);
+    return true;
+}
+
+/* Deep copy of a subtree; the copy has no parent. */
+static ccr_node_id clone(ccr_editor *ed, ccr_node_id src, unsigned depth)
+{
+    if (depth > 4000)
+        return CCR_NONE;
+    ccr_node_id id = ccr_ast_add(&ed->ast, N(ed, src)->kind, CCR_NONE);
+    if (id == CCR_NONE)
+        return CCR_NONE;
+    ccr_node *n = &ed->ast.nodes[id];
+    *n = ed->ast.nodes[src];   /* everything: name, ranges, indents, flags */
+    n->parent = n->first_child = n->last_child = n->next_sibling = CCR_NONE;
+    n->flags &= ~(CCR_FLAG_LOOSE | CCR_FLAG_DEAD | CCR_FLAG_BLANK_BEFORE);
+    ccr_ast_touch(&ed->ast, id);
+    for (ccr_node_id c = ed->ast.nodes[src].first_child; c != CCR_NONE;
+         c = ed->ast.nodes[c].next_sibling) {
+        ccr_node_id k = clone(ed, c, depth + 1);
+        if (k == CCR_NONE)
+            return CCR_NONE;
+        ccr_ast_append(&ed->ast, id, k);
+    }
+    return id;
+}
+
+bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse)
+{
+    if (ed->drag != CCR_DRAG_IDLE || !is_stack_item(ed, item))
+        return false;
+    begin_change(ed);
+    ccr_node_id copy = clone(ed, item, 0);
+    ccr_node_id loose = copy == CCR_NONE ? CCR_NONE
+                      : ccr_ast_add(&ed->ast, CCR_NODE_BLOCK, CCR_NONE);
+    if (loose == CCR_NONE) {
+        commit_change(ed);
+        return false;
+    }
+    ccr_ast_touch(&ed->ast, loose);
+    ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE;
+    ccr_ast_append(&ed->ast, loose, copy);
+    if (!push_script(ed, loose, mouse)) {
+        commit_change(ed);
+        return false;
+    }
+    ed->dragged = ed->script_count - 1;
+    ed->grab = (ccr_vec2){ 16.0f, 16.0f };
+    ed->scripts[ed->dragged].pos = (ccr_vec2){ mouse.x - ed->grab.x, mouse.y - ed->grab.y };
+    ed->drag = CCR_DRAG_MOVING;
+    ed->carrying = true;
+    find_snap(ed);
+    return true;
+}
+
+bool ccr_editor_toggle_comment(ccr_editor *ed, ccr_node_id item)
+{
+    if (ed->drag != CCR_DRAG_IDLE || !is_stack_item(ed, item))
+        return false;
+    uint32_t si = script_index_of_root(ed, script_root_of(ed, item));
+    begin_change(ed);
+    mark_dirty(ed, N(ed, item)->parent);
+    ccr_ast_touch(&ed->ast, item);
+    ed->ast.nodes[item].flags ^= CCR_FLAG_COMMENTED;
+    if (si != UINT32_MAX)
+        relayout(ed, si);
+    commit_change(ed);
+    return true;
+}
+
+bool ccr_editor_can_undo(const ccr_editor *ed)
+{
+    return ed->drag == CCR_DRAG_IDLE && ed->history_len > 0;
+}
+
+bool ccr_editor_can_redo(const ccr_editor *ed)
+{
+    return ed->drag == CCR_DRAG_IDLE && ed->history_len < ed->history_count;
+}
+
 bool ccr_editor_undo(ccr_editor *ed)
 {
     if (ed->drag != CCR_DRAG_IDLE || ed->history_len == 0)
@@ -772,8 +919,10 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
         find_snap(ed);
         if (in->over_trash)
             ed->snap_ok = false;
-        if (!in->down || in->released) {
+        /* a carried copy lands on a click; a dragged block when let go */
+        if (ed->carrying ? in->pressed : (!in->down || in->released)) {
             const ccr_node_id root = ed->scripts[ed->dragged].root;
+            ed->carrying = false;
             if (in->over_trash && is_loose_root(ed, root)) {
                 /* thrown back onto the palette: gone (Ctrl+Z brings it back) */
                 ccr_ast_touch(&ed->ast, root);

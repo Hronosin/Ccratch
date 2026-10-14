@@ -22,6 +22,7 @@ add_library(ccratch_core OBJECT
     src/ccr_codegen.c
     src/ccr_editor.c
     src/ccr_parse.c
+    src/ccr_pie.c
     ${CCR_ICON_C})
 
 target_include_directories(ccratch_core

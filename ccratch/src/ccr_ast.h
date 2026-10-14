@@ -137,6 +137,8 @@ typedef struct ccr_node {
                                             comments between its statements
                                             (#if, #define...): cannot be
                                             rebuilt safely */
+#define CCR_FLAG_COMMENTED   (1u << 12)  /* statement switched off: drawn grey,
+                                            saved as // lines */
 #define CCR_FLAG_NEW         (1u << 11)  /* made in the editor (palette): has
                                             no source text, saving prints it */
 #define CCR_FLAG_BLANK_BEFORE (1u << 10) /* statement had an empty line above

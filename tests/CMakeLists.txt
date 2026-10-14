@@ -82,6 +82,11 @@ if(XVFB_RUN)
                      $<TARGET_FILE:test_editor> ${PROJECT_SOURCE_DIR}/examples/tour.c)
 endif()
 
+# The pie menu picks by direction.
+add_executable(test_pie test_pie.c)
+target_link_libraries(test_pie PRIVATE ccratch_core)
+add_test(NAME pie_menu COMMAND test_pie)
+
 # Saving: moves land in the file, everything else stays as written.
 add_executable(test_save test_save.c)
 target_link_libraries(test_save PRIVATE ccratch_core)

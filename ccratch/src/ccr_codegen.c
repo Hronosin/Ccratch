@@ -115,6 +115,32 @@ static void reindent(gen *g, size_t from, const char *old, size_t old_n, const c
     free(copy);
 }
 
+/* buf[from..]: "// " at the start of every line, `keep` columns in (the
+ * statement's own indent), so the slashes line up like an editor's. */
+static void comment_out(gen *g, size_t from, size_t keep)
+{
+    if (!g->ok)
+        return;
+    size_t n = g->len - from;
+    char *copy = malloc(n + 1);
+    if (!copy) {
+        fail(g, "out of memory");
+        return;
+    }
+    memcpy(copy, g->buf + from, n);
+    g->len = from;
+    puts_(g, "// ");
+    for (size_t i = 0; i < n; ++i) {
+        put(g, copy + i, 1);
+        if (copy[i] != '\n')
+            continue;
+        for (size_t k = 0; k < keep && i + 1 < n && (copy[i + 1] == ' ' || copy[i + 1] == '\t'); ++k)
+            put(g, copy + ++i, 1);
+        puts_(g, (i + 1 < n && copy[i + 1] != '\n') ? "// " : "//");
+    }
+    free(copy);
+}
+
 /* A Block whose statements moved: written anew from their original text. */
 static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
 {
@@ -162,6 +188,8 @@ static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
         uint32_t ib, ie;
         if (indent_before(g->ast, eb, &ib, &ie))
             reindent(g, start, g->ast->source + ib, ie - ib, line_indent, strlen(line_indent));
+        if (k->flags & CCR_FLAG_COMMENTED)   /* after reindent: final columns */
+            comment_out(g, start, strlen(line_indent));
     }
 
     const char *tail = ccr_ast_str(g->ast, b->aux);

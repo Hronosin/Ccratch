@@ -5,7 +5,9 @@
 #include "ccr_editor.h"
 #include "ccr_gui.h"
 #include "ccr_parse.h"
+#include "ccr_pie.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -390,7 +392,7 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
         snprintf(loose_txt, sizeof loose_txt, "%u loose stack%s (not compiled)   |   ",
                  loose, loose == 1 ? "" : "s");
     snprintf(right, sizeof right,
-             "%szoom %d%%  |  click white field: type  |  RMB pan  wheel zoom  |  Ctrl+S save  Z undo  Y redo  |  Home  F5",
+             "%szoom %d%%  |  right click: menu  |  RMB drag pan  wheel zoom  |  Ctrl+S save  Z undo  Y redo  |  Home  F5",
              loose_txt, (int)(cv->zoom * 100.0f + 0.5f));
     float rw = ccr_gui_text_width(right, 12.0f);
     ccr_gui_text(right, (float)width - rw - 12.0f, y + 7.0f, 12.0f, COL_BAR_TEXT);
@@ -443,6 +445,73 @@ static void draw_palette(int height, bool dragging_over)
     }
 }
 
+/* ------------------------------------------------- actions (pie, keys) */
+
+/* A text field being typed into. */
+typedef struct text_edit {
+    ccr_node_id node;
+    char        buf[1024];
+} text_edit;
+
+static void start_editing(text_edit *te, const ccr_editor *ed, ccr_node_id slot)
+{
+    te->node = slot;
+    ccr_gui_textbox_reset();
+    snprintf(te->buf, sizeof te->buf, "%s", ccr_ast_str(&ed->ast, ed->ast.nodes[slot].name));
+}
+
+/* The field "Edit text" would open: the one under the mouse, or a code
+ * line's only field. */
+static ccr_node_id edit_target(const ccr_editor *ed, const ccr_context *ctx)
+{
+    if (ctx->text != CCR_NONE)
+        return ctx->text;
+    if (ctx->item != CCR_NONE && ed->ast.nodes[ctx->item].kind == CCR_NODE_TEXT)
+        return ctx->item;
+    return CCR_NONE;
+}
+
+static void pie_enabled(const ccr_editor *ed, const ccr_context *ctx, bool en[CCR_ACTION_COUNT])
+{
+    for (int i = 0; i < CCR_ACTION_COUNT; ++i)
+        en[i] = false;
+    en[CCR_ACTION_SAVE]      = true;
+    en[CCR_ACTION_FIT_VIEW]  = true;
+    en[CCR_ACTION_UNDO]      = ccr_editor_can_undo(ed);
+    en[CCR_ACTION_REDO]      = ccr_editor_can_redo(ed);
+    en[CCR_ACTION_DELETE]    = ctx->can_delete;
+    en[CCR_ACTION_DUPLICATE] = ctx->can_duplicate;
+    en[CCR_ACTION_COMMENT]   = ctx->can_comment;
+    en[CCR_ACTION_EDIT_TEXT] = edit_target(ed, ctx) != CCR_NONE;
+}
+
+/* Everything the pie and the keyboard can do, in one place. `ctx` is what
+ * was under the mouse when the action was asked for. */
+static void run_action(ccr_action a, const ccr_context *ctx, ccr_vec2 world,
+                       ccr_document *doc, const ccr_options *opt,
+                       ccr_canvas *cv, ccr_rect viewport, text_edit *te)
+{
+    ccr_editor *ed = &doc->ed;
+    switch (a) {
+    case CCR_ACTION_SAVE:      document_save(doc, opt); break;
+    case CCR_ACTION_UNDO:      ccr_editor_undo(ed); break;
+    case CCR_ACTION_REDO:      ccr_editor_redo(ed); break;
+    case CCR_ACTION_FIT_VIEW:  fit_view(cv, doc, viewport, 1.0f); break;
+    case CCR_ACTION_DELETE:    ccr_editor_delete(ed, ctx->item); break;
+    case CCR_ACTION_DUPLICATE: ccr_editor_duplicate(ed, ctx->item, world); break;
+    case CCR_ACTION_COMMENT:   ccr_editor_toggle_comment(ed, ctx->item); break;
+    case CCR_ACTION_EDIT_TEXT: {
+        ccr_node_id slot = edit_target(ed, ctx);
+        if (slot != CCR_NONE)
+            start_editing(te, ed, slot);
+        break;
+    }
+    case CCR_ACTION_NONE:
+    case CCR_ACTION_COUNT:
+        break;
+    }
+}
+
 static void draw_empty_hint(ccr_rect viewport)
 {
     const char *a = "Drop a .c file here";
@@ -489,8 +558,13 @@ int ccr_run(int argc, char **argv)
     char dropped[PATH_MAX_LEN];
 
     /* a text slot being typed into */
-    ccr_node_id editing = CCR_NONE;
-    static char edit_buf[1024];
+    static text_edit te = { .node = CCR_NONE };
+
+    /* the pie menu, and the right click that may open it */
+    ccr_pie pie = { 0 };
+    ccr_context pie_ctx = { 0 };
+    ccr_vec2 rmb_from = { 0 };
+    bool rmb_armed = false;
 
     while (!ccr_gui_should_close()) {
         const int w = ccr_gui_width();
@@ -498,16 +572,54 @@ int ccr_run(int argc, char **argv)
         viewport = (ccr_rect){ PALETTE_W, TOPBAR_H, (float)w - PALETTE_W,
                                (float)h - TOPBAR_H - STATUSBAR_H };
         if (!doc.loaded)
-            editing = CCR_NONE;
+            te.node = CCR_NONE;
+        const bool was_open = pie.open;
 
-        if (ccr_gui_file_dropped(dropped, sizeof dropped) && document_open(&doc, dropped, &opt))
+        if (ccr_gui_file_dropped(dropped, sizeof dropped) && document_open(&doc, dropped, &opt)) {
             fit_view(&canvas, &doc, viewport, 1.0f);
-        if (ccr_gui_key_pressed(CCR_KEY_F5) && doc.loaded) {
+            te.node = CCR_NONE;
+            ccr_pie_close(&pie);
+        }
+        if (ccr_gui_key_pressed(CCR_KEY_F5) && doc.loaded && !pie.open) {
             char again[PATH_MAX_LEN];
             snprintf(again, sizeof again, "%s", doc.path);
             document_open(&doc, again, &opt);
+            te.node = CCR_NONE;
         }
-        if (doc.loaded && editing == CCR_NONE && ccr_gui_ctrl_down()) {
+
+        const ccr_vec2 m = ccr_gui_mouse();
+        const ccr_vec2 world = ccr_canvas_to_world(&canvas, m);
+        const bool inside = point_in(m, viewport);
+        const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
+        const bool can_act = doc.loaded && te.node == CCR_NONE;
+
+        /* the pie, while it is open, gets the mouse and Esc to itself */
+        if (pie.open) {
+            bool cancel = !can_act || ccr_gui_key_pressed(CCR_KEY_ESCAPE) ||
+                          ccr_gui_mouse_pressed(CCR_MOUSE_RIGHT);
+            ccr_action a = ccr_pie_update(&pie, m, ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), cancel);
+            if (a != CCR_ACTION_NONE)
+                run_action(a, &pie_ctx, world, &doc, &opt, &canvas, viewport, &te);
+        }
+
+        /* a right click that did not drag opens it; a drag pans */
+        if (ccr_gui_mouse_pressed(CCR_MOUSE_RIGHT)) {
+            rmb_from = m;
+            rmb_armed = inside && !was_open;
+        }
+        if (ccr_gui_mouse_down(CCR_MOUSE_RIGHT) &&
+            fabsf(m.x - rmb_from.x) + fabsf(m.y - rmb_from.y) > 4.0f)
+            rmb_armed = false;
+        if (ccr_gui_mouse_released(CCR_MOUSE_RIGHT) && rmb_armed && can_act &&
+            doc.ed.drag == CCR_DRAG_IDLE) {
+            bool en[CCR_ACTION_COUNT];
+            pie_ctx = ccr_editor_context(&doc.ed, world);
+            pie_enabled(&doc.ed, &pie_ctx, en);
+            ccr_pie_open(&pie, m, en, pie_ctx.commented);
+        }
+        rmb_armed = rmb_armed && ccr_gui_mouse_down(CCR_MOUSE_RIGHT);
+
+        if (can_act && !pie.open && !was_open && ccr_gui_ctrl_down()) {
             if (ccr_gui_key_pressed(CCR_KEY_S))
                 document_save(&doc, &opt);
             /* Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo */
@@ -520,21 +632,39 @@ int ccr_run(int argc, char **argv)
             if (ccr_gui_key_pressed(CCR_KEY_Y))
                 ccr_editor_redo(&doc.ed);
         }
-        if (ccr_gui_key_pressed(CCR_KEY_HOME))
+        /* the block under the mouse: Delete, Ctrl+D, Ctrl+/ */
+        if (can_act && !pie.open && !was_open && inside) {
+            ccr_action a = CCR_ACTION_NONE;
+            if (ccr_gui_key_pressed(CCR_KEY_DELETE))
+                a = CCR_ACTION_DELETE;
+            else if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_D))
+                a = CCR_ACTION_DUPLICATE;
+            else if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_SLASH))
+                a = CCR_ACTION_COMMENT;
+            if (a != CCR_ACTION_NONE) {
+                ccr_context ctx = ccr_editor_context(&doc.ed, world);
+                bool en[CCR_ACTION_COUNT];
+                pie_enabled(&doc.ed, &ctx, en);
+                if (en[a])
+                    run_action(a, &ctx, world, &doc, &opt, &canvas, viewport, &te);
+            }
+        }
+        if (ccr_gui_key_pressed(CCR_KEY_HOME) && !pie.open)
             fit_view(&canvas, &doc, viewport, 1.0f);
 
-        ccr_canvas_update(&canvas, viewport);
+        if (!pie.open && !was_open)
+            ccr_canvas_update(&canvas, viewport);
 
-        const ccr_vec2 m = ccr_gui_mouse();
-        const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
-        if (doc.loaded && editing == CCR_NONE) {
-            bool inside = point_in(m, viewport);
-            int spawn = (over_palette && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) ? palette_hit(m) : -1;
+        if (doc.loaded && te.node == CCR_NONE && !pie.open && !was_open) {
+            /* a carried copy (Duplicate) lands on a click anywhere, the
+             * palette included, where it is thrown away */
+            const bool lmb = ccr_gui_mouse_pressed(CCR_MOUSE_LEFT);
+            int spawn = (over_palette && lmb) ? palette_hit(m) : -1;
             if (spawn >= 0)
-                ccr_editor_spawn(&doc.ed, (ccr_template)spawn, ccr_canvas_to_world(&canvas, m));
+                ccr_editor_spawn(&doc.ed, (ccr_template)spawn, world);
             ccr_editor_input in = {
                 .mouse      = ccr_canvas_to_world(&canvas, m),
-                .pressed    = inside && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT),
+                .pressed    = lmb && (inside || doc.ed.carrying),
                 .down       = ccr_gui_mouse_down(CCR_MOUSE_LEFT),
                 .released   = ccr_gui_mouse_released(CCR_MOUSE_LEFT),
                 .zoom       = canvas.zoom,
@@ -543,12 +673,8 @@ int ccr_run(int argc, char **argv)
             ccr_editor_update(&doc.ed, &in);
 
             ccr_node_id req = ccr_editor_take_edit_request(&doc.ed);
-            if (req != CCR_NONE) {
-                editing = req;
-                ccr_gui_textbox_reset();
-                snprintf(edit_buf, sizeof edit_buf, "%s",
-                         ccr_ast_str(&doc.ed.ast, doc.ed.ast.nodes[req].name));
-            }
+            if (req != CCR_NONE)
+                start_editing(&te, &doc.ed, req);
         }
 
         ccr_gui_begin_frame(COL_BG);
@@ -561,24 +687,25 @@ int ccr_run(int argc, char **argv)
             draw_palette(h, doc.ed.drag == CCR_DRAG_MOVING && over_palette);
 
         /* the text box over the slot being edited */
-        if (editing != CCR_NONE) {
+        if (te.node != CCR_NONE) {
             ccr_rect r;
-            if (!ccr_editor_node_rect(&doc.ed, editing, &r)) {
-                editing = CCR_NONE;
+            if (!ccr_editor_node_rect(&doc.ed, te.node, &r)) {
+                te.node = CCR_NONE;
             } else {
                 ccr_vec2 tl = ccr_canvas_to_screen(&canvas, (ccr_vec2){ r.x, r.y });
                 float bw = r.w * canvas.zoom;
                 ccr_rect box = { tl.x - 4.0f, tl.y - 4.0f, bw < 320.0f ? 320.0f : bw + 40.0f, 34.0f };
                 if (ccr_gui_key_pressed(CCR_KEY_ESCAPE)) {
-                    editing = CCR_NONE;                     /* cancel */
-                } else if (ccr_gui_textbox(box, edit_buf, (int)sizeof edit_buf, 20.0f)) {
-                    ccr_editor_set_text(&doc.ed, editing, edit_buf);
-                    editing = CCR_NONE;
+                    te.node = CCR_NONE;                     /* cancel */
+                } else if (ccr_gui_textbox(box, te.buf, (int)sizeof te.buf, 20.0f)) {
+                    ccr_editor_set_text(&doc.ed, te.node, te.buf);
+                    te.node = CCR_NONE;
                 }
             }
         }
         draw_topbar(w, &doc);
         draw_statusbar(w, h, &canvas, &doc);
+        ccr_pie_draw(&pie);
 
         ++frame;
         const bool last = opt.smoke_frames > 0 && frame >= opt.smoke_frames;

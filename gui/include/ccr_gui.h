@@ -33,7 +33,10 @@ typedef enum ccr_key {
     CCR_KEY_Y,
     CCR_KEY_Z,
     CCR_KEY_ESCAPE,
-    CCR_KEY_F5
+    CCR_KEY_F5,
+    CCR_KEY_D,
+    CCR_KEY_DELETE,
+    CCR_KEY_SLASH
 } ccr_key;
 
 /* Window and frame lifecycle */
@@ -70,6 +73,9 @@ void  ccr_gui_rect(ccr_rect r, ccr_color c);
 void  ccr_gui_rect_rounded(ccr_rect r, float roundness, ccr_color c);
 void  ccr_gui_hex(ccr_rect r, ccr_color c);   /* Scratch-style boolean shape */
 void  ccr_gui_circle(ccr_vec2 center, float radius, ccr_color c);
+/* Part of a ring; angles in degrees, 0 = right, clockwise (y is down). */
+void  ccr_gui_ring(ccr_vec2 center, float inner, float outer,
+                   float from_deg, float to_deg, ccr_color c);
 void  ccr_gui_text(const char *text, float x, float y, float size, ccr_color c);
 float ccr_gui_text_width(const char *text, float size);
 

@@ -622,6 +622,120 @@ static void test_trash(void)
     ccr_editor_free(&ed);
 }
 
+/* The pie menu's actions: delete, duplicate, comment out. */
+static void test_delete(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id bump = stmt(&ed, "counter += TWICE(n)");
+    ccr_context c = ccr_editor_context(&ed, corner(&ed, bump));
+    CHECK(c.item == bump && c.can_delete && c.can_duplicate && c.can_comment,
+          "the context under a statement is wrong");
+    CHECK(ccr_editor_delete(&ed, bump), "delete refused");
+
+    char err[256];
+    char *text = save_to(&ed, "deleted.c", err, sizeof err);
+    CHECK(text && !strstr(text, "counter += TWICE") && !strstr(text, "bump it"),
+          "the deleted statement (or its comment) was saved");
+    CHECK(text && strstr(text, "struct pair") && strstr(text, "if (n > 3)"),
+          "its neighbours went with it");
+    free(text);
+    check_compiles("deleted.c");
+
+    CHECK(ccr_editor_undo(&ed), "undo of delete failed");
+    text = generate(&ed);
+    CHECK(text && strcmp(text, ed.ast.source) == 0, "undoing a delete did not restore the file");
+    free(text);
+    ccr_editor_free(&ed);
+}
+
+static void test_duplicate(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id hello = stmt(&ed, "printf(\"hello\\n\")");
+    ccr_vec2 m = corner(&ed, hello);
+    CHECK(ccr_editor_duplicate(&ed, hello, m), "duplicate refused");
+    CHECK(ccr_editor_loose_count(&ed) == 1, "the copy is not on the canvas");
+
+    /* carried without holding a button, it lands on the next click */
+    ccr_vec2 at;
+    if (snap_at(&ed, CCR_SNAP_AFTER, hello, &at)) {
+        ccr_vec2 hold = { at.x + 10.0f, at.y + 10.0f };
+        frame(&ed, (ccr_vec2){ m.x + 40.0f, m.y + 40.0f }, false, false, false);
+        CHECK(ed.drag == CCR_DRAG_MOVING, "the copy was dropped before the click");
+        frame(&ed, hold, false, false, false);
+        frame(&ed, hold, true, true, false);
+        frame(&ed, hold, false, false, true);
+    }
+    CHECK(ed.drag == CCR_DRAG_IDLE && ccr_editor_loose_count(&ed) == 0,
+          "the copy did not snap in");
+
+    char err[256];
+    char *text = save_to(&ed, "duplicated.c", err, sizeof err);
+    CHECK(text && count(text, "printf(\"hello\\n\");") == 2, "expected two hellos");
+    CHECK(text && count(text, "first: say hello") == 2, "the comment did not come with the copy");
+    free(text);
+    check_compiles("duplicated.c");
+
+    CHECK(ccr_editor_undo(&ed), "undo of duplicate failed");
+    text = generate(&ed);
+    CHECK(text && strcmp(text, ed.ast.source) == 0, "duplicate took more than one undo");
+    free(text);
+    CHECK(ccr_editor_loose_count(&ed) == 0, "undo left the copy lying around");
+    ccr_editor_free(&ed);
+}
+
+static void test_comment_out(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id loop = stmt(&ed, "while (b < 10)");
+    ccr_node_id bump = stmt(&ed, "counter += TWICE(n)");
+    CHECK(ccr_editor_toggle_comment(&ed, loop), "comment out refused");
+    CHECK(ccr_editor_toggle_comment(&ed, bump), "comment out refused");
+    CHECK(ccr_editor_context(&ed, corner(&ed, loop)).commented, "the context does not see it");
+
+    char err[256];
+    char *text = save_to(&ed, "commented.c", err, sizeof err);
+    CHECK(text && strstr(text, "    // while (b < 10) {\n    //     b++;\n"
+                               "    //     // nothing else here\n    // }\n"),
+          "the loop was not commented out line by line");
+    CHECK(text && strstr(text, "    // /* bump it */\n    // counter += TWICE(n);\n"),
+          "the statement and its comment were not commented out");
+    CHECK(text && strstr(text, "    do b--;"), "the next statement was commented too");
+    free(text);
+    check_compiles("commented.c");
+
+    /* moved one level deeper while commented: the slashes follow it */
+    ccr_node_id hello = stmt(&ed, "printf(\"hello\\n\")");
+    ccr_node_id inner = stmt(&ed, "b++");
+    lift_one(&ed, hello, 0);
+    CHECK(ccr_editor_toggle_comment(&ed, hello), "comment out refused");
+    put_after(&ed, hello, inner);
+    text = save_to(&ed, "commented_moved.c", err, sizeof err);
+    CHECK(text && strstr(text, "    //     // // first: say hello\n    //     // printf(\"hello\\n\");\n"),
+          "a commented statement moved into the commented loop is wrong");
+    free(text);
+    check_compiles("commented_moved.c");
+    for (int i = 0; i < 4; ++i)   /* lift, put back, comment, move */
+        CHECK(ccr_editor_undo(&ed), "undo %d failed", i);
+
+    /* back on: exactly as it was */
+    CHECK(ccr_editor_toggle_comment(&ed, loop) && ccr_editor_toggle_comment(&ed, bump),
+          "uncomment refused");
+    text = generate(&ed);
+    CHECK(text && strstr(text, "    while (b < 10) {\n        b++;"), "uncommented loop is wrong");
+    free(text);
+
+    for (int i = 0; i < 4; ++i)
+        CHECK(ccr_editor_undo(&ed), "undo %d failed", i);
+    text = generate(&ed);
+    CHECK(text && strcmp(text, ed.ast.source) == 0, "undoing the comments did not restore the file");
+    free(text);
+    ccr_editor_free(&ed);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -646,6 +760,9 @@ int main(int argc, char **argv)
     test_palette_blocks();
     test_every_template();
     test_trash();
+    test_delete();
+    test_duplicate();
+    test_comment_out();
 
     ccr_gui_shutdown();
     if (g_failures)

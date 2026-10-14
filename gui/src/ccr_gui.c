@@ -175,6 +175,13 @@ void ccr_gui_circle(ccr_vec2 center, float radius, ccr_color c)
     DrawCircleV((Vector2){ center.x, center.y }, radius, to_rl(c));
 }
 
+void ccr_gui_ring(ccr_vec2 center, float inner, float outer,
+                  float from_deg, float to_deg, ccr_color c)
+{
+    int segments = (int)((to_deg - from_deg) / 4.0f) + 2;
+    DrawRing((Vector2){ center.x, center.y }, inner, outer, from_deg, to_deg, segments, to_rl(c));
+}
+
 /* The default raylib font is a 10px pixel font; spacing scales with size. */
 void ccr_gui_text(const char *text, float x, float y, float size, ccr_color c)
 {
@@ -195,6 +202,9 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_Y:    return IsKeyPressed(KEY_Y) || IsKeyPressedRepeat(KEY_Y);
     case CCR_KEY_Z:    return IsKeyPressed(KEY_Z) || IsKeyPressedRepeat(KEY_Z);
     case CCR_KEY_F5:   return IsKeyPressed(KEY_F5);
+    case CCR_KEY_D:    return IsKeyPressed(KEY_D);
+    case CCR_KEY_DELETE: return IsKeyPressed(KEY_DELETE);
+    case CCR_KEY_SLASH:  return IsKeyPressed(KEY_SLASH);
     }
     return false;
 }

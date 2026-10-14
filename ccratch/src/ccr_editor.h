@@ -100,6 +100,9 @@ typedef struct ccr_editor {
 
     /* a text slot was clicked: the app opens a text box for it */
     ccr_node_id    edit_request;
+
+    /* a duplicate stuck to the mouse: dropped on the next click */
+    bool           carrying;
 } ccr_editor;
 
 /* Takes ownership of `ast` (parsed, bodies wrapped). Needs an open window. */
@@ -131,7 +134,33 @@ bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text);
 /* The text slot to edit after a click, or CCR_NONE. Clears the request. */
 ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed);
 
+/* What is under the mouse, and what can be done to it (for the pie menu). */
+typedef struct ccr_context {
+    ccr_node_id node;        /* topmost node under the mouse, or CCR_NONE */
+    ccr_node_id item;        /* the statement in a stack it belongs to */
+    ccr_node_id text;        /* a white text field, if that is what was hit */
+    bool        can_delete;
+    bool        can_duplicate;
+    bool        can_comment;
+    bool        commented;   /* item is currently commented out */
+} ccr_context;
+
+ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse);
+
+/* Deletes one block from its stack; the blocks under it move up. A whole
+ * loose stack goes if its top block is picked. One undo step. */
+bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item);
+
+/* Copies a block; the copy follows the mouse until the next click, then
+ * snaps or lies loose like any dropped block. */
+bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse);
+
+/* Comments a block out (grey, saved as // lines), or back in. */
+bool ccr_editor_toggle_comment(ccr_editor *ed, ccr_node_id item);
+
 /* Undo/redo one drag. False if there is nothing to do (or a drag is on). */
+bool ccr_editor_can_undo(const ccr_editor *ed);
+bool ccr_editor_can_redo(const ccr_editor *ed);
 bool ccr_editor_undo(ccr_editor *ed);
 bool ccr_editor_redo(ccr_editor *ed);
 

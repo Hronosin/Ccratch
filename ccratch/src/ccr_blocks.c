@@ -49,6 +49,7 @@ typedef struct layout {
     ccr_blocks    *out;
     float         *ew, *eh;   /* cached expression sizes, per node */
     bool           oom;
+    int            dim;       /* > 0 inside a commented-out statement */
 } layout;
 
 static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w);
@@ -113,13 +114,25 @@ static void push_prim(layout *L, ccr_prim p)
     }
 }
 
+/* Commented-out code: the colour drained towards slate grey. */
+static ccr_color dimmed(ccr_color c)
+{
+    const uint32_t grey[3] = { 0x4A, 0x4F, 0x5A };
+    uint32_t out = c & 0xFFu;
+    for (int i = 0; i < 3; ++i) {
+        uint32_t ch = (c >> (24 - 8 * i)) & 0xFFu;
+        out |= ((ch + grey[i] * 5u) / 6u) << (24 - 8 * i);
+    }
+    return out;
+}
+
 static void push_shape(layout *L, shape sh, category cat, ccr_rect r, ccr_node_id node)
 {
     ccr_prim p = {
         .kind = (sh == SHAPE_HEX) ? CCR_PRIM_HEX : CCR_PRIM_BLOCK,
         .rect = r,
-        .fill = g_palette[cat][0],
-        .edge = g_palette[cat][1],
+        .fill = L->dim ? dimmed(g_palette[cat][0]) : g_palette[cat][0],
+        .edge = L->dim ? dimmed(g_palette[cat][1]) : g_palette[cat][1],
         .roundness = (sh == SHAPE_PILL) ? 1.0f : 0.18f,
         .node = node,
     };
@@ -141,7 +154,7 @@ static void push_text(layout *L, const char *s, float x, float y, ccr_color colo
     ccr_prim p = {
         .kind = CCR_PRIM_TEXT,
         .rect = { x, y, ccr_gui_text_width(s, FONT), FONT },
-        .fill = color,
+        .fill = L->dim ? 0xAEB4C0FFu : color,
         .text = at,
         .font = FONT,
         .node = node,
@@ -578,7 +591,19 @@ static ccr_node_id var_init(const layout *L, ccr_node_id var)
 
 static size2 emit_decl_block(layout *L, ccr_node_id id, float x, float y, float *max_w);
 
+static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *max_w);
+
+/* A statement; a commented-out one, and everything in it, drawn grey. */
 static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w)
+{
+    const bool off = (N(L, id)->flags & CCR_FLAG_COMMENTED) != 0;
+    L->dim += off;
+    float h = emit_stmt_body(L, id, x, y, max_w);
+    L->dim -= off;
+    return h;
+}
+
+static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *max_w)
 {
     const ccr_node *n = N(L, id);
     const uint32_t kids = child_count(L, id);
