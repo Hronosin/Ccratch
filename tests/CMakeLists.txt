@@ -87,6 +87,13 @@ add_executable(test_pie test_pie.c)
 target_link_libraries(test_pie PRIVATE ccratch_core)
 add_test(NAME pie_menu COMMAND test_pie)
 
+# The joke agreement prints, and says where the real license is.
+add_test(NAME cli_eula COMMAND ${CCR_BIN} --eula --lang en)
+set_tests_properties(cli_eula PROPERTIES
+    PASS_REGULAR_EXPRESSION "IHATERUSTL.*chaturanga.*Mozilla")
+add_test(NAME cli_eula_ru COMMAND ${CCR_BIN} --eula --lang ru)
+set_tests_properties(cli_eula_ru PROPERTIES PASS_REGULAR_EXPRESSION "чатурангу.*Mozilla")
+
 # Language packs: plurals, fallbacks, broken packs, remembered choice.
 add_executable(test_lang test_lang.c)
 target_link_libraries(test_lang PRIVATE ccratch_core)

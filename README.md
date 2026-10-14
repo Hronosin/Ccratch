@@ -339,3 +339,17 @@ ccratch --check-lang uk.lang             check a pack before sharing it
 - Home: back to the start of the file at 100%
 - F5: reload the file from disk (throws away unsaved moves; the title shows
   `*` while there are any)
+
+## License
+
+Ccratch is licensed under the **IHATERUSTL** (Insane Harmonic Amazing
+Trust Elementary Random United Standardized Temple License), which is
+legally the [Mozilla Public License 2.0](LICENSE) wearing a shrine maiden
+costume. Fork it and change it: keep the authors, keep your changes to
+these files open. Plugins and programs of your own around it can be under
+any license. The spirit of the thing, and the third-party licenses, are in
+[IHATERUSTL.md](IHATERUSTL.md).
+
+On first run Ccratch also asks you to accept an End User License
+Agreement. It is a joke from start to finish and has no legal force;
+`ccratch --eula` prints it.

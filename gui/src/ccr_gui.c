@@ -214,6 +214,16 @@ void ccr_gui_ring(ccr_vec2 center, float inner, float outer,
     DrawRing((Vector2){ center.x, center.y }, inner, outer, from_deg, to_deg, segments, to_rl(c));
 }
 
+void ccr_gui_clip_begin(ccr_rect r)
+{
+    BeginScissorMode((int)r.x, (int)r.y, (int)r.w, (int)r.h);
+}
+
+void ccr_gui_clip_end(void)
+{
+    EndScissorMode();
+}
+
 /* The default raylib font is a 10px pixel font; spacing scales with size. */
 void ccr_gui_text(const char *text, float x, float y, float size, ccr_color c)
 {

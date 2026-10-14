@@ -81,6 +81,9 @@ void  ccr_gui_circle(ccr_vec2 center, float radius, ccr_color c);
 void  ccr_gui_ring(ccr_vec2 center, float inner, float outer,
                    float from_deg, float to_deg, ccr_color c);
 void  ccr_gui_text(const char *text, float x, float y, float size, ccr_color c);
+/* Drawing outside `r` is cut off until ccr_gui_clip_end. */
+void  ccr_gui_clip_begin(ccr_rect r);
+void  ccr_gui_clip_end(void);
 float ccr_gui_text_width(const char *text, float size);
 
 /* Widgets */

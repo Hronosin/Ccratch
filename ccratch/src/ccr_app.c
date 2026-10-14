@@ -2,6 +2,7 @@
 #include "ccr_ast.h"
 #include "ccr_canvas.h"
 #include "ccr_codegen.h"
+#include "ccr_config.h"
 #include "ccr_editor.h"
 #include "ccr_gui.h"
 #include "ccr_lang.h"
@@ -63,6 +64,7 @@ typedef struct ccr_options {
     const char *open;           /* file to open in the editor */
     int         zoom_percent;   /* initial zoom, 0 = 100% */
     const char *lang;           /* --lang CODE, NULL: pick one */
+    bool        eula;           /* --eula: print the agreement, exit */
     const char *const *clang_args;  /* everything after "--" */
     int         clang_arg_count;
 } ccr_options;
@@ -101,6 +103,7 @@ static void print_usage(const char *argv0)
            "                         picked with the button in the window\n"
            "  --list-langs           show the language packs found, and where\n"
            "  --lang-template        print the English text as a pack to translate\n"
+           "  --eula                 the IHATERUSTL agreement (a joke; LICENSE is real)\n"
            "  --check-lang FILE      check a language pack for missing or broken text\n"
            "  --smoke-frames N       run N frames and exit (for CI)\n"
            "  --screenshot FILE.png  save the last frame before exiting\n",
@@ -239,6 +242,8 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             opt->smoke_frames = atoi(argv[++i]);
         } else if (strcmp(a, "--screenshot") == 0 && i + 1 < argc) {
             opt->screenshot = argv[++i];
+        } else if (strcmp(a, "--eula") == 0) {
+            opt->eula = true;
         } else if (strcmp(a, "--ranges") == 0) {
             opt->ranges = true;
         } else if (strcmp(a, "--lang") == 0 && i + 1 < argc) {
@@ -426,6 +431,221 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
 
 /* -------------------------------------------------------- drawing */
 
+/* ------------------------------------------------------- the agreement */
+
+/* What the IHATERUSTL agreement says, in order. */
+typedef enum eula_style { EULA_HEAD, EULA_SMALL, EULA_LEAD, EULA_TEXT, EULA_CLAUSE,
+                          EULA_WARN, EULA_GAP } eula_style;
+
+static const struct { ccr_text text; eula_style style; } g_eula[] = {
+    { CCR_T_EULA_TITLE, EULA_HEAD },     { CCR_T_EULA_FULL_NAME, EULA_SMALL },
+    { CCR_T_EULA_SUBTITLE, EULA_SMALL }, { CCR_T_COUNT, EULA_GAP },
+    { CCR_T_EULA_OPENING, EULA_LEAD },   { CCR_T_COUNT, EULA_GAP },
+    { CCR_T_EULA_AGREE, EULA_TEXT },
+    { CCR_T_EULA_C01, EULA_CLAUSE }, { CCR_T_EULA_C02, EULA_CLAUSE }, { CCR_T_EULA_C03, EULA_CLAUSE },
+    { CCR_T_EULA_C04, EULA_CLAUSE }, { CCR_T_EULA_C05, EULA_CLAUSE }, { CCR_T_EULA_C06, EULA_CLAUSE },
+    { CCR_T_EULA_C07, EULA_CLAUSE }, { CCR_T_EULA_C08, EULA_CLAUSE }, { CCR_T_EULA_C09, EULA_CLAUSE },
+    { CCR_T_EULA_C10, EULA_CLAUSE }, { CCR_T_EULA_C11, EULA_CLAUSE }, { CCR_T_EULA_C12, EULA_CLAUSE },
+    { CCR_T_EULA_C13, EULA_CLAUSE }, { CCR_T_EULA_C14, EULA_CLAUSE }, { CCR_T_EULA_C15, EULA_CLAUSE },
+    { CCR_T_COUNT, EULA_GAP },
+    { CCR_T_EULA_MEME_ZONE, EULA_WARN },
+    { CCR_T_EULA_M01, EULA_CLAUSE }, { CCR_T_EULA_M02, EULA_CLAUSE },
+    { CCR_T_COUNT, EULA_GAP },
+    { CCR_T_EULA_FINAL, EULA_SMALL },
+};
+#define EULA_ITEMS ((int)(sizeof g_eula / sizeof g_eula[0]))
+
+/* --eula: the same, in the terminal, wrapped at 76 letters; lines after
+ * the first start with `indent`. */
+static void print_wrapped(const char *prefix, const char *text, const char *indent, int width)
+{
+    const int indent_n = (int)strlen(indent);
+    int col = (int)strlen(prefix);
+    bool first = true;
+    fputs(prefix, stdout);
+    for (const char *p = text; *p;) {
+        while (*p == ' ')
+            ++p;
+        const char *w = p;
+        int letters = 0;
+        for (; *p && *p != ' '; ++p)
+            letters += ((unsigned char)*p & 0xC0) != 0x80;   /* UTF-8: count letters */
+        if (p == w)
+            break;
+        if (!first && col + 1 + letters > width) {
+            printf("\n%s", indent);
+            col = indent_n;
+        } else if (!first) {
+            fputc(' ', stdout);
+            ++col;
+        }
+        fwrite(w, 1, (size_t)(p - w), stdout);
+        col += letters;
+        first = false;
+    }
+    fputc('\n', stdout);
+}
+
+static void print_eula(void)
+{
+    int n = 0;
+    for (int i = 0; i < EULA_ITEMS; ++i) {
+        const char *t = g_eula[i].text < CCR_T_COUNT ? ccr_tr(g_eula[i].text) : "";
+        char num[16];
+        switch (g_eula[i].style) {
+        case EULA_GAP:
+            fputc('\n', stdout);
+            break;
+        case EULA_CLAUSE:
+            snprintf(num, sizeof num, "%2d. ", ++n);
+            print_wrapped(num, t, "    ", 76);
+            break;
+        case EULA_HEAD:
+            printf("%s\n", t);
+            break;
+        default:
+            print_wrapped("", t, "", 76);
+            break;
+        }
+    }
+}
+
+typedef struct eula_view {
+    bool  open;
+    bool  first_run;   /* must be answered: accept, or admit to Rust */
+    float scroll;
+} eula_view;
+
+/*
+ * Lays out `text` in lines at most `w` wide at (x, y); draws them if
+ * `draw`. Returns the height used.
+ */
+static float wrap_text(const char *text, float x, float y, float w, float size, ccr_color c,
+                       bool draw)
+{
+    const float lh = size * 1.3f;
+    char line[1200] = "", trial[2400];
+    float h = 0.0f;
+    for (const char *p = text; *p;) {
+        const char *word = p;
+        while (*p && *p != ' ')
+            ++p;
+        snprintf(trial, sizeof trial, "%s%s%.*s", line, *line ? " " : "", (int)(p - word), word);
+        if (*line && ccr_gui_text_width(trial, size) > w) {
+            if (draw)
+                ccr_gui_text(line, x, y + h, size, c);
+            h += lh;
+            snprintf(line, sizeof line, "%.*s", (int)(p - word), word);
+        } else {
+            size_t n = strlen(trial);   /* a word longer than a line just runs on */
+            if (n >= sizeof line)
+                n = sizeof line - 1;
+            memcpy(line, trial, n);
+            line[n] = '\0';
+        }
+        while (*p == ' ')
+            ++p;
+    }
+    if (*line) {
+        if (draw)
+            ccr_gui_text(line, x, y + h, size, c);
+        h += lh;
+    }
+    return h;
+}
+
+/* All of the agreement, from (x, y). Returns its height. */
+static float eula_body(float x, float y, float w, bool draw)
+{
+    float h = 0.0f;
+    int n = 0;
+    for (int i = 0; i < EULA_ITEMS; ++i) {
+        const char *t = g_eula[i].text < CCR_T_COUNT ? ccr_tr(g_eula[i].text) : "";
+        char num[16];
+        switch (g_eula[i].style) {
+        case EULA_GAP:
+            h += 14.0f;
+            break;
+        case EULA_HEAD:
+            if (draw)
+                ccr_gui_text(t, x, y + h, 40.0f, COL_ACCENT);
+            h += 46.0f;
+            break;
+        case EULA_SMALL:
+            h += wrap_text(t, x, y + h, w, 15.0f, COL_BAR_TEXT, draw);
+            break;
+        case EULA_LEAD:
+            h += wrap_text(t, x, y + h, w, 21.0f, COL_TITLE, draw);
+            break;
+        case EULA_TEXT:
+            h += wrap_text(t, x, y + h, w, 17.0f, COL_TITLE, draw) + 6.0f;
+            break;
+        case EULA_WARN:
+            h += wrap_text(t, x, y + h, w, 17.0f, 0xFFE066FFu, draw) + 6.0f;
+            break;
+        case EULA_CLAUSE:
+            snprintf(num, sizeof num, "%d.", ++n);
+            if (draw)
+                ccr_gui_text(num, x, y + h, 17.0f, COL_ACCENT);
+            h += wrap_text(t, x + 34.0f, y + h, w - 34.0f, 17.0f, COL_BAR_TEXT, draw) + 6.0f;
+            break;
+        }
+    }
+    return h;
+}
+
+/* The agreement over everything. On first run it waits for an answer. */
+static void eula_frame(eula_view *ev, int width, int height, ccr_document *doc)
+{
+    if (!ev->open)
+        return;
+    ccr_gui_rect((ccr_rect){ 0, 0, (float)width, (float)height }, 0x000000B0u);
+    const float pw = width - 80.0f < 780.0f ? (float)width - 80.0f : 780.0f;
+    const float ph = (float)height - 80.0f;
+    const ccr_rect panel = { ((float)width - pw) * 0.5f, 40.0f, pw, ph };
+    ccr_gui_rect_rounded((ccr_rect){ panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4 }, 0.03f,
+                         COL_ACCENT);
+    ccr_gui_rect_rounded(panel, 0.03f, COL_BG);
+
+    const float pad = 28.0f, buttons_h = 64.0f;
+    const ccr_rect text = { panel.x + pad, panel.y + pad, panel.w - pad * 2.0f,
+                            panel.h - pad - buttons_h };
+    const float full = eula_body(text.x, 0.0f, text.w - 12.0f, false);
+    const float max_scroll = full > text.h ? full - text.h : 0.0f;
+    ev->scroll -= ccr_gui_wheel() * 60.0f;
+    if (ev->scroll < 0.0f) ev->scroll = 0.0f;
+    if (ev->scroll > max_scroll) ev->scroll = max_scroll;
+
+    ccr_gui_clip_begin(text);
+    eula_body(text.x, text.y - ev->scroll, text.w - 12.0f, true);
+    ccr_gui_clip_end();
+    if (max_scroll > 0.0f) {   /* a thin scroll bar */
+        float bh = text.h * text.h / full;
+        float by = text.y + (text.h - bh) * (ev->scroll / max_scroll);
+        ccr_gui_rect_rounded((ccr_rect){ text.x + text.w - 4.0f, by, 4.0f, bh }, 1.0f, COL_HINT);
+    }
+
+    const float by = panel.y + panel.h - buttons_h + 14.0f;
+    if (ev->first_run) {
+        const ccr_rect rust = { panel.x + panel.w - pad - 180.0f, by, 180.0f, 34.0f };
+        const ccr_rect ok = { rust.x - 12.0f - 180.0f, by, 180.0f, 34.0f };
+        bool accepted = ccr_gui_button(ok, ccr_tr(CCR_T_EULA_ACCEPT));
+        bool rusted = !accepted && ccr_gui_button(rust, ccr_tr(CCR_T_EULA_RUST));
+        if (accepted || rusted) {
+            if (!ccr_config_set("eula", accepted ? "accepted" : "rust"))
+                fprintf(stderr, "ccratch: could not remember the answer in ~/.config/ccratch\n");
+            ccr_trf(doc->status, sizeof doc->status,
+                    accepted ? CCR_T_EULA_ACCEPTED : CCR_T_EULA_RUSTED);
+            doc->has_errors = rusted;
+            ev->open = ev->first_run = false;
+        }
+    } else {
+        const ccr_rect close = { panel.x + panel.w - pad - 180.0f, by, 180.0f, 34.0f };
+        if (ccr_gui_button(close, ccr_tr(CCR_T_EULA_CLOSE)) || ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+            ev->open = false;
+    }
+}
+
 /* The language button: the next pack each click, remembered for next time. */
 static void next_language(ccr_document *doc)
 {
@@ -447,8 +667,9 @@ static void next_language(ccr_document *doc)
     }
 }
 
-static void draw_topbar(int width, ccr_document *doc)
+static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
 {
+    const bool modal = ev->open;
     ccr_gui_rect((ccr_rect){ 0, 0, (float)width, TOPBAR_H }, COL_BAR);
     ccr_gui_circle((ccr_vec2){ 22.0f, TOPBAR_H * 0.5f }, 8.0f, COL_ACCENT);
     ccr_gui_text("Ccratch", 38.0f, 8.0f, 22.0f, COL_TITLE);
@@ -465,11 +686,15 @@ static void draw_topbar(int width, ccr_document *doc)
     for (char *c = code; *c; ++c)
         if (*c >= 'a' && *c <= 'z')
             *c = (char)(*c - 'a' + 'A');
-    if (ccr_gui_button((ccr_rect){ (float)width - 166.0f, 7.0f, 48.0f, 26.0f }, code))
+    if (ccr_gui_button((ccr_rect){ (float)width - 166.0f, 7.0f, 48.0f, 26.0f }, code) && !modal)
         next_language(doc);
+    if (ccr_gui_button((ccr_rect){ (float)width - 206.0f, 7.0f, 32.0f, 26.0f }, "?") && !modal) {
+        ev->open = true;   /* the agreement again, to read it at leisure */
+        ev->scroll = 0.0f;
+    }
 
     float x = (float)width - 110.0f;
-    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(CCR_T_BUILD)))
+    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(CCR_T_BUILD)) && !modal)
         printf("[ccratch] build: nothing to build yet. Go do some shrine work.\n");
 }
 
@@ -631,6 +856,12 @@ int ccr_run(int argc, char **argv)
     if (early >= 0)
         return early;
 
+    if (opt.eula) {
+        ccr_lang_pick(opt.lang, stderr);
+        print_eula();
+        ccr_lang_reset();
+        return 0;
+    }
     if (opt.dump_ast)
         return run_dump_ast(&opt);
     if (opt.roundtrip)
@@ -641,6 +872,10 @@ int ccr_run(int argc, char **argv)
         return 1;
     }
     ccr_lang_pick(opt.lang, stderr);
+    char answered[16];
+    eula_view eula = { 0 };
+    eula.open = eula.first_run =
+        opt.smoke_frames == 0 && !ccr_config_get("eula", answered, sizeof answered);
     if (!load_font())
         fprintf(stderr, "ccratch: font did not load, falling back to raylib's (ASCII only)\n");
     if (!ccr_gui_set_icon_png(ccr_icon_png, ccr_icon_png_size))
@@ -695,7 +930,7 @@ int ccr_run(int argc, char **argv)
         const ccr_vec2 world = ccr_canvas_to_world(&canvas, m);
         const bool inside = point_in(m, viewport);
         const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
-        const bool can_act = doc.loaded && te.node == CCR_NONE;
+        const bool can_act = doc.loaded && te.node == CCR_NONE && !eula.open;
 
         /* the pie, while it is open, gets the mouse and Esc to itself */
         if (pie.open) {
@@ -756,10 +991,10 @@ int ccr_run(int argc, char **argv)
         if (ccr_gui_key_pressed(CCR_KEY_HOME) && !pie.open)
             fit_view(&canvas, &doc, viewport, 1.0f);
 
-        if (!pie.open && !was_open)
+        if (!pie.open && !was_open && !eula.open)
             ccr_canvas_update(&canvas, viewport);
 
-        if (doc.loaded && te.node == CCR_NONE && !pie.open && !was_open) {
+        if (can_act && !pie.open && !was_open) {
             /* a carried copy (Duplicate) lands on a click anywhere, the
              * palette included, where it is thrown away */
             const bool lmb = ccr_gui_mouse_pressed(CCR_MOUSE_LEFT);
@@ -807,9 +1042,10 @@ int ccr_run(int argc, char **argv)
                 }
             }
         }
-        draw_topbar(w, &doc);
+        draw_topbar(w, &doc, &eula);
         draw_statusbar(w, h, &canvas, &doc);
         ccr_pie_draw(&pie);
+        eula_frame(&eula, w, h, &doc);
 
         ++frame;
         const bool last = opt.smoke_frames > 0 && frame >= opt.smoke_frames;

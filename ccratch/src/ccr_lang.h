@@ -84,7 +84,66 @@
     X(GEN_LOST,         "save.lost",             0,                                      \
       "line %u: changed code in a place I cannot locate in the file")                    \
     X(GEN_EMPTY_SLOT,   "save.empty_slot",       0,                                      \
-      "line %u: an empty slot; type into it or drop a block there")
+      "line %u: an empty slot; type into it or drop a block there") \
+    /* the agreement (a joke; LICENSE is the real thing) */ \
+    X(EULA_TITLE, "eula.title", 0, \
+      "IHATERUSTL") \
+    X(EULA_FULL_NAME, "eula.full_name", 0, \
+      "Insane Harmonic Amazing Trust Elementary Random United Standardized Temple License") \
+    X(EULA_SUBTITLE, "eula.subtitle", 0, \
+      "End User License Agreement. Has no legal force whatsoever.") \
+    X(EULA_OPENING, "eula.opening", 0, \
+      "This is Scratch. It grew up, met RMS and understood that freedom matters most. The blocks are still sacred, though.") \
+    X(EULA_AGREE, "eula.agree", 0, \
+      "By pressing \"I accept\", the User agrees:") \
+    X(EULA_C01, "eula.c01", 0, \
+      "To say \"GNU/Linux\" (or \"GNU plus Linux\") and \"the Linux kernel\", never just \"Linux\". I'd just like to interject for a moment.") \
+    X(EULA_C02, "eula.c02", 0, \
+      "If you write C++, you accept being one of the causes of the phantom pains of the esteemed Linus Torvalds, who called it a horrible language back in 2007.") \
+    X(EULA_C03, "eula.c03", 0, \
+      "Not to use the Software during a game of chaturanga against an ancient Indian chess player, for whom the queen (the mantri, one step diagonally) is the most useless piece on the board.") \
+    X(EULA_C04, "eula.c04", 0, \
+      "To use the Software for trolling only on Thursdays that fall on the 30th of February of a non-leap year.") \
+    X(EULA_C05, "eula.c05", 0, \
+      "Not to use the Software while playing Go during a volcanic eruption within 100 metres of yourself, dressed in the internet's classic Japanese maid outfit, which on closer inspection is the far more provocative French maid outfit of the 16th to 18th centuries.") \
+    X(EULA_C06, "eula.c06", 0, \
+      "Not to rewrite the Software in Rust. An attempt counts as a full confession.") \
+    X(EULA_C07, "eula.c07", 0, \
+      "Not to keep the Software in the donation box of the Hakurei Shrine: it is empty anyway, do not give anyone false hope.") \
+    X(EULA_C08, "eula.c08", 0, \
+      "To acknowledge that goto is considered harmful (Dijkstra, 1968). Ccratch will draw an arrow to it, so you can see exactly where the harm goes.") \
+    X(EULA_C09, "eula.c09", 0, \
+      "To acknowledge NULL as a billion-dollar mistake (Hoare, 2009) and to contribute to it as best you can.") \
+    X(EULA_C10, "eula.c10", 0, \
+      "To acknowledge that undefined behaviour may make demons fly out of your nose (comp.std.c, 1992). Ccratch takes no responsibility for the demons.") \
+    X(EULA_C11, "eula.c11", 0, \
+      "That this Agreement is valid until 03:14:07 UTC on 19 January 2038, when time_t overflows and the Agreement comes into force again from 13 December 1901.") \
+    X(EULA_C12, "eula.c12", 0, \
+      "To look at Duff's device (1983) at least once in your life and feel something.") \
+    X(EULA_C13, "eula.c13", 0, \
+      "If you use Emacs, that it is a great operating system lacking only a good text editor. If you use Vim, that you still do not know how to quit it.") \
+    X(EULA_C14, "eula.c14", 0, \
+      "That an opening brace on the same line follows the will of Kernighan and Ritchie, on a line of its own the will of Allman, and indented by two spaces (GNU) needs a written explanation.") \
+    X(EULA_C15, "eula.c15", 0, \
+      "Kernighan first printed \"hello, world\" in 1972, in B. The User undertakes to print it at least once in every new language, except Rust.") \
+    X(EULA_MEME_ZONE, "eula.meme_zone", 0, \
+      "MEME ZONE. Everything below is memes and references. If you are offended, read the last point again.") \
+    X(EULA_M01, "eula.m01", 0, \
+      "If you are a femboy, you may not write C or assembly: your place is in C++. The Rust community has appealed, citing exclusive rights to programming socks. The appeal is being reviewed by the borrow checker; no date has been set.") \
+    X(EULA_M02, "eula.m02", 0, \
+      "If you are a girl, welcome to the low-level programming course for the littlest ones. It is taught by Ada Lovelace (the first published program, 1843) and Grace Hopper (the first compilers, and the first actual bug: a moth in a relay, 1947). So, honestly, the littlest ones here are us.") \
+    X(EULA_FINAL, "eula.final", 0, \
+      "None of the above has any legal force. The real license is the Mozilla Public License 2.0 (see LICENSE). The shrine maiden enforces nothing; she only collects donations.") \
+    X(EULA_ACCEPT, "eula.accept", 0, \
+      "I accept") \
+    X(EULA_RUST, "eula.rust", 0, \
+      "I write Rust") \
+    X(EULA_CLOSE, "eula.close", 0, \
+      "Close") \
+    X(EULA_ACCEPTED, "eula.accepted", 0, \
+      "Agreement accepted. Welcome to the shrine.") \
+    X(EULA_RUSTED, "eula.rusted", 0, \
+      "Noted. The borrow checker has been informed. Ccratch will still let you free() twice.")
 
 typedef enum ccr_text {
 #define X(id, key, plural, en) CCR_T_##id,

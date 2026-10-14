@@ -1,5 +1,6 @@
 #define _GNU_SOURCE   /* readlink */
 #include "ccr_lang.h"
+#include "ccr_config.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -476,17 +477,6 @@ void ccr_lang_write_template(FILE *out)
 
 /* --------------------------------------------------- finding packs */
 
-static bool home_dir(const char *xdg_var, const char *fallback, char *out, size_t cap)
-{
-    const char *x = getenv(xdg_var);
-    if (x && *x == '/')
-        return snprintf(out, cap, "%s", x) < (int)cap;
-    const char *home = getenv("HOME");
-    if (!home || !*home)
-        return false;
-    return snprintf(out, cap, "%s/%s", home, fallback) < (int)cap;
-}
-
 /* Where packs may live, best first. */
 static int pack_dirs(char dirs[][1024], int cap)
 {
@@ -495,7 +485,7 @@ static int pack_dirs(char dirs[][1024], int cap)
     if (env && *env && n < cap)
         snprintf(dirs[n++], 1024, "%s", env);
     char base[900];
-    if (n < cap && home_dir("XDG_DATA_HOME", ".local/share", base, sizeof base))
+    if (n < cap && ccr_config_home("XDG_DATA_HOME", ".local/share", base, sizeof base))
         snprintf(dirs[n++], 1024, "%s/ccratch/lang", base);
     /* next to the program: bin/../share/ccratch/lang (the build tree too) */
     char exe[900];
@@ -601,103 +591,9 @@ bool ccr_lang_use(const char *code, FILE *log)
     return false;
 }
 
-/* ------------------------------------------------- config file */
-
-static bool config_path(char *out, size_t cap)
-{
-    char base[900];
-    if (!home_dir("XDG_CONFIG_HOME", ".config", base, sizeof base))
-        return false;
-    return snprintf(out, cap, "%s/ccratch/config", base) < (int)cap;
-}
-
-static bool saved_choice(char *code, size_t cap)
-{
-    char path[1024];
-    if (!config_path(path, sizeof path))
-        return false;
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return false;
-    char line[256];
-    bool found = false;
-    while (!found && fgets(line, sizeof line, f)) {
-        char *k = trim(line), *eq = strchr(k, '=');
-        if (!eq)
-            continue;
-        *eq = '\0';
-        if (strcmp(trim(k), "lang") == 0) {
-            char *v = trim(eq + 1);
-            v[strcspn(v, "\r\n")] = '\0';
-            found = snprintf(code, cap, "%s", v) < (int)cap && *code;
-        }
-    }
-    fclose(f);
-    return found;
-}
-
-static bool mkdir_p(char *path)
-{
-    for (char *p = path + 1; *p; ++p) {
-        if (*p != '/')
-            continue;
-        *p = '\0';
-        int r = mkdir(path, 0755);
-        *p = '/';
-        if (r != 0 && errno != EEXIST)
-            return false;
-    }
-    return mkdir(path, 0755) == 0 || errno == EEXIST;
-}
-
 bool ccr_lang_save_choice(const char *code)
 {
-    char path[1024], tmp[1100];
-    if (!config_path(path, sizeof path))
-        return false;
-    char dir[1024];
-    snprintf(dir, sizeof dir, "%s", path);
-    *strrchr(dir, '/') = '\0';
-    if (!mkdir_p(dir))
-        return false;
-
-    /* keep the other settings, replace the lang line */
-    char *old = NULL;
-    FILE *f = fopen(path, "rb");
-    if (f) {
-        fclose(f);
-        old = read_small_file(path, NULL);
-    }
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE *w = fopen(tmp, "wb");
-    if (!w) {
-        free(old);
-        return false;
-    }
-    if (!old)
-        fputs("# Ccratch settings\n", w);
-    for (char *line = old, *next; line && *line; line = next) {
-        next = strchr(line, '\n');
-        if (next)
-            *next++ = '\0';
-        char copy[256];
-        snprintf(copy, sizeof copy, "%s", line);
-        char *k = trim(copy), *eq = strchr(k, '=');
-        if (eq) {
-            *eq = '\0';
-            if (strcmp(trim(k), "lang") == 0)
-                continue;
-        }
-        fprintf(w, "%s\n", line);
-    }
-    free(old);
-    fprintf(w, "lang = %s\n", code);
-    bool ok = fclose(w) == 0;
-    if (ok)
-        ok = rename(tmp, path) == 0;
-    if (!ok)
-        remove(tmp);
-    return ok;
+    return ccr_config_set("lang", code);
 }
 
 /* "ru_UA.UTF-8" -> tries "ru-UA", then "ru". */
@@ -735,7 +631,7 @@ void ccr_lang_pick(const char *cli, FILE *log)
     if (env && *env && ccr_lang_use(env, log))
         return;
     char saved[16];
-    if (saved_choice(saved, sizeof saved) && ccr_lang_use(saved, log))
+    if (ccr_config_get("lang", saved, sizeof saved) && ccr_lang_use(saved, log))
         return;
     const char *vars[] = { "LC_ALL", "LC_MESSAGES", "LANG" };
     for (size_t i = 0; i < 3; ++i) {

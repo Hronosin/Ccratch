@@ -1,0 +1,132 @@
+#include "ccr_config.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#define MAX_CONFIG_SIZE (64u * 1024u)
+
+bool ccr_config_home(const char *xdg_var, const char *fallback, char *out, size_t cap)
+{
+    const char *x = getenv(xdg_var);
+    if (x && *x == '/')
+        return snprintf(out, cap, "%s", x) < (int)cap;
+    const char *home = getenv("HOME");
+    if (!home || !*home)
+        return false;
+    return snprintf(out, cap, "%s/%s", home, fallback) < (int)cap;
+}
+
+static bool config_path(char *out, size_t cap)
+{
+    char base[900];
+    if (!ccr_config_home("XDG_CONFIG_HOME", ".config", base, sizeof base))
+        return false;
+    return snprintf(out, cap, "%s/ccratch/config", base) < (int)cap;
+}
+
+static char *trim(char *s)
+{
+    while (*s == ' ' || *s == '\t')
+        ++s;
+    char *e = s + strlen(s);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n'))
+        *--e = '\0';
+    return s;
+}
+
+/* Is this line "key = ..." for `key`? */
+static bool line_is(const char *line, const char *key)
+{
+    char copy[256];
+    snprintf(copy, sizeof copy, "%s", line);
+    char *k = trim(copy), *eq = strchr(k, '=');
+    if (!eq || *k == '#')
+        return false;
+    *eq = '\0';
+    return strcmp(trim(k), key) == 0;
+}
+
+bool ccr_config_get(const char *key, char *out, size_t cap)
+{
+    char path[1024];
+    if (!config_path(path, sizeof path))
+        return false;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    char line[512];
+    bool found = false;
+    while (!found && fgets(line, sizeof line, f)) {
+        if (!line_is(line, key))
+            continue;
+        char *v = trim(strchr(line, '=') + 1);
+        found = *v && snprintf(out, cap, "%s", v) < (int)cap;
+    }
+    fclose(f);
+    return found;
+}
+
+static bool mkdir_p(char *path)
+{
+    for (char *p = path + 1; *p; ++p) {
+        if (*p != '/')
+            continue;
+        *p = '\0';
+        int r = mkdir(path, 0755);
+        *p = '/';
+        if (r != 0 && errno != EEXIST)
+            return false;
+    }
+    return mkdir(path, 0755) == 0 || errno == EEXIST;
+}
+
+bool ccr_config_set(const char *key, const char *value)
+{
+    if (strpbrk(key, "=\n\r#") || strpbrk(value, "\n\r"))
+        return false;
+    char path[1024], tmp[1100], dir[1024];
+    if (!config_path(path, sizeof path))
+        return false;
+    snprintf(dir, sizeof dir, "%s", path);
+    *strrchr(dir, '/') = '\0';
+    if (!mkdir_p(dir))
+        return false;
+
+    /* what is there now, to keep */
+    char *old = NULL;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        old = malloc(MAX_CONFIG_SIZE + 1);
+        size_t n = old ? fread(old, 1, MAX_CONFIG_SIZE, f) : 0;
+        if (old)
+            old[n] = '\0';
+        fclose(f);
+    }
+
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *w = fopen(tmp, "wb");
+    if (!w) {
+        free(old);
+        return false;
+    }
+    if (!old)
+        fputs("# Ccratch settings\n", w);
+    for (char *line = old, *next; line && *line; line = next) {
+        next = strchr(line, '\n');
+        if (next)
+            *next++ = '\0';
+        if (!line_is(line, key))
+            fprintf(w, "%s\n", line);
+    }
+    free(old);
+    fprintf(w, "%s = %s\n", key, value);
+    bool ok = fclose(w) == 0;
+    if (ok)
+        ok = rename(tmp, path) == 0;
+    if (!ok)
+        remove(tmp);
+    return ok;
+}

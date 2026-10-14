@@ -31,6 +31,7 @@ add_library(ccratch_core OBJECT
     src/ccr_blocks.c
     src/ccr_canvas.c
     src/ccr_codegen.c
+    src/ccr_config.c
     src/ccr_editor.c
     src/ccr_lang.c
     src/ccr_parse.c
