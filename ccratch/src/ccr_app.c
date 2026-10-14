@@ -71,13 +71,30 @@ static void print_about(void)
 {
     char clang_version[256];
     ccr_parse_clang_version(clang_version, sizeof clang_version);
-    const char *resource = ccr_parse_resource_dir();
+    const char *how = NULL;
+    const char *resource = ccr_parse_resource_dir(&how);
     printf("Ccratch %s\n"
            "libclang:     %s\n"
            "resource dir: %s\n"
+           "              %s\n"
            "              (override with CCRATCH_CLANG_RESOURCE_DIR)\n",
            ccr_version(), clang_version,
-           resource ? resource : "(libclang's own guess)");
+           resource ? resource : "(libclang's own guess)", how);
+}
+
+/* Missing builtin headers look like a broken file; say what it really is. */
+static void hint_missing_headers(const ccr_ast *ast)
+{
+    for (uint32_t i = 0; i < ast->diag_count; ++i) {
+        const char *msg = ccr_ast_str(ast, ast->diags[i].message);
+        if (strstr(msg, "stddef.h' file not found") || strstr(msg, "stdarg.h' file not found")) {
+            fflush(stdout);  /* keep the hint after the tree */
+            fprintf(stderr,
+                    "[ccratch] hint: clang's own headers were not found; your code is probably fine.\n"
+                    "          Run 'ccratch --about' to see where Ccratch looked.\n");
+            return;
+        }
+    }
 }
 
 /* Exit codes: 0 clean, 1 the code has errors, 2 could not parse at all. */
@@ -96,6 +113,7 @@ static int run_dump_ast(const ccr_options *opt)
     }
 
     ccr_ast_dump(&ast, stdout);
+    hint_missing_headers(&ast);
     int code = ccr_ast_count_diags(&ast, CCR_DIAG_ERROR) ? 1 : 0;
     ccr_ast_free(&ast);
     return code;
@@ -190,6 +208,7 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     if (next.ast.diag_count) {
         fprintf(stderr, "[ccratch] %s:\n", path);
         ccr_ast_dump_diags(&next.ast, stderr);
+        hint_missing_headers(&next.ast);
     }
     uint32_t errors = ccr_ast_count_diags(&next.ast, CCR_DIAG_ERROR);
     next.has_errors = errors > 0;

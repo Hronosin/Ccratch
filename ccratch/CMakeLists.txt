@@ -29,7 +29,7 @@ if(LIBCLANG_RESOURCE_DIR)
     target_compile_definitions(ccratch PRIVATE
         CCR_CLANG_RESOURCE_DIR="${LIBCLANG_RESOURCE_DIR}")
 endif()
-target_link_libraries(ccratch PRIVATE ccr_gui ccr_warnings LibClang::LibClang m)
+target_link_libraries(ccratch PRIVATE ccr_gui ccr_warnings LibClang::LibClang m ${CMAKE_DL_LIBS})
 
 # Keep raylib/glfw symbols from leaking out of the .so: plugins see only
 # the public ccr_* API, never the GUI backend.

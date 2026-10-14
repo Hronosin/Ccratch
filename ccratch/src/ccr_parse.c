@@ -1,7 +1,13 @@
+/* dladdr, realpath, glob: POSIX/GNU, not plain C11 */
+#define _GNU_SOURCE
+
 #include "ccr_parse.h"
 
 #include <clang-c/Index.h>
 
+#include <dlfcn.h>
+#include <glob.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -606,16 +612,130 @@ void ccr_parse_clang_version(char *out, unsigned int cap)
     clang_disposeString(v);
 }
 
-const char *ccr_parse_resource_dir(void)
+/* Major version of the libclang actually loaded: "... clang version 22.1.8" -> 22 */
+static int libclang_major(void)
 {
+    char v[256];
+    ccr_parse_clang_version(v, sizeof v);
+    const char *p = strstr(v, "version ");
+    return p ? atoi(p + 8) : 0;
+}
+
+/* Directory the loaded libclang .so lives in, symlinks resolved. */
+static bool libclang_dir(char *out, size_t cap)
+{
+    /* ISO C has no function->object pointer cast; a union does it legally */
+    union { CXString (*fn)(void); void *ptr; } addr = { .fn = clang_getClangVersion };
+    Dl_info info;
+    if (!dladdr(addr.ptr, &info) || !info.dli_fname)
+        return false;
+
+    char real[PATH_MAX];
+    if (!realpath(info.dli_fname, real))
+        return false;
+    char *slash = strrchr(real, '/');
+    if (!slash)
+        return false;
+    *slash = '\0';
+    return snprintf(out, cap, "%s", real) < (int)cap;
+}
+
+/* ".../clang/22/include/stddef.h" -> 22 */
+static int version_of_match(const char *path)
+{
+    const char *clang = strstr(path, "/clang/");
+    const char *last = NULL;
+    while (clang) {
+        last = clang;
+        clang = strstr(clang + 1, "/clang/");
+    }
+    return last ? atoi(last + 7) : 0;
+}
+
+/*
+ * Looks for clang's builtin headers relative to where libclang is, then in
+ * the usual system places. Prefers the version matching the loaded
+ * libclang; with want_major = 0 takes the newest of any version.
+ */
+static bool discover(int want_major, char *out, size_t cap)
+{
+    char libdir[PATH_MAX] = "";
+    libclang_dir(libdir, sizeof libdir);
+
+    char bases[8][PATH_MAX + 32];
+    int nb = 0;
+    if (libdir[0]) {
+        snprintf(bases[nb++], sizeof bases[0], "%s/clang", libdir);          /* Debian, LLVM tarballs */
+        snprintf(bases[nb++], sizeof bases[0], "%s/../lib/clang", libdir);   /* Fedora: lib64 vs lib */
+        snprintf(bases[nb++], sizeof bases[0], "%s/../lib64/clang", libdir);
+    }
+    snprintf(bases[nb++], sizeof bases[0], "/usr/lib/clang");
+    snprintf(bases[nb++], sizeof bases[0], "/usr/lib64/clang");
+    snprintf(bases[nb++], sizeof bases[0], "/usr/local/lib/clang");
+    if (want_major > 0)
+        snprintf(bases[nb++], sizeof bases[0], "/usr/lib/llvm-%d/lib/clang", want_major);
+
+    char best[PATH_MAX] = "";
+    int best_major = -1;
+
+    for (int b = 0; b < nb; ++b) {
+        char pattern[PATH_MAX + 64];
+        snprintf(pattern, sizeof pattern, "%s/*/include/stddef.h", bases[b]);
+        glob_t g;
+        if (glob(pattern, 0, NULL, &g) != 0)
+            continue;
+        for (size_t i = 0; i < g.gl_pathc; ++i) {
+            int major = version_of_match(g.gl_pathv[i]);
+            bool take_it = want_major > 0
+                ? (major == want_major && best_major != want_major)  /* first exact match wins */
+                : (major > best_major);                              /* otherwise newest */
+            if (!take_it)
+                continue;
+            char dir[PATH_MAX];
+            snprintf(dir, sizeof dir, "%s", g.gl_pathv[i]);
+            char *cut = strstr(dir, "/include/stddef.h");
+            if (cut)
+                *cut = '\0';
+            if (realpath(dir, best))
+                best_major = major;
+        }
+        globfree(&g);
+    }
+
+    if (best_major < 0 || (want_major > 0 && best_major != want_major))
+        return false;
+    return snprintf(out, cap, "%s", best) < (int)cap;
+}
+
+const char *ccr_parse_resource_dir(const char **how)
+{
+    static char found[PATH_MAX];
+    const char *dummy;
+    if (!how)
+        how = &dummy;
+
     const char *env = getenv("CCRATCH_CLANG_RESOURCE_DIR");
-    if (env && *env && is_resource_dir(env))
+    if (env && *env && is_resource_dir(env)) {
+        *how = "from CCRATCH_CLANG_RESOURCE_DIR";
         return env;
+    }
+    int major = libclang_major();
+    if (major > 0 && discover(major, found, sizeof found)) {
+        *how = "found at run time, matches the loaded libclang";
+        return found;
+    }
 #ifdef CCR_CLANG_RESOURCE_DIR
-    if (is_resource_dir(CCR_CLANG_RESOURCE_DIR))
+    if (is_resource_dir(CCR_CLANG_RESOURCE_DIR)) {
+        *how = "remembered from build time";
         return CCR_CLANG_RESOURCE_DIR;
+    }
 #endif
-    return NULL;  /* let libclang guess */
+    if (discover(0, found, sizeof found)) {
+        *how = "newest found, version differs from libclang";
+        return found;
+    }
+    *how = "not found, libclang will guess";
+    return NULL;
 }
 
 bool ccr_parse_file(const char *path, const char *const *args, int arg_count, ccr_ast *out)
@@ -635,7 +755,7 @@ bool ccr_parse_file(const char *path, const char *const *args, int arg_count, cc
     for (int i = 0; i < arg_count; ++i)
         if (strncmp(args[i], "-resource-dir", 13) == 0)
             user_set = true;
-    const char *resource = user_set ? NULL : ccr_parse_resource_dir();
+    const char *resource = user_set ? NULL : ccr_parse_resource_dir(NULL);
 
     const char **all = malloc(sizeof(char *) * (size_t)(arg_count + 2));
     if (!all)
