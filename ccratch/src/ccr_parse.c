@@ -807,6 +807,7 @@ bool ccr_parse_file(const char *path, const char *const *args, int arg_count, cc
         clang_visitChildren(clang_getTranslationUnitCursor(tu), visit, &ctx);
     }
 
+    ccr_ast_wrap_bodies(out);
     collect_diags(tu, out);
 
     clang_disposeTranslationUnit(tu);

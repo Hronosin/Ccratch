@@ -67,6 +67,15 @@ if(XVFB_RUN)
                      ${CCR_BIN} ${PROJECT_SOURCE_DIR}/examples/tour.c --smoke-frames 3)
 endif()
 
+# Dragging blocks around edits the program correctly.
+add_executable(test_editor test_editor.c)
+target_link_libraries(test_editor PRIVATE ccratch_core)
+if(XVFB_RUN)
+    add_test(NAME editor_drag_and_drop
+             COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
+                     $<TARGET_FILE:test_editor> ${PROJECT_SOURCE_DIR}/examples/tour.c)
+endif()
+
 # C++ is picked by extension.
 add_test(NAME dump_ast_cpp
          COMMAND ${CCR_BIN} --dump-ast ${PROJECT_SOURCE_DIR}/tests/data/templates.cpp)

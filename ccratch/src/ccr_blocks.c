@@ -19,8 +19,6 @@
 #define MOUTH_MIN_H 24.0f
 #define FOOT_H      24.0f   /* bottom bar of a C-block */
 #define HAT_BUMP    22.0f
-#define SCRIPT_GAP  32.0f   /* between top-level scripts */
-#define COLUMN_GAP  96.0f
 
 typedef enum category {
     CAT_CONTROL, CAT_OPERATOR, CAT_VARIABLE, CAT_CALL, CAT_EVENT,
@@ -52,6 +50,8 @@ typedef struct layout {
     float         *ew, *eh;   /* cached expression sizes, per node */
     bool           oom;
 } layout;
+
+static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w);
 
 static const ccr_node *N(const layout *L, ccr_node_id id) { return &L->ast->nodes[id]; }
 static const char *S(const layout *L, ccr_str s)         { return ccr_ast_str(L->ast, s); }
@@ -459,8 +459,10 @@ static float emit_body(layout *L, ccr_node_id body, float x, float y, float *max
 {
     if (body == CCR_NONE)
         return 0.0f;
-    if (N(L, body)->kind == CCR_NODE_BLOCK)
+    if (N(L, body)->kind == CCR_NODE_BLOCK) {
+        push_snap(L, CCR_SNAP_FIRST, body, x, y, 120.0f);
         return emit_stack(L, N(L, body)->first_child, x, y, max_w);
+    }
     return emit_stmt(L, body, x, y, max_w);
 }
 
@@ -706,12 +708,18 @@ static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w
     return sz.h;
 }
 
-/* Statements one under another, Scratch-style, touching. */
+/* Statements one under another, Scratch-style, touching. Each one gets a
+ * snap point under it, so a dragged stack can be dropped there. */
 static float emit_stack(layout *L, ccr_node_id first, float x, float y, float *max_w)
 {
     float h = 0.0f;
-    for (ccr_node_id c = first; c != CCR_NONE && !L->oom; c = N(L, c)->next_sibling)
-        h += emit_stmt(L, c, x, y + h, max_w);
+    for (ccr_node_id c = first; c != CCR_NONE && !L->oom; c = N(L, c)->next_sibling) {
+        float w = 0.0f;
+        h += emit_stmt(L, c, x, y + h, &w);
+        push_snap(L, CCR_SNAP_AFTER, c, x, y + h, w);
+        if (w > *max_w)
+            *max_w = w;
+    }
     return h;
 }
 
@@ -762,7 +770,7 @@ static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
     float body_h = 0.0f;
     for (ccr_node_id c = N(L, fn)->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
         if (N(L, c)->kind == CCR_NODE_BLOCK)
-            body_h = emit_stack(L, N(L, c)->first_child, x, y + HAT_BUMP + h, max_w);
+            body_h = emit_body(L, c, x, y + HAT_BUMP + h, max_w);
 
     return (size2){ *max_w, HAT_BUMP + h + body_h };
 }
@@ -849,47 +857,63 @@ static size2 emit_decl_block(layout *L, ccr_node_id id, float x, float y, float 
 
 /* ---------------------------------------------------------- public */
 
-bool ccr_blocks_build(ccr_blocks *out, const ccr_ast *ast)
+static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w)
+{
+    ccr_blocks *b = L->out;
+    if (!grow((void **)&b->snaps, &b->snap_cap, b->snap_count + 1, sizeof(ccr_snap))) {
+        L->oom = true;
+        return;
+    }
+    b->snaps[b->snap_count++] = (ccr_snap){ kind, ref, { x, y }, w };
+}
+
+bool ccr_layout_cache_reserve(ccr_layout_cache *c, uint32_t node_count)
+{
+    if (node_count <= c->cap)
+        return true;
+    uint32_t cap = c->cap ? c->cap : 256;
+    while (cap < node_count)
+        cap *= 2;
+    float *w = realloc(c->w, (size_t)cap * sizeof(float));
+    if (w) c->w = w;
+    float *h = realloc(c->h, (size_t)cap * sizeof(float));
+    if (h) c->h = h;
+    if (!w || !h)
+        return false;
+    /* 0 = not measured yet */
+    memset(c->w + c->cap, 0, (size_t)(cap - c->cap) * sizeof(float));
+    memset(c->h + c->cap, 0, (size_t)(cap - c->cap) * sizeof(float));
+    c->cap = cap;
+    return true;
+}
+
+void ccr_layout_cache_free(ccr_layout_cache *c)
+{
+    free(c->w);
+    free(c->h);
+    memset(c, 0, sizeof *c);
+}
+
+bool ccr_blocks_build_script(ccr_blocks *out, const ccr_ast *ast, ccr_node_id root,
+                             ccr_layout_cache *cache)
 {
     memset(out, 0, sizeof *out);
-    if (ast->node_count == 0)
+    if (root == CCR_NONE || root >= ast->node_count)
         return true;
-
-    layout L = { .ast = ast, .out = out };
-    L.ew = calloc(ast->node_count, sizeof(float));
-    L.eh = calloc(ast->node_count, sizeof(float));
-    if (!L.ew || !L.eh) {
-        free(L.ew);
-        free(L.eh);
+    if (!ccr_layout_cache_reserve(cache, ast->node_count))
         return false;
-    }
 
-    /* Column 1: preprocessor and types. Column 2: functions. */
-    ccr_node_id root = 0;
-    float y = 0.0f, col1_w = 0.0f;
-    for (ccr_node_id c = N(&L, root)->first_child; c != CCR_NONE; c = N(&L, c)->next_sibling) {
-        const ccr_node *n = N(&L, c);
-        if (n->kind == CCR_NODE_MACRO_USE)
-            continue;   /* shown where they are used, not as scripts */
-        if (n->kind == CCR_NODE_FUNCTION && (n->flags & CCR_FLAG_DEFINITION))
-            continue;
-        size2 s = emit_decl_block(&L, c, 0.0f, y, &col1_w);
-        y += s.h + SCRIPT_GAP * 0.5f;
-    }
+    layout L = { .ast = ast, .out = out, .ew = cache->w, .eh = cache->h };
+    const ccr_node *n = N(&L, root);
+    float w = 0.0f;
 
-    float x2 = col1_w > 0.0f ? col1_w + COLUMN_GAP : 0.0f;
-    y = 0.0f;
-    for (ccr_node_id c = N(&L, root)->first_child; c != CCR_NONE; c = N(&L, c)->next_sibling) {
-        const ccr_node *n = N(&L, c);
-        if (n->kind != CCR_NODE_FUNCTION || !(n->flags & CCR_FLAG_DEFINITION))
-            continue;
-        float w = 0.0f;
-        size2 s = emit_hat(&L, c, x2, y, &w);
-        y += s.h + SCRIPT_GAP;
-    }
+    if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_LOOSE))
+        emit_stack(&L, n->first_child, 0.0f, 0.0f, &w);
+    else if (n->kind == CCR_NODE_FUNCTION && (n->flags & CCR_FLAG_DEFINITION))
+        emit_hat(&L, root, 0.0f, 0.0f, &w);
+    else
+        emit_decl_block(&L, root, 0.0f, 0.0f, &w);
 
-    free(L.ew);
-    free(L.eh);
     if (L.oom) {
         ccr_blocks_free(out);
         return false;
@@ -901,7 +925,35 @@ void ccr_blocks_free(ccr_blocks *b)
 {
     free(b->prims);
     free(b->text);
+    free(b->snaps);
     memset(b, 0, sizeof *b);
+}
+
+static bool contains(ccr_rect r, ccr_vec2 p)
+{
+    return p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
+}
+
+ccr_node_id ccr_blocks_hit(const ccr_blocks *b, ccr_vec2 local)
+{
+    if (!contains(b->bounds, local))
+        return CCR_NONE;
+    /* drawn last = on top */
+    for (uint32_t i = b->prim_count; i-- > 0;)
+        if (b->prims[i].kind != CCR_PRIM_TEXT && contains(b->prims[i].rect, local))
+            return b->prims[i].node;
+    return CCR_NONE;
+}
+
+bool ccr_blocks_find(const ccr_blocks *b, ccr_node_id node, ccr_rect *out)
+{
+    for (uint32_t i = 0; i < b->prim_count; ++i) {
+        if (b->prims[i].node == node && b->prims[i].kind != CCR_PRIM_TEXT) {
+            *out = b->prims[i].rect;
+            return true;
+        }
+    }
+    return false;
 }
 
 /* --------------------------------------------------------- drawing */
@@ -911,14 +963,28 @@ static bool overlaps(ccr_rect a, ccr_rect b)
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport)
+static ccr_color fade(ccr_color c, float alpha)
+{
+    if (alpha >= 1.0f)
+        return c;
+    uint32_t a = (uint32_t)((float)(c & 0xFFu) * alpha);
+    return (c & 0xFFFFFF00u) | (a & 0xFFu);
+}
+
+void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport,
+                     ccr_vec2 offset, float alpha)
 {
     const float z = cv->zoom;
     const float edge = z < 1.0f ? 1.0f : z;   /* outline at least 1px */
 
+    /* whole script off screen: nothing to do */
+    ccr_vec2 btl = ccr_canvas_to_screen(cv, (ccr_vec2){ b->bounds.x + offset.x, b->bounds.y + offset.y });
+    if (!overlaps((ccr_rect){ btl.x, btl.y, b->bounds.w * z, b->bounds.h * z }, viewport))
+        return;
+
     for (uint32_t i = 0; i < b->prim_count; ++i) {
         const ccr_prim *p = &b->prims[i];
-        ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ p->rect.x, p->rect.y });
+        ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ p->rect.x + offset.x, p->rect.y + offset.y });
         ccr_rect r = { tl.x, tl.y, p->rect.w * z, p->rect.h * z };
         if (!overlaps(r, viewport))
             continue;
@@ -926,21 +992,21 @@ void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewpor
         switch (p->kind) {
         case CCR_PRIM_BLOCK: {
             ccr_rect inner = { r.x + edge, r.y + edge, r.w - edge * 2.0f, r.h - edge * 2.0f };
-            ccr_gui_rect_rounded(r, p->roundness, p->edge);
+            ccr_gui_rect_rounded(r, p->roundness, fade(p->edge, alpha));
             if (inner.w > 0.0f && inner.h > 0.0f)
-                ccr_gui_rect_rounded(inner, p->roundness, p->fill);
+                ccr_gui_rect_rounded(inner, p->roundness, fade(p->fill, alpha));
             break;
         }
         case CCR_PRIM_HEX: {
             ccr_rect inner = { r.x + edge * 1.5f, r.y + edge, r.w - edge * 3.0f, r.h - edge * 2.0f };
-            ccr_gui_hex(r, p->edge);
+            ccr_gui_hex(r, fade(p->edge, alpha));
             if (inner.w > 0.0f && inner.h > 0.0f)
-                ccr_gui_hex(inner, p->fill);
+                ccr_gui_hex(inner, fade(p->fill, alpha));
             break;
         }
         case CCR_PRIM_TEXT:
             if (p->font * z >= 5.0f)  /* unreadable below that anyway */
-                ccr_gui_text(b->text + p->text, r.x, r.y, p->font * z, p->fill);
+                ccr_gui_text(b->text + p->text, r.x, r.y, p->font * z, fade(p->fill, alpha));
             break;
         }
     }

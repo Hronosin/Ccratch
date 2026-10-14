@@ -11,8 +11,8 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 
 - Step 1: a window, a pannable canvas and one lonely block.
 - Step 2: libclang reads a `.c` file into Ccratch's own syntax tree.
-- Step 3: that tree is drawn as Scratch-style blocks. Read-only for now:
-  blocks cannot be dragged yet.
+- Step 3: that tree is drawn as Scratch-style blocks.
+- Step 4: blocks can be dragged. Not saved back to the file yet.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -34,6 +34,21 @@ How the colors map to C:
 | Purple | preprocessor: `#include`, `#define`, macro values like `NULL` |
 | White | literals |
 | Grey | "here be dragons": no block for this yet, raw code shown |
+
+Dragging works like Scratch:
+
+- grab a statement and it comes with everything under it in its stack;
+- grab a function hat, a struct or an `#include` and the whole thing moves;
+- drop a stack near the white bar and it joins that stack, or into an
+  empty `if`/`while`/`for` mouth;
+- drop it anywhere else and it lies loose on the canvas, faded.
+  **Loose blocks are not part of the program**: dragging a block out is
+  how you remove it from the code.
+
+Every move edits the syntax tree itself, so what you see is what will be
+written back once saving lands.
+
+![dragging: sum's body lies loose, a stack is about to snap in](docs/drag.png)
 
 Object-like macros used as values (`NULL`, `true`, `DEG2RAD`) stay one
 purple block. Function-like macros (`MAX(a, b)`) are shown expanded,
@@ -57,7 +72,8 @@ app/        ccratch      - the launcher: main() calls ccr_run(), that's it
 ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_ast     own syntax tree: flat node array + string arena, no libclang
   ccr_parse   the only code that knows libclang exists
-  ccr_blocks  tree -> blocks: layout once into a flat display list
+  ccr_blocks  one script -> blocks: flat display list + snap points
+  ccr_editor  scripts on the canvas, drag and drop, edits the tree
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so; hello/ is the template
@@ -136,7 +152,8 @@ ccratch file.c --zoom 50                 start zoomed out
 ## Controls
 
 - Drop a `.c` file onto the window: open it
+- Left mouse drag: move blocks
 - Right or middle mouse drag: pan the canvas
 - Mouse wheel: zoom around the cursor
 - Home: back to the start of the file at 100%
-- F5: reload the file from disk
+- F5: reload the file from disk (throws away unsaved moves)

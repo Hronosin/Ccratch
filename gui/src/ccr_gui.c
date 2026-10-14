@@ -121,6 +121,16 @@ bool ccr_gui_mouse_down(ccr_mouse_button button)
     return IsMouseButtonDown(button_to_rl(button));
 }
 
+bool ccr_gui_mouse_pressed(ccr_mouse_button button)
+{
+    return IsMouseButtonPressed(button_to_rl(button));
+}
+
+bool ccr_gui_mouse_released(ccr_mouse_button button)
+{
+    return IsMouseButtonReleased(button_to_rl(button));
+}
+
 void ccr_gui_rect(ccr_rect r, ccr_color c)
 {
     DrawRectangleRec(rect_to_rl(r), to_rl(c));

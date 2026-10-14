@@ -85,18 +85,127 @@ ccr_node_id ccr_ast_add(ccr_ast *ast, ccr_node_kind kind, ccr_node_id parent)
     ccr_node *n = &ast->nodes[id];
     memset(n, 0, sizeof *n);
     n->kind = kind;
-    n->parent = parent;
+    n->parent = CCR_NONE;
     n->first_child = n->last_child = n->next_sibling = CCR_NONE;
 
-    if (parent != CCR_NONE) {
-        ccr_node *p = &ast->nodes[parent];
-        if (p->last_child == CCR_NONE)
-            p->first_child = id;
-        else
-            ast->nodes[p->last_child].next_sibling = id;
-        p->last_child = id;
-    }
+    if (parent != CCR_NONE)
+        ccr_ast_append(ast, parent, id);
     return id;
+}
+
+/* ------------------------------------------------------------ editing */
+
+void ccr_ast_unlink(ccr_ast *ast, ccr_node_id id)
+{
+    ccr_node *n = &ast->nodes[id];
+    if (n->parent == CCR_NONE)
+        return;
+    ccr_node *p = &ast->nodes[n->parent];
+
+    ccr_node_id prev = CCR_NONE;
+    if (p->first_child == id) {
+        p->first_child = n->next_sibling;
+    } else {
+        for (prev = p->first_child; prev != CCR_NONE; prev = ast->nodes[prev].next_sibling)
+            if (ast->nodes[prev].next_sibling == id)
+                break;
+        if (prev != CCR_NONE)
+            ast->nodes[prev].next_sibling = n->next_sibling;
+    }
+    if (p->last_child == id)
+        p->last_child = prev;
+
+    n->parent = CCR_NONE;
+    n->next_sibling = CCR_NONE;
+}
+
+void ccr_ast_append(ccr_ast *ast, ccr_node_id parent, ccr_node_id id)
+{
+    ccr_ast_unlink(ast, id);
+    ccr_node *p = &ast->nodes[parent];
+    ccr_node *n = &ast->nodes[id];
+    n->parent = parent;
+    n->next_sibling = CCR_NONE;
+    if (p->last_child == CCR_NONE)
+        p->first_child = id;
+    else
+        ast->nodes[p->last_child].next_sibling = id;
+    p->last_child = id;
+}
+
+void ccr_ast_insert_first(ccr_ast *ast, ccr_node_id parent, ccr_node_id id)
+{
+    ccr_ast_unlink(ast, id);
+    ccr_node *p = &ast->nodes[parent];
+    ccr_node *n = &ast->nodes[id];
+    n->parent = parent;
+    n->next_sibling = p->first_child;
+    p->first_child = id;
+    if (p->last_child == CCR_NONE)
+        p->last_child = id;
+}
+
+void ccr_ast_insert_after(ccr_ast *ast, ccr_node_id ref, ccr_node_id id)
+{
+    if (ref == id)
+        return;
+    ccr_ast_unlink(ast, id);
+    ccr_node_id parent = ast->nodes[ref].parent;
+    ccr_node *n = &ast->nodes[id];
+    n->parent = parent;
+    n->next_sibling = ast->nodes[ref].next_sibling;
+    ast->nodes[ref].next_sibling = id;
+    if (parent != CCR_NONE && ast->nodes[parent].last_child == ref)
+        ast->nodes[parent].last_child = id;
+}
+
+static ccr_node_id nth_child(const ccr_ast *ast, ccr_node_id id, uint32_t index)
+{
+    ccr_node_id c = ast->nodes[id].first_child;
+    while (c != CCR_NONE && index-- > 0)
+        c = ast->nodes[c].next_sibling;
+    return c;
+}
+
+/* Puts `child` inside a new Block that takes its place among the siblings. */
+static void wrap_in_block(ccr_ast *ast, ccr_node_id child)
+{
+    ccr_node_id block = ccr_ast_add(ast, CCR_NODE_BLOCK, CCR_NONE);
+    if (block == CCR_NONE)
+        return;
+    ast->nodes[block].flags |= CCR_FLAG_IMPLICIT;
+    ast->nodes[block].line = ast->nodes[child].line;
+    ast->nodes[block].column = ast->nodes[child].column;
+    ccr_ast_insert_after(ast, child, block);
+    ccr_ast_append(ast, block, child);
+}
+
+void ccr_ast_wrap_bodies(ccr_ast *ast)
+{
+    const uint32_t count = ast->node_count;  /* new Blocks need no wrapping */
+    for (ccr_node_id id = 0; id < count; ++id) {
+        ccr_node_id body[2] = { CCR_NONE, CCR_NONE };
+        switch (ast->nodes[id].kind) {
+        case CCR_NODE_IF:
+            body[0] = nth_child(ast, id, 1);
+            body[1] = nth_child(ast, id, 2);
+            break;
+        case CCR_NODE_WHILE:
+            body[0] = nth_child(ast, id, 1);
+            break;
+        case CCR_NODE_DO_WHILE:
+            body[0] = nth_child(ast, id, 0);
+            break;
+        case CCR_NODE_FOR:
+            body[0] = ast->nodes[id].last_child;
+            break;
+        default:
+            continue;
+        }
+        for (int i = 0; i < 2; ++i)
+            if (body[i] != CCR_NONE && ast->nodes[body[i]].kind != CCR_NODE_BLOCK)
+                wrap_in_block(ast, body[i]);
+    }
 }
 
 bool ccr_ast_add_diag(ccr_ast *ast, ccr_diag d)
@@ -161,6 +270,10 @@ static void dump_node_line(const ccr_ast *ast, const ccr_node *n, FILE *out)
         fputs("  (declaration)", out);
     if (n->flags & CCR_FLAG_INIT)
         fputs("  (init)", out);
+    if (n->flags & CCR_FLAG_IMPLICIT)
+        fputs("  (implicit)", out);
+    if (n->flags & CCR_FLAG_LOOSE)
+        fputs("  (loose, not compiled)", out);
     if (n->line)
         fprintf(out, "  [%u:%u]", n->line, n->column);
     fputc('\n', out);
@@ -231,7 +344,7 @@ void ccr_ast_dump_diags(const ccr_ast *ast, FILE *out)
 void ccr_ast_dump(const ccr_ast *ast, FILE *out)
 {
     for (ccr_node_id id = 0; id < ast->node_count; ++id)
-        if (ast->nodes[id].parent == CCR_NONE)
+        if (ast->nodes[id].parent == CCR_NONE && !(ast->nodes[id].flags & CCR_FLAG_DEAD))
             dump_tree(ast, id, out);
 
     if (ast->diag_count) {

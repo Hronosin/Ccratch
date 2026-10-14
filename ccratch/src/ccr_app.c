@@ -1,7 +1,7 @@
 #include "ccratch/ccratch.h"
 #include "ccr_ast.h"
-#include "ccr_blocks.h"
 #include "ccr_canvas.h"
+#include "ccr_editor.h"
 #include "ccr_gui.h"
 #include "ccr_parse.h"
 
@@ -40,8 +40,7 @@ typedef struct ccr_options {
 typedef struct ccr_document {
     bool       loaded;
     char       path[PATH_MAX_LEN];
-    ccr_ast    ast;
-    ccr_blocks blocks;
+    ccr_editor ed;
     char       status[256];
     bool       has_errors;
 } ccr_document;
@@ -165,10 +164,8 @@ static const char *base_name(const char *path)
 
 static void document_close(ccr_document *doc)
 {
-    if (doc->loaded) {
-        ccr_blocks_free(&doc->blocks);
-        ccr_ast_free(&doc->ast);
-    }
+    if (doc->loaded)
+        ccr_editor_free(&doc->ed);
     doc->loaded = false;
 }
 
@@ -177,40 +174,43 @@ static void fit_view(ccr_canvas *cv, const ccr_document *doc, ccr_rect viewport,
     if (zoom < 0.25f) zoom = 0.25f;
     if (zoom > 3.0f)  zoom = 3.0f;
     cv->zoom = zoom;
-    ccr_rect b = doc->loaded ? doc->blocks.bounds : (ccr_rect){ 0, 0, 0, 0 };
+    ccr_rect b = doc->loaded ? ccr_editor_bounds(&doc->ed) : (ccr_rect){ 0, 0, 0, 0 };
     cv->offset = (ccr_vec2){ viewport.x + 48.0f - b.x * zoom, viewport.y + 32.0f - b.y * zoom };
 }
 
 static bool document_open(ccr_document *doc, const char *path, const ccr_options *opt)
 {
-    ccr_document next = { 0 };
+    /* static: big (4 KB path), and only one is ever being opened */
+    static ccr_document next;
+    memset(&next, 0, sizeof next);
     snprintf(next.path, sizeof next.path, "%s", path);
 
-    if (!ccr_ast_init(&next.ast))
+    ccr_ast ast;
+    if (!ccr_ast_init(&ast))
         return false;
 
-    if (!ccr_parse_file(path, opt->clang_args, opt->clang_arg_count, &next.ast)) {
-        ccr_ast_free(&next.ast);
+    if (!ccr_parse_file(path, opt->clang_args, opt->clang_arg_count, &ast)) {
+        ccr_ast_free(&ast);
         snprintf(doc->status, sizeof doc->status,
                  "Could not read %s. Opyat' rabotat'...", base_name(path));
         doc->has_errors = true;
         return false;
     }
 
-    if (!ccr_blocks_build(&next.blocks, &next.ast)) {
-        ccr_ast_free(&next.ast);
+    if (ast.diag_count) {
+        fprintf(stderr, "[ccratch] %s:\n", path);
+        ccr_ast_dump_diags(&ast, stderr);
+        hint_missing_headers(&ast);
+    }
+    uint32_t errors = ccr_ast_count_diags(&ast, CCR_DIAG_ERROR);
+
+    if (!ccr_editor_init(&next.ed, &ast)) {   /* takes the ast either way */
+        ccr_editor_free(&next.ed);
         snprintf(doc->status, sizeof doc->status, "Out of memory while laying out blocks.");
         doc->has_errors = true;
         return false;
     }
-
     next.loaded = true;
-    if (next.ast.diag_count) {
-        fprintf(stderr, "[ccratch] %s:\n", path);
-        ccr_ast_dump_diags(&next.ast, stderr);
-        hint_missing_headers(&next.ast);
-    }
-    uint32_t errors = ccr_ast_count_diags(&next.ast, CCR_DIAG_ERROR);
     next.has_errors = errors > 0;
     if (errors)
         snprintf(next.status, sizeof next.status,
@@ -250,9 +250,15 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
     ccr_gui_circle((ccr_vec2){ 14.0f, y + STATUSBAR_H * 0.5f }, 4.0f, dot);
     ccr_gui_text(msg, 26.0f, y + 7.0f, 12.0f, COL_BAR_TEXT);
 
-    char right[128];
-    snprintf(right, sizeof right, "zoom %d%%   |   RMB drag: pan   wheel: zoom   Home: fit   F5: reload",
-             (int)(cv->zoom * 100.0f + 0.5f));
+    char right[192];
+    uint32_t loose = doc->loaded ? ccr_editor_loose_count(&doc->ed) : 0;
+    char loose_txt[64] = "";
+    if (loose)
+        snprintf(loose_txt, sizeof loose_txt, "%u loose stack%s (not compiled)   |   ",
+                 loose, loose == 1 ? "" : "s");
+    snprintf(right, sizeof right,
+             "%szoom %d%%   |   LMB drag: blocks   RMB drag: pan   wheel: zoom   Home: fit   F5: reload",
+             loose_txt, (int)(cv->zoom * 100.0f + 0.5f));
     float rw = ccr_gui_text_width(right, 12.0f);
     ccr_gui_text(right, (float)width - rw - 12.0f, y + 7.0f, 12.0f, COL_BAR_TEXT);
 }
@@ -316,10 +322,24 @@ int ccr_run(int argc, char **argv)
 
         ccr_canvas_update(&canvas, viewport);
 
+        if (doc.loaded) {
+            ccr_vec2 m = ccr_gui_mouse();
+            bool inside = m.x >= viewport.x && m.y >= viewport.y &&
+                          m.x < viewport.x + viewport.w && m.y < viewport.y + viewport.h;
+            ccr_editor_input in = {
+                .mouse    = ccr_canvas_to_world(&canvas, m),
+                .pressed  = inside && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT),
+                .down     = ccr_gui_mouse_down(CCR_MOUSE_LEFT),
+                .released = ccr_gui_mouse_released(CCR_MOUSE_LEFT),
+                .zoom     = canvas.zoom,
+            };
+            ccr_editor_update(&doc.ed, &in);
+        }
+
         ccr_gui_begin_frame(COL_BG);
         ccr_canvas_draw_grid(&canvas, viewport);
         if (doc.loaded)
-            ccr_blocks_draw(&doc.blocks, &canvas, viewport);
+            ccr_editor_draw(&doc.ed, &canvas, viewport);
         else
             draw_empty_hint(viewport);
         draw_topbar(w, &doc);

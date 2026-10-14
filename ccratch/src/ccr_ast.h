@@ -109,6 +109,10 @@ typedef struct ccr_node {
 #define CCR_FLAG_POSTFIX     (1u << 2)   /* x++ rather than ++x */
 #define CCR_FLAG_ARROW       (1u << 3)   /* p->x rather than p.x */
 #define CCR_FLAG_INIT        (1u << 4)   /* this expression initializes its Var */
+#define CCR_FLAG_IMPLICIT    (1u << 5)   /* Block added around a braceless body */
+#define CCR_FLAG_LOOSE       (1u << 6)   /* root Block of blocks lying on the
+                                            canvas: not part of the program */
+#define CCR_FLAG_DEAD        (1u << 7)   /* emptied loose root, ignore */
 
 typedef enum ccr_diag_severity {
     CCR_DIAG_NOTE,
@@ -144,6 +148,18 @@ void        ccr_ast_free(ccr_ast *ast);
 /* Appends a node as the last child of `parent` (CCR_NONE for a root). */
 ccr_node_id ccr_ast_add(ccr_ast *ast, ccr_node_kind kind, ccr_node_id parent);
 ccr_str     ccr_ast_intern(ccr_ast *ast, const char *s);
+
+/* Moving nodes around. A node is detached before it is attached again,
+ * so these can move nodes between parents. A node with parent CCR_NONE
+ * is a root. */
+void        ccr_ast_unlink(ccr_ast *ast, ccr_node_id id);
+void        ccr_ast_append(ccr_ast *ast, ccr_node_id parent, ccr_node_id id);
+void        ccr_ast_insert_first(ccr_ast *ast, ccr_node_id parent, ccr_node_id id);
+void        ccr_ast_insert_after(ccr_ast *ast, ccr_node_id ref, ccr_node_id id);
+
+/* `if (x) y;` -> `if (x) { y; }`, same for else, while, for, do: every
+ * body becomes a Block, so it always has a stack to drop blocks into. */
+void        ccr_ast_wrap_bodies(ccr_ast *ast);
 const char *ccr_ast_str(const ccr_ast *ast, ccr_str s);
 bool        ccr_ast_add_diag(ccr_ast *ast, ccr_diag d);
 

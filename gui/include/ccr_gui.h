@@ -51,6 +51,8 @@ ccr_vec2 ccr_gui_mouse(void);
 ccr_vec2 ccr_gui_mouse_delta(void);
 float    ccr_gui_wheel(void);
 bool     ccr_gui_mouse_down(ccr_mouse_button button);
+bool     ccr_gui_mouse_pressed(ccr_mouse_button button);   /* went down this frame */
+bool     ccr_gui_mouse_released(ccr_mouse_button button);  /* went up this frame */
 bool     ccr_gui_key_pressed(ccr_key key);
 
 /* If a file was dropped onto the window this frame, copies its path into
