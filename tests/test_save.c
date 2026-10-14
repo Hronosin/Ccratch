@@ -317,6 +317,131 @@ static void test_refuses_directives(void)
     ccr_editor_free(&ed);
 }
 
+/* ------------------------------------------------------------- undo */
+
+static char *generate(const ccr_editor *ed)
+{
+    char *text = NULL, err[256];
+    size_t len = 0;
+    if (!ccr_codegen(&ed->ast, &text, &len, err, sizeof err)) {
+        fprintf(stderr, "codegen failed: %s\n", err);
+        ++g_failures;
+        return NULL;
+    }
+    return text;
+}
+
+static ccr_placed *placement(const ccr_editor *ed, uint32_t *n)
+{
+    ccr_placed *v = malloc((ed->script_count + 1) * sizeof *v);
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        v[i] = (ccr_placed){ ed->scripts[i].root, ed->scripts[i].pos };
+    *n = ed->script_count;
+    return v;
+}
+
+/* the same scripts in the same places (order may differ: drawing order) */
+static bool same_canvas(const ccr_editor *ed, const ccr_placed *v, uint32_t n)
+{
+    if (ed->script_count != n)
+        return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        bool found = false;
+        for (uint32_t k = 0; k < ed->script_count && !found; ++k)
+            found = ed->scripts[k].root == v[i].root &&
+                    ed->scripts[k].pos.x == v[i].pos.x && ed->scripts[k].pos.y == v[i].pos.y;
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
+/* many edits, all undone: the file and the canvas are exactly as loaded */
+static void test_undo_everything(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    uint32_t n0;
+    ccr_placed *canvas0 = placement(&ed, &n0);
+
+    lift_one(&ed, stmt(&ed, "printf(\"hello"), 0);
+    put_after(&ed, stmt(&ed, "printf(\"hello"), stmt(&ed, "do b--;"));
+    ccr_node_id inc = stmt(&ed, "n++");
+    drag(&ed, corner(&ed, inc), far_away(0));
+    put_after(&ed, inc, stmt(&ed, "b++"));
+    lift_one(&ed, stmt(&ed, "counter += TWICE(n)"), 400);   /* stays loose */
+    ccr_node_id work = 0;
+    for (ccr_node_id i = 0; i < ed.ast.node_count; ++i)
+        if (ed.ast.nodes[i].kind == CCR_NODE_FUNCTION &&
+            strcmp(ccr_ast_str(&ed.ast, ed.ast.nodes[i].name), "guarded") == 0 &&
+            (ed.ast.nodes[i].flags & CCR_FLAG_DEFINITION))
+            work = i;
+    ccr_vec2 at = corner(&ed, work);
+    drag(&ed, at, (ccr_vec2){ at.x + 300.0f, at.y + 90.0f });   /* move a whole function */
+
+    CHECK(ccr_editor_modified(&ed), "edits did not count as a change");
+    CHECK(ccr_editor_loose_count(&ed) == 1, "expected one loose stack before undo");
+    char *edited = generate(&ed);
+    uint32_t n1;
+    ccr_placed *canvas1 = placement(&ed, &n1);
+
+    uint32_t steps = 0;
+    while (ccr_editor_undo(&ed))
+        ++steps;
+    CHECK(steps == ed.history_count, "undid %u of %u steps", steps, ed.history_count);
+    CHECK(steps >= 7, "only %u undo steps were recorded", steps);
+    char *back = generate(&ed);
+    CHECK(back && strcmp(back, ed.ast.source) == 0, "undoing everything did not restore the file");
+    CHECK(same_canvas(&ed, canvas0, n0), "undoing everything did not restore the canvas");
+    CHECK(!ccr_editor_modified(&ed), "fully undone, yet marked as changed");
+    CHECK(ccr_editor_loose_count(&ed) == 0, "a loose stack survived undo");
+
+    while (ccr_editor_redo(&ed))
+        ;
+    char *again = generate(&ed);
+    CHECK(again && edited && strcmp(again, edited) == 0, "redoing everything gave a different file");
+    CHECK(same_canvas(&ed, canvas1, n1), "redoing everything gave a different canvas");
+    CHECK(ccr_editor_loose_count(&ed) == 1, "the loose stack did not come back on redo");
+
+    free(edited);
+    free(back);
+    free(again);
+    free(canvas0);
+    free(canvas1);
+    ccr_editor_free(&ed);
+}
+
+/* the saved point: undo past it is a change, redo back to it is not */
+static void test_undo_and_save_point(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id inc = stmt(&ed, "n++");
+    drag(&ed, corner(&ed, inc), far_away(0));
+    CHECK(ccr_editor_modified(&ed), "move not counted");
+    ccr_editor_mark_saved(&ed);
+    CHECK(!ccr_editor_modified(&ed), "saved, still marked as changed");
+    CHECK(ccr_editor_undo(&ed), "nothing to undo");
+    CHECK(ccr_editor_modified(&ed), "undo past the save is not a change?");
+    CHECK(ccr_editor_redo(&ed), "nothing to redo");
+    CHECK(!ccr_editor_modified(&ed), "back at the saved state, still marked as changed");
+
+    /* undo, then a new edit: redo is gone, and so is the saved state */
+    CHECK(ccr_editor_undo(&ed), "nothing to undo");
+    ccr_node_id dec = stmt(&ed, "n--");
+    drag(&ed, corner(&ed, dec), far_away(0));
+    CHECK(!ccr_editor_redo(&ed), "redo survived a new edit");
+    CHECK(ccr_editor_modified(&ed), "a different edit looks saved");
+
+    /* a click is not a step */
+    uint32_t steps = ed.history_len;
+    ccr_vec2 c = corner(&ed, stmt(&ed, "b++"));
+    frame(&ed, c, true, true, false);
+    frame(&ed, c, false, false, true);
+    CHECK(ed.history_len == steps, "a click was recorded as an undo step");
+    ccr_editor_free(&ed);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -336,6 +461,8 @@ int main(int argc, char **argv)
     test_reindent();
     test_loose_is_left_out();
     test_refuses_directives();
+    test_undo_everything();
+    test_undo_and_save_point();
 
     ccr_gui_shutdown();
     if (g_failures)

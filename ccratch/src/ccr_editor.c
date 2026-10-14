@@ -9,8 +9,12 @@
 #define DRAG_THRESHOLD  4.0f   /* screen pixels before a press becomes a drag */
 #define SNAP_RADIUS    36.0f   /* world units */
 #define LOOSE_ALPHA     0.55f
+#define HISTORY_MAX    500
 
 static const ccr_node *N(const ccr_editor *ed, ccr_node_id id) { return &ed->ast.nodes[id]; }
+
+static void begin_change(ccr_editor *ed);
+static void commit_change(ccr_editor *ed);
 
 /* -------------------------------------------------------- scripts */
 
@@ -178,11 +182,25 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     return true;
 }
 
+static void free_change(ccr_change *c)
+{
+    free(c->before);
+    free(c->after);
+    free(c->scripts_before);
+    free(c->scripts_after);
+    memset(c, 0, sizeof *c);
+}
+
 void ccr_editor_free(ccr_editor *ed)
 {
     for (uint32_t i = 0; i < ed->script_count; ++i)
         ccr_blocks_free(&ed->scripts[i].blocks);
     free(ed->scripts);
+    for (uint32_t i = 0; i < ed->history_count; ++i)
+        free_change(&ed->history[i]);
+    free(ed->history);
+    free(ed->journal.old);
+    free(ed->pending);
     ccr_layout_cache_free(&ed->cache);
     ccr_ast_free(&ed->ast);
     memset(ed, 0, sizeof *ed);
@@ -264,13 +282,14 @@ static uint32_t tear_off(ccr_editor *ed, ccr_node_id item, uint32_t from)
     /* the stack it leaves will be written anew on save */
     ccr_node_id from_block = N(ed, item)->parent;
     if (from_block != CCR_NONE && !(N(ed, from_block)->flags & CCR_FLAG_LOOSE)) {
+        ccr_ast_touch(&ed->ast, from_block);
         ed->ast.nodes[from_block].flags |= CCR_FLAG_DIRTY;
-        ed->modified = true;
     }
 
     ccr_node_id loose = ccr_ast_add(&ed->ast, CCR_NODE_BLOCK, CCR_NONE);
     if (loose == CCR_NONE)
         return UINT32_MAX;
+    ccr_ast_touch(&ed->ast, loose);
     ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE;
 
     for (ccr_node_id c = item; c != CCR_NONE;) {
@@ -298,6 +317,8 @@ static void begin_drag(ccr_editor *ed, ccr_vec2 mouse)
     uint32_t moving;
     const ccr_node_id root = ed->scripts[si].root;
 
+    begin_change(ed);   /* everything until the drop is one undo step */
+
     if (item != CCR_NONE &&
         !(is_loose_root(ed, root) && N(ed, root)->first_child == item)) {
         moving = tear_off(ed, item, si);    /* part of a stack: take the tail */
@@ -305,6 +326,7 @@ static void begin_drag(ccr_editor *ed, ccr_vec2 mouse)
         moving = bring_to_front(ed, si);    /* the whole script */
     }
     if (moving == UINT32_MAX) {
+        commit_change(ed);   /* keep whatever did happen undoable */
         ed->drag = CCR_DRAG_IDLE;
         return;
     }
@@ -314,6 +336,171 @@ static void begin_drag(ccr_editor *ed, ccr_vec2 mouse)
                            ed->press_at.y - ed->scripts[moving].pos.y };
     ed->scripts[moving].pos = (ccr_vec2){ mouse.x - ed->grab.x, mouse.y - ed->grab.y };
     ed->drag = CCR_DRAG_MOVING;
+}
+
+/* ---------------------------------------------------------- history */
+
+static ccr_placed *snapshot_scripts(const ccr_editor *ed, uint32_t *count)
+{
+    ccr_placed *v = malloc((ed->script_count ? ed->script_count : 1) * sizeof *v);
+    if (!v) {
+        *count = 0;
+        return NULL;
+    }
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        v[i] = (ccr_placed){ ed->scripts[i].root, ed->scripts[i].pos };
+    *count = ed->script_count;
+    return v;
+}
+
+static bool same_placement(const ccr_placed *a, uint32_t na, const ccr_placed *b, uint32_t nb)
+{
+    if (na != nb)
+        return false;
+    for (uint32_t i = 0; i < na; ++i)
+        if (a[i].root != b[i].root || a[i].pos.x != b[i].pos.x || a[i].pos.y != b[i].pos.y)
+            return false;
+    return true;
+}
+
+/* Starts recording: from here every tree edit and the canvas are tracked. */
+static void begin_change(ccr_editor *ed)
+{
+    free(ed->pending);
+    ed->pending = snapshot_scripts(ed, &ed->pending_count);
+    ed->pending_nodes = ed->ast.node_count;
+    ed->journal.count = 0;
+    ed->journal.oom = false;
+    ed->ast.journal = &ed->journal;
+    ed->recording = true;
+}
+
+static void forget_redo(ccr_editor *ed)
+{
+    for (uint32_t i = ed->history_len; i < ed->history_count; ++i)
+        free_change(&ed->history[i]);
+    ed->history_count = ed->history_len;
+    if (ed->saved_at > (int64_t)ed->history_len)
+        ed->saved_at = -1;   /* the saved state was on the branch just cut off */
+}
+
+static void forget_all(ccr_editor *ed)
+{
+    for (uint32_t i = 0; i < ed->history_count; ++i)
+        free_change(&ed->history[i]);
+    ed->history_len = ed->history_count = 0;
+    ed->saved_at = -1;
+}
+
+/* Stops recording and files what changed as one undoable step. */
+static void commit_change(ccr_editor *ed)
+{
+    if (!ed->recording)
+        return;
+    ed->recording = false;
+    ed->ast.journal = NULL;
+
+    uint32_t na = 0;
+    ccr_placed *after_scripts = snapshot_scripts(ed, &na);
+    const bool canvas_same = same_placement(ed->pending, ed->pending_count, after_scripts, na);
+    if (ed->journal.count == 0 && canvas_same) {
+        free(after_scripts);   /* picked up and put back exactly: nothing to undo */
+        return;
+    }
+    if (ed->journal.oom || !after_scripts || !ed->pending) {
+        free(after_scripts);
+        forget_all(ed);        /* cannot record it: better no history than a wrong one */
+        return;
+    }
+
+    ccr_change c = {
+        .node_count = ed->journal.count,
+        .scripts_before = ed->pending,
+        .scripts_after = after_scripts,
+        .nb = ed->pending_count,
+        .na = na,
+        .nodes_before = ed->pending_nodes,
+    };
+    ed->pending = NULL;
+    c.before = malloc((c.node_count ? c.node_count : 1) * sizeof(ccr_node_links));
+    c.after = malloc((c.node_count ? c.node_count : 1) * sizeof(ccr_node_links));
+    if (!c.before || !c.after) {
+        free_change(&c);
+        forget_all(ed);
+        return;
+    }
+    for (uint32_t i = 0; i < c.node_count; ++i) {
+        c.before[i] = ed->journal.old[i];
+        c.after[i] = ccr_ast_links(&ed->ast, ed->journal.old[i].id);
+    }
+
+    forget_redo(ed);
+    if (ed->history_count == HISTORY_MAX) {   /* drop the oldest */
+        free_change(&ed->history[0]);
+        memmove(&ed->history[0], &ed->history[1], (HISTORY_MAX - 1) * sizeof(ccr_change));
+        ed->history_len--;
+        ed->history_count--;
+        ed->saved_at = ed->saved_at > 0 ? ed->saved_at - 1 : -1;
+    }
+    if (ed->history_count == ed->history_cap) {
+        uint32_t cap = ed->history_cap ? ed->history_cap * 2 : 32;
+        ccr_change *h = realloc(ed->history, cap * sizeof *h);
+        if (!h) {
+            free_change(&c);
+            forget_all(ed);
+            return;
+        }
+        ed->history = h;
+        ed->history_cap = cap;
+    }
+    ed->history[ed->history_count++] = c;
+    ed->history_len = ed->history_count;
+}
+
+/* Puts the canvas back: these scripts, these positions, laid out anew. */
+static void restore_scripts(ccr_editor *ed, const ccr_placed *v, uint32_t n)
+{
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        ccr_blocks_free(&ed->scripts[i].blocks);
+    ed->script_count = 0;
+    for (uint32_t i = 0; i < n; ++i)
+        push_script(ed, v[i].root, v[i].pos);
+}
+
+bool ccr_editor_undo(ccr_editor *ed)
+{
+    if (ed->drag != CCR_DRAG_IDLE || ed->history_len == 0)
+        return false;
+    const ccr_change *c = &ed->history[--ed->history_len];
+    for (uint32_t i = c->node_count; i-- > 0;)
+        ccr_ast_set_links(&ed->ast, &c->before[i]);
+    /* nodes this step created (a loose stack's root) are gone again */
+    for (uint32_t i = 0; i < c->node_count; ++i)
+        if (c->before[i].id >= c->nodes_before)
+            ed->ast.nodes[c->before[i].id].flags |= CCR_FLAG_DEAD;
+    restore_scripts(ed, c->scripts_before, c->nb);
+    return true;
+}
+
+bool ccr_editor_redo(ccr_editor *ed)
+{
+    if (ed->drag != CCR_DRAG_IDLE || ed->history_len == ed->history_count)
+        return false;
+    const ccr_change *c = &ed->history[ed->history_len++];
+    for (uint32_t i = 0; i < c->node_count; ++i)
+        ccr_ast_set_links(&ed->ast, &c->after[i]);
+    restore_scripts(ed, c->scripts_after, c->na);
+    return true;
+}
+
+bool ccr_editor_modified(const ccr_editor *ed)
+{
+    return ed->saved_at != (int64_t)ed->history_len;
+}
+
+void ccr_editor_mark_saved(ccr_editor *ed)
+{
+    ed->saved_at = (int64_t)ed->history_len;
 }
 
 /* Nearest snap point of any other script to the dragged stack's top-left. */
@@ -352,8 +539,8 @@ static void drop_into_snap(ccr_editor *ed)
 
     ccr_node_id into = ed->snap.kind == CCR_SNAP_AFTER ? N(ed, ed->snap.ref)->parent : ed->snap.ref;
     if (into != CCR_NONE && !(N(ed, into)->flags & CCR_FLAG_LOOSE)) {
+        ccr_ast_touch(&ed->ast, into);
         ed->ast.nodes[into].flags |= CCR_FLAG_DIRTY;
-        ed->modified = true;
     }
 
     ccr_node_id prev = CCR_NONE;
@@ -369,6 +556,7 @@ static void drop_into_snap(ccr_editor *ed)
         c = next;
     }
 
+    ccr_ast_touch(&ed->ast, loose);
     ed->ast.nodes[loose].flags |= CCR_FLAG_DEAD;
     remove_script(ed, ed->dragged);
     ed->dragged = UINT32_MAX;
@@ -417,6 +605,7 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
             ed->snap_ok = false;
             ed->dragged = UINT32_MAX;
             ed->drag = CCR_DRAG_IDLE;
+            commit_change(ed);
         }
         break;
     }

@@ -30,6 +30,8 @@ typedef enum ccr_mouse_button {
 typedef enum ccr_key {
     CCR_KEY_HOME,
     CCR_KEY_S,
+    CCR_KEY_Y,
+    CCR_KEY_Z,
     CCR_KEY_F5
 } ccr_key;
 
@@ -56,6 +58,7 @@ bool     ccr_gui_mouse_pressed(ccr_mouse_button button);   /* went down this fra
 bool     ccr_gui_mouse_released(ccr_mouse_button button);  /* went up this frame */
 bool     ccr_gui_key_pressed(ccr_key key);
 bool     ccr_gui_ctrl_down(void);
+bool     ccr_gui_shift_down(void);
 
 /* If a file was dropped onto the window this frame, copies its path into
  * `out` and returns true. Only the first file of a drop is reported. */

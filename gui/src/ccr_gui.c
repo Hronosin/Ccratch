@@ -181,6 +181,8 @@ bool ccr_gui_key_pressed(ccr_key key)
     switch (key) {
     case CCR_KEY_HOME: return IsKeyPressed(KEY_HOME);
     case CCR_KEY_S:    return IsKeyPressed(KEY_S);
+    case CCR_KEY_Y:    return IsKeyPressed(KEY_Y) || IsKeyPressedRepeat(KEY_Y);
+    case CCR_KEY_Z:    return IsKeyPressed(KEY_Z) || IsKeyPressedRepeat(KEY_Z);
     case CCR_KEY_F5:   return IsKeyPressed(KEY_F5);
     }
     return false;
@@ -189,6 +191,11 @@ bool ccr_gui_key_pressed(ccr_key key)
 bool ccr_gui_ctrl_down(void)
 {
     return IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+}
+
+bool ccr_gui_shift_down(void)
+{
+    return IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
 }
 
 bool ccr_gui_file_dropped(char *out, unsigned int cap)

@@ -14,6 +14,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 3: that tree is drawn as Scratch-style blocks.
 - Step 4: blocks can be dragged.
 - Step 5: Ctrl+S writes the moves back to the `.c` file.
+- Step 6: Ctrl+Z / Ctrl+Y undo and redo.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -185,6 +186,9 @@ ccratch file.c --zoom 50                 start zoomed out
 - Drop a `.c` file onto the window: open it
 - Left mouse drag: move blocks
 - Ctrl+S: save (Esc no longer quits, so it cannot eat unsaved work)
+- Ctrl+Z: undo one drag; Ctrl+Y or Ctrl+Shift+Z: redo. Undoing back to
+  the saved state clears the `*`, and an undone change is gone from the
+  file too: undo everything and the file saves byte for byte as it was
 - Right or middle mouse drag: pan the canvas
 - Mouse wheel: zoom around the cursor
 - Home: back to the start of the file at 100%

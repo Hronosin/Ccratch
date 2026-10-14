@@ -24,6 +24,21 @@ typedef struct ccr_script {
     ccr_blocks  blocks;
 } ccr_script;
 
+/* Where a script sits: enough to put the canvas back as it was. */
+typedef struct ccr_placed {
+    ccr_node_id root;
+    ccr_vec2    pos;
+} ccr_placed;
+
+/* One undoable step (one drag): nodes and canvas, before and after. */
+typedef struct ccr_change {
+    ccr_node_links *before, *after;   /* same nodes, same order */
+    uint32_t        node_count;
+    ccr_placed     *scripts_before, *scripts_after;
+    uint32_t        nb, na;
+    uint32_t        nodes_before;     /* nodes from here on were created by it */
+} ccr_change;
+
 typedef enum ccr_drag_state {
     CCR_DRAG_IDLE,
     CCR_DRAG_PRESSED,      /* button down, not moved far enough yet */
@@ -53,7 +68,17 @@ typedef struct ccr_editor {
     bool           snap_ok;
     ccr_snap       snap;         /* world coordinates in .at */
 
-    bool           modified;     /* the program changed since load/save */
+    /* undo history: [0, history_len) done, [history_len, history_count) redoable */
+    ccr_change    *history;
+    uint32_t       history_len, history_count, history_cap;
+    int64_t        saved_at;     /* history_len when last saved, -1 if gone */
+
+    /* the change being recorded while a drag is on */
+    bool           recording;
+    ccr_journal    journal;
+    ccr_placed    *pending;
+    uint32_t       pending_count;
+    uint32_t       pending_nodes;
 } ccr_editor;
 
 /* Takes ownership of `ast` (parsed, bodies wrapped). Needs an open window. */
@@ -71,5 +96,14 @@ bool ccr_editor_node_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out)
 
 /* How many loose stacks lie on the canvas. */
 uint32_t ccr_editor_loose_count(const ccr_editor *ed);
+
+/* Undo/redo one drag. False if there is nothing to do (or a drag is on). */
+bool ccr_editor_undo(ccr_editor *ed);
+bool ccr_editor_redo(ccr_editor *ed);
+
+/* Changed since loaded or last saved? Undoing back to the saved state
+ * counts as unchanged. */
+bool ccr_editor_modified(const ccr_editor *ed);
+void ccr_editor_mark_saved(ccr_editor *ed);
 
 #endif /* CCR_EDITOR_H */

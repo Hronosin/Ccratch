@@ -154,6 +154,24 @@ typedef struct ccr_diag {
     ccr_str  message;
 } ccr_diag;
 
+/* A node's place in the tree, for undo. */
+typedef struct ccr_node_links {
+    ccr_node_id id;
+    ccr_node_id parent, first_child, last_child, next_sibling;
+    uint32_t    flags;
+} ccr_node_links;
+
+/*
+ * While a journal is attached to a ccr_ast, every edit records the old
+ * links and flags of each node it touches, once per node. That is all
+ * undo needs: put those back.
+ */
+typedef struct ccr_journal {
+    ccr_node_links *old;
+    uint32_t        count, cap;
+    bool            oom;
+} ccr_journal;
+
 typedef struct ccr_ast {
     ccr_node *nodes;
     uint32_t  node_count, node_cap;
@@ -169,6 +187,8 @@ typedef struct ccr_ast {
     /* The file as it was parsed. Saving splices from this. */
     char     *source;
     uint32_t  source_len;
+
+    ccr_journal *journal;   /* NULL unless an undoable edit is in progress */
 } ccr_ast;
 
 bool        ccr_ast_init(ccr_ast *ast);
@@ -182,6 +202,12 @@ ccr_str     ccr_ast_intern(ccr_ast *ast, const char *s);
  * so these can move nodes between parents. A node with parent CCR_NONE
  * is a root. */
 void        ccr_ast_unlink(ccr_ast *ast, ccr_node_id id);
+
+/* Call before changing a node's flags by hand, so undo can restore them.
+ * The edit functions here call it themselves. */
+void        ccr_ast_touch(ccr_ast *ast, ccr_node_id id);
+ccr_node_links ccr_ast_links(const ccr_ast *ast, ccr_node_id id);
+void        ccr_ast_set_links(ccr_ast *ast, const ccr_node_links *l);
 void        ccr_ast_append(ccr_ast *ast, ccr_node_id parent, ccr_node_id id);
 void        ccr_ast_insert_first(ccr_ast *ast, ccr_node_id parent, ccr_node_id id);
 void        ccr_ast_insert_after(ccr_ast *ast, ccr_node_id ref, ccr_node_id id);

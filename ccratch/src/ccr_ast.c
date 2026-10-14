@@ -96,11 +96,45 @@ ccr_node_id ccr_ast_add(ccr_ast *ast, ccr_node_kind kind, ccr_node_id parent)
 
 /* ------------------------------------------------------------ editing */
 
+ccr_node_links ccr_ast_links(const ccr_ast *ast, ccr_node_id id)
+{
+    const ccr_node *n = &ast->nodes[id];
+    return (ccr_node_links){ id, n->parent, n->first_child, n->last_child,
+                             n->next_sibling, n->flags };
+}
+
+void ccr_ast_set_links(ccr_ast *ast, const ccr_node_links *l)
+{
+    ccr_node *n = &ast->nodes[l->id];
+    n->parent = l->parent;
+    n->first_child = l->first_child;
+    n->last_child = l->last_child;
+    n->next_sibling = l->next_sibling;
+    n->flags = l->flags;
+}
+
+void ccr_ast_touch(ccr_ast *ast, ccr_node_id id)
+{
+    ccr_journal *j = ast->journal;
+    if (!j || id == CCR_NONE)
+        return;
+    for (uint32_t i = 0; i < j->count; ++i)
+        if (j->old[i].id == id)
+            return;   /* the first state is the one to go back to */
+    if (!grow((void **)&j->old, &j->cap, j->count + 1, sizeof(ccr_node_links))) {
+        j->oom = true;
+        return;
+    }
+    j->old[j->count++] = ccr_ast_links(ast, id);
+}
+
 void ccr_ast_unlink(ccr_ast *ast, ccr_node_id id)
 {
     ccr_node *n = &ast->nodes[id];
     if (n->parent == CCR_NONE)
         return;
+    ccr_ast_touch(ast, id);
+    ccr_ast_touch(ast, n->parent);
     ccr_node *p = &ast->nodes[n->parent];
 
     ccr_node_id prev = CCR_NONE;
@@ -110,8 +144,10 @@ void ccr_ast_unlink(ccr_ast *ast, ccr_node_id id)
         for (prev = p->first_child; prev != CCR_NONE; prev = ast->nodes[prev].next_sibling)
             if (ast->nodes[prev].next_sibling == id)
                 break;
-        if (prev != CCR_NONE)
+        if (prev != CCR_NONE) {
+            ccr_ast_touch(ast, prev);
             ast->nodes[prev].next_sibling = n->next_sibling;
+        }
     }
     if (p->last_child == id)
         p->last_child = prev;
@@ -123,6 +159,9 @@ void ccr_ast_unlink(ccr_ast *ast, ccr_node_id id)
 void ccr_ast_append(ccr_ast *ast, ccr_node_id parent, ccr_node_id id)
 {
     ccr_ast_unlink(ast, id);
+    ccr_ast_touch(ast, id);
+    ccr_ast_touch(ast, parent);
+    ccr_ast_touch(ast, ast->nodes[parent].last_child);
     ccr_node *p = &ast->nodes[parent];
     ccr_node *n = &ast->nodes[id];
     n->parent = parent;
@@ -137,6 +176,8 @@ void ccr_ast_append(ccr_ast *ast, ccr_node_id parent, ccr_node_id id)
 void ccr_ast_insert_first(ccr_ast *ast, ccr_node_id parent, ccr_node_id id)
 {
     ccr_ast_unlink(ast, id);
+    ccr_ast_touch(ast, id);
+    ccr_ast_touch(ast, parent);
     ccr_node *p = &ast->nodes[parent];
     ccr_node *n = &ast->nodes[id];
     n->parent = parent;
@@ -152,6 +193,9 @@ void ccr_ast_insert_after(ccr_ast *ast, ccr_node_id ref, ccr_node_id id)
         return;
     ccr_ast_unlink(ast, id);
     ccr_node_id parent = ast->nodes[ref].parent;
+    ccr_ast_touch(ast, id);
+    ccr_ast_touch(ast, ref);
+    ccr_ast_touch(ast, parent);
     ccr_node *n = &ast->nodes[id];
     n->parent = parent;
     n->next_sibling = ast->nodes[ref].next_sibling;

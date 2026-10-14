@@ -317,7 +317,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
         return;
     }
     free(text);
-    doc->ed.modified = false;
+    ccr_editor_mark_saved(&doc->ed);
 
     /* read it back: did the move make code clang no longer accepts? */
     uint32_t errors = 0;
@@ -357,7 +357,8 @@ static void draw_topbar(int width, const ccr_document *doc)
     ccr_gui_text("Ccratch", 38.0f, 10.0f, 20.0f, COL_TITLE);
     if (doc->loaded) {
         char title[300];
-        snprintf(title, sizeof title, "%s%s", base_name(doc->path), doc->ed.modified ? " *" : "");
+        snprintf(title, sizeof title, "%s%s", base_name(doc->path),
+                 ccr_editor_modified(&doc->ed) ? " *" : "");
         ccr_gui_text(title, 140.0f, 12.0f, 16.0f, COL_BAR_TEXT);
     }
 
@@ -383,7 +384,7 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
         snprintf(loose_txt, sizeof loose_txt, "%u loose stack%s (not compiled)   |   ",
                  loose, loose == 1 ? "" : "s");
     snprintf(right, sizeof right,
-             "%szoom %d%%   |   LMB drag: blocks   RMB: pan   wheel: zoom   Ctrl+S: save   Home: fit   F5: reload",
+             "%szoom %d%%   |   LMB: blocks   RMB: pan   wheel: zoom   Ctrl+S save  Z undo  Y redo   Home: fit   F5: reload",
              loose_txt, (int)(cv->zoom * 100.0f + 0.5f));
     float rw = ccr_gui_text_width(right, 12.0f);
     ccr_gui_text(right, (float)width - rw - 12.0f, y + 7.0f, 12.0f, COL_BAR_TEXT);
@@ -445,8 +446,19 @@ int ccr_run(int argc, char **argv)
             snprintf(again, sizeof again, "%s", doc.path);
             document_open(&doc, again, &opt);
         }
-        if (doc.loaded && ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_S))
-            document_save(&doc, &opt);
+        if (doc.loaded && ccr_gui_ctrl_down()) {
+            if (ccr_gui_key_pressed(CCR_KEY_S))
+                document_save(&doc, &opt);
+            /* Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo */
+            if (ccr_gui_key_pressed(CCR_KEY_Z)) {
+                if (ccr_gui_shift_down())
+                    ccr_editor_redo(&doc.ed);
+                else
+                    ccr_editor_undo(&doc.ed);
+            }
+            if (ccr_gui_key_pressed(CCR_KEY_Y))
+                ccr_editor_redo(&doc.ed);
+        }
         if (ccr_gui_key_pressed(CCR_KEY_HOME))
             fit_view(&canvas, &doc, viewport, 1.0f);
 
