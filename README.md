@@ -17,6 +17,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 6: Ctrl+Z / Ctrl+Y undo and redo.
 - Step 7: a palette of new blocks, so you can write code, not only move it.
 - Step 8: a Blender-style pie menu, plus delete, duplicate and comment out.
+- Step 9: the interface speaks other languages, from packs you drop in a folder.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -65,7 +66,7 @@ throws it away, Ctrl+V pastes. Each edit is one undo step.
 Drop a block back onto the palette to delete it (Ctrl+Z brings it back).
 That works for statements from the file too.
 
-![the palette, and an if typed into sum()](docs/palette.png)
+![the palette: an if typed into sum(), a code line inside it](docs/palette.png)
 
 New blocks have no text in the file, so saving prints them; everything
 around them is still copied as written:
@@ -121,6 +122,40 @@ The block actions work on the block under the mouse, keys included:
     // }
 ```
 
+## Languages
+
+The interface comes in English (built in) and Russian, and anyone can add
+a language without touching the code: a pack is one text file.
+
+```
+@name   = Русский
+@plural = slavic
+
+pie.save = Сохранить
+status.loaded_errors = %s: %u ошибка ...|%s: %u ошибки ...|%s: %u ошибок ...
+```
+
+- The **EN / RU** button in the top bar switches language and remembers it
+  (in `~/.config/ccratch/config`). Otherwise Ccratch starts in the system
+  language (`$LANG`), or the one given with `--lang ru` / `$CCRATCH_LANG`.
+- Packs are looked for in `$CCRATCH_LANG_DIR`, `~/.local/share/ccratch/lang/`
+  and `share/ccratch/lang/` next to the program. The ones in `lang/` here
+  are copied there on every build.
+- To translate: `ccratch --lang-template > uk.lang`, translate the right
+  side, then `ccratch --check-lang uk.lang` lists what is missing or broken.
+- Plurals have a form per case, split by `|`, as many as the language needs
+  (`slavic`: 1 ошибка, 2 ошибки, 5 ошибок).
+- Anything a pack leaves out or gets wrong falls back to English. A pack
+  cannot crash Ccratch: a translation must use exactly the `%s`/`%u` of the
+  English, or it is refused.
+
+C on the blocks (`if`, `while`, `struct`) stays C, and the command line
+stays English.
+
+Text is drawn with Nunito (SIL Open Font License, `assets/fonts/`), built
+into the program with Latin, Cyrillic and Latin Extended-A, so packs for
+most European languages need no extra font.
+
 ## Saving
 
 Saving splices instead of reprinting: everything you did not touch is
@@ -150,7 +185,7 @@ comes back byte for byte, and the test suite forces every block of
 raylib's sources (about 2000 of them) to be rebuilt and checks clang reads
 the result back into the same tree.
 
-![dragging: sum's body lies loose, a stack is about to snap in](docs/drag.png)
+![dragging: the for loop is about to snap in under the new if](docs/drag.png)
 
 Object-like macros used as values (`NULL`, `true`, `DEG2RAD`) stay one
 purple block. Function-like macros (`MAX(a, b)`) are shown expanded,
@@ -178,10 +213,14 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_editor  scripts on the canvas, drag and drop, edits the tree
   ccr_codegen tree -> C: copies untouched text, rebuilds changed blocks
   ccr_pie     the pie menu: picks an action by direction, knows no editor
+  ccr_lang    every text the window shows, and the language packs
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so; hello/ is the template
 examples/   C files to feed the parser
+lang/       language packs (ru.lang...); English is built in
+assets/     icon and font, built into libccratch
+tools/      make_font.py: how assets/fonts was made from upstream Nunito
 docs/       screenshots
 tests/      headless CTest suite
 cmake/      dependencies, fetched from git by tag; FindLibClang
@@ -249,6 +288,10 @@ ccratch file.c -- -Iinclude -DDEBUG      extra arguments go to clang
 ccratch --dump-ast file.c                print the syntax tree, no window
 ccratch --roundtrip file.c               check saving an untouched file is lossless
 ccratch file.c --zoom 50                 start zoomed out
+ccratch --lang ru                        interface in Russian
+ccratch --list-langs                     language packs found, and where
+ccratch --lang-template                  English text as a pack to translate
+ccratch --check-lang uk.lang             check a pack before sharing it
 ```
 
 `--dump-ast` exits with 0 if the file is clean, 1 if it has errors,

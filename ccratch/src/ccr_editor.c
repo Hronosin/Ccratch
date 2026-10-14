@@ -1,4 +1,5 @@
 #include "ccr_editor.h"
+#include "ccr_lang.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -494,6 +495,8 @@ static const char *const g_template_labels[CCR_TEMPLATE_COUNT] = {
 
 const char *ccr_template_label(ccr_template t)
 {
+    if (t == CCR_TEMPLATE_CODE)
+        return ccr_tr(CCR_T_TEMPLATE_CODE);
     return (unsigned)t < CCR_TEMPLATE_COUNT ? g_template_labels[t] : "?";
 }
 

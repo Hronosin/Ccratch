@@ -12,6 +12,17 @@ add_custom_command(
     DEPENDS ${CCR_ICON_SRC} ${PROJECT_SOURCE_DIR}/cmake/embed.cmake
     COMMENT "Embedding the icon")
 
+# So is the font (Nunito, OFL; see tools/make_font.py): text in any
+# language a pack brings, without hunting for system fonts.
+set(CCR_FONT_SRC ${PROJECT_SOURCE_DIR}/assets/fonts/nunito-ccratch.ttf)
+set(CCR_FONT_C   ${CMAKE_CURRENT_BINARY_DIR}/generated/ccr_font.c)
+add_custom_command(
+    OUTPUT  ${CCR_FONT_C}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${CCR_FONT_SRC} -DOUTPUT=${CCR_FONT_C}
+            -DNAME=ccr_font_ttf -P ${PROJECT_SOURCE_DIR}/cmake/embed.cmake
+    DEPENDS ${CCR_FONT_SRC} ${PROJECT_SOURCE_DIR}/cmake/embed.cmake
+    COMMENT "Embedding the font")
+
 # The code, compiled once. libccratch.so is made from it, and so are the
 # tests, which need the internals the .so keeps hidden.
 add_library(ccratch_core OBJECT
@@ -21,9 +32,11 @@ add_library(ccratch_core OBJECT
     src/ccr_canvas.c
     src/ccr_codegen.c
     src/ccr_editor.c
+    src/ccr_lang.c
     src/ccr_parse.c
     src/ccr_pie.c
-    ${CCR_ICON_C})
+    ${CCR_ICON_C}
+    ${CCR_FONT_C})
 
 target_include_directories(ccratch_core
     PUBLIC ${PROJECT_SOURCE_DIR}/include src)

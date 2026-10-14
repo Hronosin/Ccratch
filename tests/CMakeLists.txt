@@ -87,6 +87,21 @@ add_executable(test_pie test_pie.c)
 target_link_libraries(test_pie PRIVATE ccratch_core)
 add_test(NAME pie_menu COMMAND test_pie)
 
+# Language packs: plurals, fallbacks, broken packs, remembered choice.
+add_executable(test_lang test_lang.c)
+target_link_libraries(test_lang PRIVATE ccratch_core)
+add_test(NAME lang_packs COMMAND test_lang ${CMAKE_CURRENT_BINARY_DIR}/lang_scratch)
+
+# Every shipped pack is complete and safe; the template is a valid pack.
+file(GLOB CCR_SHIPPED_PACKS ${PROJECT_SOURCE_DIR}/lang/*.lang)
+foreach(pack ${CCR_SHIPPED_PACKS})
+    get_filename_component(code ${pack} NAME_WE)
+    add_test(NAME lang_check_${code} COMMAND ${CCR_BIN} --check-lang ${pack})
+endforeach()
+add_test(NAME lang_template
+         COMMAND sh -c "$0 --lang-template > \"$1\" && $0 --check-lang \"$1\""
+                 ${CCR_BIN} ${CMAKE_CURRENT_BINARY_DIR}/en.lang)
+
 # Saving: moves land in the file, everything else stays as written.
 add_executable(test_save test_save.c)
 target_link_libraries(test_save PRIVATE ccratch_core)

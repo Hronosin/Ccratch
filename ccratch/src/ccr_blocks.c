@@ -7,7 +7,7 @@
 
 /* ------------------------------------------------------------ look */
 
-#define FONT        20.0f   /* default font is 10px; multiples stay crisp */
+#define FONT        22.0f   /* line height; Nunito's letters are ~2/3 of it */
 #define GAP          8.0f   /* between items on one line */
 #define BLOCK_PAD_X 12.0f
 #define BLOCK_PAD_Y  8.0f

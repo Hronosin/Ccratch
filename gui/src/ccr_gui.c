@@ -10,6 +10,12 @@
 #include <raygui.h>
 
 static Texture2D g_shapes_tex;
+static Font      g_font;          /* loaded TTF; .texture.id == 0: raylib's pixel font */
+static bool      g_font_loaded;
+
+/* The font text is drawn with, and the gap between letters it wants. */
+static Font text_font(void) { return g_font_loaded ? g_font : GetFontDefault(); }
+static float text_spacing(float size) { return g_font_loaded ? 0.0f : size / 10.0f; }
 
 static Color to_rl(ccr_color c)
 {
@@ -73,6 +79,9 @@ bool ccr_gui_init(int width, int height, const char *title)
 
 void ccr_gui_shutdown(void)
 {
+    if (g_font_loaded)
+        UnloadFont(g_font);
+    g_font_loaded = false;
     if (g_shapes_tex.id != 0)
         UnloadTexture(g_shapes_tex);
     g_shapes_tex = (Texture2D){ 0 };
@@ -100,6 +109,29 @@ bool ccr_gui_screenshot(const char *path)
     bool ok = ExportImage(img, path);
     UnloadImage(img);
     return ok;
+}
+
+bool ccr_gui_load_font(const unsigned char *ttf, unsigned int size, float base_size,
+                       const int *codepoints, int count)
+{
+    if (!ttf || size == 0 || size > (unsigned int)INT32_MAX || count <= 0)
+        return false;
+    Font f = LoadFontFromMemory(".ttf", ttf, (int)size, (int)base_size, (int *)codepoints, count);
+    if (f.texture.id == 0 || f.glyphCount <= 0 || f.texture.id == GetFontDefault().texture.id)
+        return false;
+    /* drawn at many sizes (the canvas zooms): mipmaps keep small text smooth */
+    GenTextureMipmaps(&f.texture);
+    SetTextureFilter(f.texture, TEXTURE_FILTER_TRILINEAR);
+    if (g_font_loaded)
+        UnloadFont(g_font);
+    g_font = f;
+    g_font_loaded = true;
+    GuiSetFont(g_font);
+    GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
+    GuiSetStyle(DEFAULT, TEXT_SPACING, 0);
+    /* raygui may have borrowed the font's white pixel for shapes again */
+    SetShapesTexture(g_shapes_tex, (Rectangle){ 0, 0, 1, 1 });
+    return true;
 }
 
 bool ccr_gui_set_icon_png(const unsigned char *png, unsigned int size)
@@ -185,12 +217,12 @@ void ccr_gui_ring(ccr_vec2 center, float inner, float outer,
 /* The default raylib font is a 10px pixel font; spacing scales with size. */
 void ccr_gui_text(const char *text, float x, float y, float size, ccr_color c)
 {
-    DrawTextEx(GetFontDefault(), text, (Vector2){ x, y }, size, size / 10.0f, to_rl(c));
+    DrawTextEx(text_font(), text, (Vector2){ x, y }, size, text_spacing(size), to_rl(c));
 }
 
 float ccr_gui_text_width(const char *text, float size)
 {
-    return MeasureTextEx(GetFontDefault(), text, size, size / 10.0f).x;
+    return MeasureTextEx(text_font(), text, size, text_spacing(size)).x;
 }
 
 bool ccr_gui_key_pressed(ccr_key key)
@@ -326,8 +358,8 @@ bool ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size)
     g_tb_cursor = cur;
 
     /* draw: white field, accent border, text scrolled so the cursor shows */
-    Font font = GetFontDefault();
-    const float spacing = font_size / 10.0f;
+    Font font = text_font();
+    const float spacing = text_spacing(font_size);
     char saved = buf[cur];
     buf[cur] = '\0';
     float cursor_x = MeasureTextEx(font, buf, font_size, spacing).x;

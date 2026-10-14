@@ -48,6 +48,10 @@ void  ccr_gui_end_frame(void);
 bool  ccr_gui_screenshot(const char *path);
 
 /* Window icon from an in-memory PNG. Returns false if it could not decode. */
+/* Text from now on in this TrueType font (UTF-8), rasterized at base_size
+ * for the given characters. Until then: raylib's ASCII pixel font. */
+bool  ccr_gui_load_font(const unsigned char *ttf, unsigned int size, float base_size,
+                        const int *codepoints, int count);
 bool  ccr_gui_set_icon_png(const unsigned char *png, unsigned int size);
 
 /* Queries */

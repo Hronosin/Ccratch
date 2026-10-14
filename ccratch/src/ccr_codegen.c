@@ -1,4 +1,5 @@
 #include "ccr_codegen.h"
+#include "ccr_lang.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -146,8 +147,7 @@ static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
 {
     const ccr_node *b = N(g, id);
     if (b->flags & CCR_FLAG_UNSAFE_GAP) {
-        fail(g, "line %u: this block has #if/#define or macro-made code between its "
-                "statements, so it cannot be rewritten safely yet", b->line);
+        fail(g, ccr_tr(CCR_T_GEN_UNSAFE_GAP), b->line);
         return;
     }
 
@@ -370,7 +370,7 @@ static void emit(gen *g, ccr_node_id id, unsigned depth)
         const bool dirty = has_dirty(g, kids[i], 0);
         if (lives_in_gaps(k->kind) || k->src_e <= k->src_b) {
             if (dirty)
-                fail(g, "line %u: changed code in a place I cannot locate in the file", k->line);
+                fail(g, ccr_tr(CCR_T_GEN_LOST), k->line);
             continue;
         }
         if (k->src_b < cur) {

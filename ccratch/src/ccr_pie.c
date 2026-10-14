@@ -1,27 +1,28 @@
 #include "ccr_pie.h"
+#include "ccr_lang.h"
 
 #include <math.h>
 #include <stddef.h>
 
 #define PI_F 3.14159265f
 
-static const char *const g_labels[CCR_ACTION_COUNT] = {
-    [CCR_ACTION_SAVE]      = "Save",
-    [CCR_ACTION_COMMENT]   = "Comment out",
-    [CCR_ACTION_REDO]      = "Redo",
-    [CCR_ACTION_EDIT_TEXT] = "Edit text",
-    [CCR_ACTION_DELETE]    = "Delete",
-    [CCR_ACTION_FIT_VIEW]  = "Fit view",
-    [CCR_ACTION_UNDO]      = "Undo",
-    [CCR_ACTION_DUPLICATE] = "Duplicate",
+static const ccr_text g_labels[CCR_ACTION_COUNT] = {
+    [CCR_ACTION_SAVE]      = CCR_T_PIE_SAVE,
+    [CCR_ACTION_COMMENT]   = CCR_T_PIE_COMMENT,
+    [CCR_ACTION_REDO]      = CCR_T_PIE_REDO,
+    [CCR_ACTION_EDIT_TEXT] = CCR_T_PIE_EDIT_TEXT,
+    [CCR_ACTION_DELETE]    = CCR_T_PIE_DELETE,
+    [CCR_ACTION_FIT_VIEW]  = CCR_T_PIE_FIT_VIEW,
+    [CCR_ACTION_UNDO]      = CCR_T_PIE_UNDO,
+    [CCR_ACTION_DUPLICATE] = CCR_T_PIE_DUPLICATE,
 };
 
 static const char *const g_shortcuts[CCR_ACTION_COUNT] = {
     [CCR_ACTION_SAVE]      = "Ctrl+S",
     [CCR_ACTION_COMMENT]   = "Ctrl+/",
     [CCR_ACTION_REDO]      = "Ctrl+Y",
-    [CCR_ACTION_EDIT_TEXT] = "click field",
-    [CCR_ACTION_DELETE]    = "Del",
+    [CCR_ACTION_EDIT_TEXT] = NULL,   /* translated */
+    [CCR_ACTION_DELETE]    = NULL,
     [CCR_ACTION_FIT_VIEW]  = "Home",
     [CCR_ACTION_UNDO]      = "Ctrl+Z",
     [CCR_ACTION_DUPLICATE] = "Ctrl+D",
@@ -30,12 +31,16 @@ static const char *const g_shortcuts[CCR_ACTION_COUNT] = {
 const char *ccr_action_label(ccr_action a, bool uncomment)
 {
     if (a == CCR_ACTION_COMMENT && uncomment)
-        return "Uncomment";
-    return (a > CCR_ACTION_NONE && a < CCR_ACTION_COUNT) ? g_labels[a] : "";
+        return ccr_tr(CCR_T_PIE_UNCOMMENT);
+    return (a > CCR_ACTION_NONE && a < CCR_ACTION_COUNT) ? ccr_tr(g_labels[a]) : "";
 }
 
 const char *ccr_action_shortcut(ccr_action a)
 {
+    if (a == CCR_ACTION_EDIT_TEXT)
+        return ccr_tr(CCR_T_PIE_CLICK_FIELD);
+    if (a == CCR_ACTION_DELETE)
+        return ccr_tr(CCR_T_PIE_KEY_DELETE);
     return (a > CCR_ACTION_NONE && a < CCR_ACTION_COUNT) ? g_shortcuts[a] : "";
 }
 
@@ -88,8 +93,8 @@ ccr_action ccr_pie_update(ccr_pie *pie, ccr_vec2 mouse, bool click, bool cancel)
 
 /* ---------------------------------------------------------- drawing */
 
-#define LABEL_SIZE    18.0f
-#define HINT_SIZE     11.0f
+#define LABEL_SIZE    20.0f
+#define HINT_SIZE     14.0f
 #define BOX_H         30.0f
 #define BOX_PAD       10.0f
 

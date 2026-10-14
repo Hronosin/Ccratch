@@ -4,6 +4,7 @@
 #include "ccr_codegen.h"
 #include "ccr_editor.h"
 #include "ccr_gui.h"
+#include "ccr_lang.h"
 #include "ccr_parse.h"
 #include "ccr_pie.h"
 
@@ -24,6 +25,24 @@
 /* Generated from assets/icon.png at build time */
 extern const unsigned char ccr_icon_png[];
 extern const unsigned int  ccr_icon_png_size;
+extern const unsigned char ccr_font_ttf[];
+extern const unsigned int  ccr_font_ttf_size;
+
+/* Characters the font is rasterized for; tools/make_font.py keeps these. */
+static const int g_font_ranges[][2] = {
+    { 0x0020, 0x007E }, { 0x00A0, 0x017F }, { 0x0400, 0x04FF },
+    { 0x2010, 0x2027 }, { 0x2030, 0x203A }, { 0x2116, 0x2116 }, { 0x2190, 0x2193 },
+};
+
+static bool load_font(void)
+{
+    static int cps[1024];
+    int n = 0;
+    for (size_t r = 0; r < sizeof g_font_ranges / sizeof g_font_ranges[0]; ++r)
+        for (int c = g_font_ranges[r][0]; c <= g_font_ranges[r][1] && n < 1024; ++c)
+            cps[n++] = c;
+    return ccr_gui_load_font(ccr_font_ttf, ccr_font_ttf_size, 48.0f, cps, n);
+}
 
 #define TOPBAR_H     40.0f
 #define PALETTE_W   176.0f
@@ -42,6 +61,7 @@ typedef struct ccr_options {
     const char *roundtrip;      /* parse, write back unchanged, compare */
     const char *open;           /* file to open in the editor */
     int         zoom_percent;   /* initial zoom, 0 = 100% */
+    const char *lang;           /* --lang CODE, NULL: pick one */
     const char *const *clang_args;  /* everything after "--" */
     int         clang_arg_count;
 } ccr_options;
@@ -75,6 +95,11 @@ static void print_usage(const char *argv0)
            "                         byte for byte\n"
            "  -- ARGS...             pass ARGS to clang (e.g. -- -std=c99 -Iinclude)\n"
            "  --zoom PERCENT         start at this zoom (25..300)\n"
+           "  --lang CODE            interface language (en, ru...); remembered when\n"
+           "                         picked with the button in the window\n"
+           "  --list-langs           show the language packs found, and where\n"
+           "  --lang-template        print the English text as a pack to translate\n"
+           "  --check-lang FILE      check a language pack for missing or broken text\n"
            "  --smoke-frames N       run N frames and exit (for CI)\n"
            "  --screenshot FILE.png  save the last frame before exiting\n",
            ccr_version(), argv0);
@@ -189,6 +214,25 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             opt->smoke_frames = atoi(argv[++i]);
         } else if (strcmp(a, "--screenshot") == 0 && i + 1 < argc) {
             opt->screenshot = argv[++i];
+        } else if (strcmp(a, "--lang") == 0 && i + 1 < argc) {
+            opt->lang = argv[++i];
+        } else if (strcmp(a, "--list-langs") == 0) {
+            static ccr_lang_info langs[64];
+            int n = ccr_lang_scan(langs, 64);
+            for (int k = 0; k < n; ++k) {
+                int chars = 0;   /* letters, not bytes: names are UTF-8 */
+                for (const char *c = langs[k].name; *c; ++c)
+                    chars += ((unsigned char)*c & 0xC0) != 0x80;
+                printf("%-6s %s%*s %s\n", langs[k].code, langs[k].name,
+                       chars < 20 ? 20 - chars : 0, "",
+                       langs[k].path[0] ? langs[k].path : "(built in)");
+            }
+            return 0;
+        } else if (strcmp(a, "--lang-template") == 0) {
+            ccr_lang_write_template(stdout);
+            return 0;
+        } else if (strcmp(a, "--check-lang") == 0 && i + 1 < argc) {
+            return ccr_lang_check(argv[++i], stdout) == 0 ? 0 : 1;
         } else if (strcmp(a, "--zoom") == 0 && i + 1 < argc) {
             opt->zoom_percent = atoi(argv[++i]);
         } else if (a[0] != '-' && !opt->open) {
@@ -238,8 +282,7 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
 
     if (!ccr_parse_file(path, opt->clang_args, opt->clang_arg_count, &ast)) {
         ccr_ast_free(&ast);
-        snprintf(doc->status, sizeof doc->status,
-                 "Could not read %s. Opyat' rabotat'...", base_name(path));
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_CANNOT_READ, base_name(path));
         doc->has_errors = true;
         return false;
     }
@@ -254,19 +297,17 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     next.errors_at_load = errors;
     if (!ccr_editor_init(&next.ed, &ast)) {   /* takes the ast either way */
         ccr_editor_free(&next.ed);
-        snprintf(doc->status, sizeof doc->status, "Out of memory while laying out blocks.");
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_OOM_LAYOUT);
         doc->has_errors = true;
         return false;
     }
     next.loaded = true;
     next.has_errors = errors > 0;
     if (errors)
-        snprintf(next.status, sizeof next.status,
-                 "%s: %u error%s (details in the terminal). Opyat' rabotat'...",
-                 base_name(path), errors, errors == 1 ? "" : "s");
+        ccr_trnf(next.status, sizeof next.status, CCR_T_LOADED_ERRORS, errors,
+                 base_name(path), errors);
     else
-        snprintf(next.status, sizeof next.status, "%s: no incidents. Donation box: still empty.",
-                 base_name(path));
+        ccr_trf(next.status, sizeof next.status, CCR_T_LOADED_CLEAN, base_name(path));
 
     document_close(doc);
     *doc = next;
@@ -298,7 +339,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
     char *text = NULL, err[256];
     size_t len = 0;
     if (!ccr_codegen(&doc->ed.ast, &text, &len, err, sizeof err)) {
-        snprintf(doc->status, sizeof doc->status, "Not saved: %s", err);
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_NOT_SAVED, err);
         doc->has_errors = true;
         fprintf(stderr, "[ccratch] %s not saved: %s\n", doc->path, err);
         return;
@@ -310,7 +351,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
 
     if (!doc->backed_up) {
         if (!write_file(backup, doc->ed.ast.source, doc->ed.ast.source_len)) {
-            snprintf(doc->status, sizeof doc->status, "Not saved: could not write the backup %s~", name);
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_NO_BACKUP, name);
             doc->has_errors = true;
             free(text);
             return;
@@ -319,7 +360,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
     }
     if (!write_file(tmp, text, len) || rename(tmp, doc->path) != 0) {
         remove(tmp);
-        snprintf(doc->status, sizeof doc->status, "Not saved: could not write %s", name);
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_CANNOT_WRITE, name);
         doc->has_errors = true;
         free(text);
         return;
@@ -341,37 +382,67 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
     }
 
     uint32_t loose = ccr_editor_loose_count(&doc->ed);
-    char extra[96] = "";
-    if (loose)
-        snprintf(extra, sizeof extra, " %u loose stack%s left out.", loose, loose == 1 ? "" : "s");
+    char extra[160] = "", said[340];
+    if (loose) {
+        extra[0] = ' ';
+        ccr_trnf(extra + 1, sizeof extra - 1, CCR_T_LEFT_OUT, loose, loose);
+    }
     if (errors > doc->errors_at_load) {
-        snprintf(doc->status, sizeof doc->status,
-                 "Saved %s, but clang now sees %u error%s (details in the terminal).%s",
-                 name, errors, errors == 1 ? "" : "s", extra);
+        ccr_trnf(said, sizeof said, CCR_T_SAVED_ERRORS, errors, name, errors);
         doc->has_errors = true;
     } else {
-        snprintf(doc->status, sizeof doc->status, "Saved %s (original in %s~).%s",
-                 name, name, extra);
+        ccr_trf(said, sizeof said, CCR_T_SAVED, name, name);
         doc->has_errors = false;
     }
+    snprintf(doc->status, sizeof doc->status, "%s%s", said, extra);
 }
 
 /* -------------------------------------------------------- drawing */
 
-static void draw_topbar(int width, const ccr_document *doc)
+/* The language button: the next pack each click, remembered for next time. */
+static void next_language(ccr_document *doc)
+{
+    static ccr_lang_info langs[64];
+    int n = ccr_lang_scan(langs, 64);
+    int cur = 0;
+    for (int i = 0; i < n; ++i)
+        if (strcmp(langs[i].code, ccr_lang_code()) == 0)
+            cur = i;
+    for (int step = 1; step <= n; ++step) {
+        const ccr_lang_info *li = &langs[(cur + step) % n];
+        if (ccr_lang_use(li->code, stderr)) {
+            if (!ccr_lang_save_choice(li->code))
+                fprintf(stderr, "ccratch: could not remember the language in ~/.config/ccratch\n");
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
+            doc->has_errors = false;
+            return;   /* blocks show C, not words: nothing to lay out again */
+        }
+    }
+}
+
+static void draw_topbar(int width, ccr_document *doc)
 {
     ccr_gui_rect((ccr_rect){ 0, 0, (float)width, TOPBAR_H }, COL_BAR);
     ccr_gui_circle((ccr_vec2){ 22.0f, TOPBAR_H * 0.5f }, 8.0f, COL_ACCENT);
-    ccr_gui_text("Ccratch", 38.0f, 10.0f, 20.0f, COL_TITLE);
+    ccr_gui_text("Ccratch", 38.0f, 8.0f, 22.0f, COL_TITLE);
     if (doc->loaded) {
         char title[300];
         snprintf(title, sizeof title, "%s%s", base_name(doc->path),
                  ccr_editor_modified(&doc->ed) ? " *" : "");
-        ccr_gui_text(title, 140.0f, 12.0f, 16.0f, COL_BAR_TEXT);
+        ccr_gui_text(title, 38.0f + ccr_gui_text_width("Ccratch", 22.0f) + 18.0f, 11.0f, 18.0f,
+                     COL_BAR_TEXT);
     }
 
+    char code[24];
+    snprintf(code, sizeof code, "%s", ccr_lang_code());
+    for (char *c = code; *c; ++c)
+        if (*c >= 'a' && *c <= 'z')
+            *c = (char)(*c - 'a' + 'A');
+    if (ccr_gui_button((ccr_rect){ (float)width - 166.0f, 7.0f, 48.0f, 26.0f }, code))
+        next_language(doc);
+
     float x = (float)width - 110.0f;
-    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, "Build"))
+    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(CCR_T_BUILD)))
         printf("[ccratch] build: nothing to build yet. Go do some shrine work.\n");
 }
 
@@ -380,22 +451,25 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
     float y = (float)height - STATUSBAR_H;
     ccr_gui_rect((ccr_rect){ 0, y, (float)width, STATUSBAR_H }, COL_BAR);
 
-    const char *msg = doc->status[0] ? doc->status : "No file. Drop a .c file onto the window.";
+    const char *msg = doc->status[0] ? doc->status : ccr_tr(CCR_T_NO_FILE);
     ccr_color dot = doc->has_errors ? COL_ACCENT : COL_OK;
     ccr_gui_circle((ccr_vec2){ 14.0f, y + STATUSBAR_H * 0.5f }, 4.0f, dot);
-    ccr_gui_text(msg, 26.0f, y + 7.0f, 12.0f, COL_BAR_TEXT);
+    ccr_gui_text(msg, 26.0f, y + 5.0f, 15.0f, COL_BAR_TEXT);
 
-    char right[192];
+    char right[512], loose_txt[128] = "", zoom[64];
     uint32_t loose = doc->loaded ? ccr_editor_loose_count(&doc->ed) : 0;
-    char loose_txt[64] = "";
-    if (loose)
-        snprintf(loose_txt, sizeof loose_txt, "%u loose stack%s (not compiled)   |   ",
-                 loose, loose == 1 ? "" : "s");
-    snprintf(right, sizeof right,
-             "%szoom %d%%  |  right click: menu  |  RMB drag pan  wheel zoom  |  Ctrl+S save  Z undo  Y redo  |  Home  F5",
-             loose_txt, (int)(cv->zoom * 100.0f + 0.5f));
-    float rw = ccr_gui_text_width(right, 12.0f);
-    ccr_gui_text(right, (float)width - rw - 12.0f, y + 7.0f, 12.0f, COL_BAR_TEXT);
+    if (loose) {
+        ccr_trnf(loose_txt, sizeof loose_txt - 8, CCR_T_BAR_LOOSE, loose, loose);
+        strcat(loose_txt, "   |   ");
+    }
+    ccr_trf(zoom, sizeof zoom, CCR_T_BAR_ZOOM, (int)(cv->zoom * 100.0f + 0.5f));
+    snprintf(right, sizeof right, "%s%s  |  %s", loose_txt, zoom, ccr_tr(CCR_T_BAR_HINTS));
+    /* no room next to the message (long words, narrow window): hints go first */
+    float room = (float)width - 26.0f - ccr_gui_text_width(msg, 15.0f) - 48.0f;
+    if (ccr_gui_text_width(right, 15.0f) > room)
+        snprintf(right, sizeof right, "%s%s", loose_txt, zoom);
+    float rw = ccr_gui_text_width(right, 15.0f);
+    ccr_gui_text(right, (float)width - rw - 12.0f, y + 5.0f, 15.0f, COL_BAR_TEXT);
 }
 
 /* ------------------------------------------------------------ palette */
@@ -428,7 +502,7 @@ static void draw_palette(int height, bool dragging_over)
 {
     ccr_gui_rect((ccr_rect){ 0, TOPBAR_H, PALETTE_W, (float)height - TOPBAR_H - STATUSBAR_H },
                  dragging_over ? 0x2A1E22FFu : COL_PALETTE);
-    ccr_gui_text(dragging_over ? "drop to delete" : "Blocks", 16.0f, TOPBAR_H + 14.0f, 16.0f,
+    ccr_gui_text(dragging_over ? ccr_tr(CCR_T_PALETTE_DROP) : ccr_tr(CCR_T_PALETTE_TITLE), 16.0f, TOPBAR_H + 12.0f, 19.0f,
                  dragging_over ? COL_ACCENT : COL_BAR_TEXT);
 
     for (int i = 0; i < CCR_TEMPLATE_COUNT; ++i) {
@@ -441,7 +515,7 @@ static void draw_palette(int height, bool dragging_over)
         ccr_gui_rect_rounded((ccr_rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 0.25f, fill);
         if (mouth)   /* a hint of the C shape: there is room inside */
             ccr_gui_rect((ccr_rect){ r.x + 14.0f, r.y + r.h - 7.0f, r.w - 28.0f, 4.0f }, edge);
-        ccr_gui_text(ccr_template_label((ccr_template)i), r.x + 12.0f, r.y + 8.0f, 16.0f, 0xFFFFFFFFu);
+        ccr_gui_text(ccr_template_label((ccr_template)i), r.x + 12.0f, r.y + 6.0f, 19.0f, 0xFFFFFFFFu);
     }
 }
 
@@ -514,8 +588,8 @@ static void run_action(ccr_action a, const ccr_context *ctx, ccr_vec2 world,
 
 static void draw_empty_hint(ccr_rect viewport)
 {
-    const char *a = "Drop a .c file here";
-    const char *b = "(or: ccratch file.c)";
+    const char *a = ccr_tr(CCR_T_EMPTY_TITLE);
+    const char *b = ccr_tr(CCR_T_EMPTY_HINT);
     float cx = viewport.x + viewport.w * 0.5f, cy = viewport.y + viewport.h * 0.5f;
     ccr_gui_text(a, cx - ccr_gui_text_width(a, 30.0f) * 0.5f, cy - 30.0f, 30.0f, COL_HINT);
     ccr_gui_text(b, cx - ccr_gui_text_width(b, 20.0f) * 0.5f, cy + 10.0f, 20.0f, COL_HINT);
@@ -539,6 +613,9 @@ int ccr_run(int argc, char **argv)
         fprintf(stderr, "ccratch: could not open a window. Opyat' rabotat'...\n");
         return 1;
     }
+    ccr_lang_pick(opt.lang, stderr);
+    if (!load_font())
+        fprintf(stderr, "ccratch: font did not load, falling back to raylib's (ASCII only)\n");
     if (!ccr_gui_set_icon_png(ccr_icon_png, ccr_icon_png_size))
         fprintf(stderr, "ccratch: icon did not load, carrying on without it\n");
 
@@ -719,5 +796,6 @@ int ccr_run(int argc, char **argv)
 
     document_close(&doc);
     ccr_gui_shutdown();
+    ccr_lang_reset();
     return 0;
 }
