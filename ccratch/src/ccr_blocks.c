@@ -55,6 +55,8 @@ typedef struct layout {
 static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w,
                       float h);
 
+static void push_jump(layout *L, ccr_node_id id);
+
 static const ccr_node *N(const layout *L, ccr_node_id id) { return &L->ast->nodes[id]; }
 static const char *S(const layout *L, ccr_str s)         { return ccr_ast_str(L->ast, s); }
 
@@ -694,6 +696,7 @@ static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *
     }
     case CCR_NODE_LABEL: {
         /* `done:` then the labelled statement right under it */
+        push_jump(L, id);
         it_fmt(&head, "%s:", S(L, n->name));
         sz = emit_line_block(L, &head, CAT_CONTROL, x, y, id);
         if (sz.w > *max_w) *max_w = sz.w;
@@ -741,6 +744,7 @@ static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *
     case CCR_NODE_CONTINUE: it_text(&head, "continue"); goto control_line;
     case CCR_NODE_EMPTY:    it_text(&head, ";");        goto control_line;
     case CCR_NODE_GOTO:
+        push_jump(L, id);
         it_fmt(&head, "goto %s", S(L, n->name));
     control_line:
         sz = emit_line_block(L, &head, CAT_CONTROL, x, y, id);
@@ -932,6 +936,16 @@ static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, f
     b->snaps[b->snap_count++] = (ccr_snap){ kind, ref, { x, y }, w, h };
 }
 
+static void push_jump(layout *L, ccr_node_id id)
+{
+    ccr_blocks *b = L->out;
+    if (!grow((void **)&b->jumps, &b->jump_cap, b->jump_count + 1, sizeof(ccr_node_id))) {
+        L->oom = true;
+        return;
+    }
+    b->jumps[b->jump_count++] = id;
+}
+
 bool ccr_layout_cache_reserve(ccr_layout_cache *c, uint32_t node_count)
 {
     if (node_count <= c->cap)
@@ -994,6 +1008,7 @@ void ccr_blocks_free(ccr_blocks *b)
     free(b->prims);
     free(b->text);
     free(b->snaps);
+    free(b->jumps);
     memset(b, 0, sizeof *b);
 }
 

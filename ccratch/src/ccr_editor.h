@@ -103,6 +103,9 @@ typedef struct ccr_editor {
 
     /* a duplicate stuck to the mouse: dropped on the next click */
     bool           carrying;
+
+    /* the node under the mouse when nothing is being dragged */
+    ccr_node_id    hover;
 } ccr_editor;
 
 /* Takes ownership of `ast` (parsed, bodies wrapped). Needs an open window. */
@@ -149,6 +152,17 @@ typedef struct ccr_context {
 } ccr_context;
 
 ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse);
+
+/* Where a goto goes. Labels belong to their function, so a label of the
+ * same name somewhere else (a loose stack, another function) does not
+ * count: clang would say "use of undeclared label". */
+typedef enum ccr_jump_state {
+    CCR_JUMP_OK,          /* its label is in the same function */
+    CCR_JUMP_ELSEWHERE,   /* a label of that name exists, but not there */
+    CCR_JUMP_MISSING      /* no such label anywhere */
+} ccr_jump_state;
+
+ccr_jump_state ccr_editor_jump(const ccr_editor *ed, ccr_node_id go, ccr_node_id *label);
 
 /* Deletes one block from its stack; the blocks under it move up. A whole
  * loose stack goes if its top block is picked. An expression in a slot

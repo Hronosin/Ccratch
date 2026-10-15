@@ -214,6 +214,23 @@ void ccr_gui_ring(ccr_vec2 center, float inner, float outer,
     DrawRing((Vector2){ center.x, center.y }, inner, outer, from_deg, to_deg, segments, to_rl(c));
 }
 
+void ccr_gui_line(ccr_vec2 a, ccr_vec2 b, float thick, ccr_color c)
+{
+    DrawLineEx((Vector2){ a.x, a.y }, (Vector2){ b.x, b.y }, thick, to_rl(c));
+}
+
+void ccr_gui_triangle(ccr_vec2 a, ccr_vec2 b, ccr_vec2 c, ccr_color col)
+{
+    /* raylib draws only counter-clockwise triangles (y down) */
+    float cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if (cross > 0.0f) {
+        ccr_vec2 t = b;
+        b = c;
+        c = t;
+    }
+    DrawTriangle((Vector2){ a.x, a.y }, (Vector2){ b.x, b.y }, (Vector2){ c.x, c.y }, to_rl(col));
+}
+
 void ccr_gui_clip_begin(ccr_rect r)
 {
     BeginScissorMode((int)r.x, (int)r.y, (int)r.w, (int)r.h);

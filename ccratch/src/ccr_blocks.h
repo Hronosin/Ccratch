@@ -59,6 +59,10 @@ typedef struct ccr_blocks {
     ccr_snap *snaps;
     uint32_t  snap_count, snap_cap;
 
+    /* every goto and label in the script, for the arrows between them */
+    ccr_node_id *jumps;
+    uint32_t     jump_count, jump_cap;
+
     ccr_rect  bounds;      /* script-local */
 } ccr_blocks;
 

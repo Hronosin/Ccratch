@@ -85,6 +85,9 @@
       "line %u: changed code in a place I cannot locate in the file")                    \
     X(GEN_EMPTY_SLOT,   "save.empty_slot",       0,                                      \
       "line %u: an empty slot; type into it or drop a block there") \
+    X(JUMP_MISSING,     "jump.missing",          0, "no label %s: in this function")     \
+    X(JUMP_ELSEWHERE,   "jump.elsewhere",        0,                                      \
+      "label %s: is not in this function (loose on the canvas, or in another one)")      \
     /* the agreement (a joke; LICENSE is the real thing) */ \
     X(EULA_TITLE, "eula.title", 0, \
       "IHATERUSTL") \
@@ -111,7 +114,7 @@
     X(EULA_C07, "eula.c07", 0, \
       "Not to keep the Software in the donation box of the Hakurei Shrine: it is empty anyway, do not give anyone false hope.") \
     X(EULA_C08, "eula.c08", 0, \
-      "To acknowledge that goto is considered harmful (Dijkstra, 1968). Ccratch will draw an arrow to it, so you can see exactly where the harm goes.") \
+      "To acknowledge that goto is considered harmful (Dijkstra, 1968). Ccratch draws an arrow to its label, so you can see exactly where the harm goes.") \
     X(EULA_C09, "eula.c09", 0, \
       "To acknowledge NULL as a billion-dollar mistake (Hoare, 2009) and to contribute to it as best you can.") \
     X(EULA_C10, "eula.c10", 0, \

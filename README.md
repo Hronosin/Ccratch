@@ -19,6 +19,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 8: a Blender-style pie menu, plus delete, duplicate and comment out.
 - Step 9: the interface speaks other languages, from packs you drop in a folder.
 - Step 10: expressions come out of their slots and go into other ones.
+- Step 11: every `goto` has an arrow to its label.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -105,6 +106,22 @@ How sure is this? The test suite takes every expression of raylib's
 sources that may move (about 64 000), and both moves each one into its
 own slot and deletes and retypes it: the file has to come back byte for
 byte.
+
+## goto arrows
+
+Every `goto` has an arrow to its label, out of its right side and along a
+lane to the right of the function. Shorter jumps take the inner lanes, so
+the arrows nest like brackets instead of crossing. Put the mouse on a
+`goto` or a label and its arrows light up.
+
+![left: goto close_file lit up; right: out: dragged away, goto out turns red](docs/goto.png)
+
+Labels belong to their function. Drag a label out onto the canvas (or into
+another function) and the arrow turns red and dashed, and the `goto` says
+why; delete it and the `goto` gets a red mark. That is the "use of
+undeclared label" clang would tell you about after saving, shown while
+you are still holding the block. `examples/goto.c` has the classic kernel
+style cleanup ladder to play with.
 
 ## The pie menu
 

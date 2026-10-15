@@ -109,6 +109,15 @@ add_test(NAME lang_template
          COMMAND sh -c "$0 --lang-template > \"$1\" && $0 --check-lang \"$1\""
                  ${CCR_BIN} ${CMAKE_CURRENT_BINARY_DIR}/en.lang)
 
+# goto arrows find their labels, and notice when one leaves.
+add_executable(test_jumps test_jumps.c)
+target_link_libraries(test_jumps PRIVATE ccratch_core)
+if(XVFB_RUN)
+    add_test(NAME editor_goto_arrows
+             COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
+                     $<TARGET_FILE:test_jumps> ${PROJECT_SOURCE_DIR}/examples/goto.c)
+endif()
+
 # Saving: moves land in the file, everything else stays as written.
 add_executable(test_save test_save.c)
 target_link_libraries(test_save PRIVATE ccratch_core)
@@ -121,7 +130,7 @@ if(XVFB_RUN)
 endif()
 
 # Unchanged files come back byte for byte.
-foreach(f examples/tour.c tests/data/save.c)
+foreach(f examples/tour.c examples/goto.c tests/data/save.c)
     add_test(NAME roundtrip_${f} COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/${f})
 endforeach()
 

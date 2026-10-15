@@ -77,6 +77,8 @@ void  ccr_gui_rect(ccr_rect r, ccr_color c);
 void  ccr_gui_rect_rounded(ccr_rect r, float roundness, ccr_color c);
 void  ccr_gui_hex(ccr_rect r, ccr_color c);   /* Scratch-style boolean shape */
 void  ccr_gui_circle(ccr_vec2 center, float radius, ccr_color c);
+void  ccr_gui_line(ccr_vec2 a, ccr_vec2 b, float thick, ccr_color c);
+void  ccr_gui_triangle(ccr_vec2 a, ccr_vec2 b, ccr_vec2 c, ccr_color col);   /* any winding */
 /* Part of a ring; angles in degrees, 0 = right, clockwise (y is down). */
 void  ccr_gui_ring(ccr_vec2 center, float inner, float outer,
                    float from_deg, float to_deg, ccr_color c);
