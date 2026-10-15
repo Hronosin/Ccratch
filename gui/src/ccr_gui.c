@@ -44,10 +44,11 @@ bool ccr_gui_init(int width, int height, const char *title)
     SetTraceLogLevel(LOG_WARNING);
 
     /* raylib 5.5 carries on after GLFW fails to reach a display and then
-     * calls OpenGL that was never loaded: a segfault. Ask GLFW first. */
+     * calls OpenGL that was never loaded: a segfault. Ask GLFW first, and
+     * stay connected: raylib's own glfwInit then just reuses it, so the
+     * display cannot go away in between (seen with a slow Xvfb). */
     if (!glfwInit())
         return false;
-    glfwTerminate();
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
     InitWindow(width, height, title);

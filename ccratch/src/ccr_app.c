@@ -830,6 +830,16 @@ static void draw_palette(int height, bool dragging_over)
         ccr_color edge = ccr_th_cat(cat, CCR_EDGE);
         ccr_gui_rect_rounded(r, 0.25f, edge);
         ccr_gui_rect_rounded((ccr_rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 0.25f, fill);
+        /* the puzzle shape, as on the canvas: a notch on top, a tab under
+         * (not under return, break, continue: nothing runs after them) */
+        const ccr_rect dent = { r.x + 12.0f, r.y - 1.0f, 22.0f, 6.0f };
+        ccr_gui_rect_rounded(dent, 0.6f, edge);
+        ccr_gui_rect_rounded((ccr_rect){ dent.x + 1, dent.y - 1, dent.w - 2, dent.h }, 0.6f, COL_PALETTE);
+        if (i < CCR_TEMPLATE_RETURN) {
+            const ccr_rect tab = { r.x + 12.0f, r.y + r.h - 1.0f, 22.0f, 6.0f };
+            ccr_gui_rect_rounded(tab, 0.6f, edge);
+            ccr_gui_rect_rounded((ccr_rect){ tab.x + 1, tab.y - 1, tab.w - 2, tab.h }, 0.6f, fill);
+        }
         if (mouth)   /* a hint of the C shape: there is room inside */
             ccr_gui_rect((ccr_rect){ r.x + 14.0f, r.y + r.h - 7.0f, r.w - 28.0f, 4.0f }, edge);
         ccr_gui_text(ccr_template_label((ccr_template)i), r.x + 12.0f, r.y + 6.0f, 19.0f,

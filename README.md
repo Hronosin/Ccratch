@@ -43,6 +43,11 @@ How the colors map to C:
 | White | literals |
 | Grey | "here be dragons": no block for this yet, raw code shown |
 
+Blocks fit together like a puzzle, as in Scratch: a notch on top of each
+statement, a tab under it, so you can see where one ends and the next one
+starts. `return`, `break`, `continue` and `goto` have flat bottoms:
+nothing after them runs, and the shape says so.
+
 Dragging works like Scratch:
 
 - grab a statement and it comes with everything under it in its stack;

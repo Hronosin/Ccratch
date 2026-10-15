@@ -20,6 +20,9 @@
 #define MOUTH_MIN_H 24.0f
 #define FOOT_H      24.0f   /* bottom bar of a C-block */
 #define HAT_BUMP    22.0f
+#define TAB_X       16.0f   /* the puzzle tab: how far in from the left */
+#define TAB_W       32.0f
+#define TAB_H        8.0f
 
 typedef enum category {
     CAT_CONTROL, CAT_OPERATOR, CAT_VARIABLE, CAT_CALL, CAT_EVENT,
@@ -40,12 +43,15 @@ typedef struct layout {
     float         *ew, *eh;   /* cached expression sizes, per node */
     bool           oom;
     int            dim;       /* > 0 inside a commented-out statement */
+    ccr_prim      *tabs;      /* puzzle tabs, drawn over everything at the end */
+    uint32_t       tab_count, tab_cap;
 } layout;
 
 static void push_snap(layout *L, ccr_snap_kind kind, ccr_node_id ref, float x, float y, float w,
                       float h);
 
 static void push_jump(layout *L, ccr_node_id id);
+static void add_tab(layout *L, float x, float bottom, ccr_color fill, ccr_color edge, ccr_node_id node);
 
 static const ccr_node *N(const layout *L, ccr_node_id id) { return &L->ast->nodes[id]; }
 static const char *S(const layout *L, ccr_str s)         { return ccr_ast_str(L->ast, s); }
@@ -502,12 +508,15 @@ static size2 emit_c_block(layout *L, const items *head, const mouth *mouths, int
     if (hh < BLOCK_MIN_H) hh = BLOCK_MIN_H;
     float width = hw < 120.0f ? 120.0f : hw;
 
+    const uint32_t head_prim = L->out->prim_count;
     push_shape(L, SHAPE_BLOCK, cat, (ccr_rect){ x, y, width, hh }, owner);
     emit_items(L, head, x + BLOCK_PAD_X, y, hh, cat, owner);
+    const ccr_color tab_fill = L->out->prims[head_prim].fill, tab_edge = L->out->prims[head_prim].edge;
 
     float cy = y + hh;
     for (int m = 0; m < mouth_count; ++m) {
         float inner_w = 0.0f;
+        add_tab(L, x + ARM_W, cy, tab_fill, tab_edge, owner);   /* into the mouth */
         float inner_h = emit_body(L, mouths[m].body, x + ARM_W, cy, &inner_w);
         if (inner_h < MOUTH_MIN_H)
             inner_h = MOUTH_MIN_H;
@@ -593,12 +602,65 @@ static size2 emit_decl_block(layout *L, ccr_node_id id, float x, float y, float 
 static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *max_w);
 
 /* A statement; a commented-out one, and everything in it, drawn grey. */
+/* ---------------------------------------------------- puzzle shapes */
+
+/*
+ * Scratch's stack blocks fit together like a puzzle: a tab under each
+ * block, a notch on top of the next one. Here a notch is a dent drawn in
+ * the canvas colour, and the tab of the block above is drawn over it at
+ * the end, so the two lock. Where nothing is above, the dent stays empty;
+ * blocks after which nothing runs (return, break, continue, goto) have no
+ * tab, like Scratch's "stop" blocks: their flat bottom says it.
+ */
+static void add_tab(layout *L, float x, float bottom, ccr_color fill, ccr_color edge, ccr_node_id node)
+{
+    if (!grow((void **)&L->tabs, &L->tab_cap, L->tab_count + 2, sizeof(ccr_prim))) {
+        L->oom = true;
+        return;
+    }
+    /* the tab, and its top edge painted over so it grows out of the block */
+    L->tabs[L->tab_count++] = (ccr_prim){ .kind = CCR_PRIM_BLOCK, .node = node,
+        .rect = { x + TAB_X, bottom - 1.0f, TAB_W, TAB_H + 1.0f },
+        .fill = fill, .edge = edge, .roundness = 0.6f };
+    L->tabs[L->tab_count++] = (ccr_prim){ .kind = CCR_PRIM_BLOCK, .node = node,
+        .rect = { x + TAB_X + 1.5f, bottom - 2.5f, TAB_W - 3.0f, 3.0f },
+        .fill = fill, .edge = fill, .roundness = 0.0f };
+}
+
+static void add_dent(layout *L, float x, float top, ccr_color edge, ccr_node_id node)
+{
+    const ccr_color bg = ccr_th(CCR_C_BG);
+    push_prim(L, (ccr_prim){ .kind = CCR_PRIM_BLOCK, .node = node,
+        .rect = { x + TAB_X, top - 1.0f, TAB_W, TAB_H + 1.0f },
+        .fill = bg, .edge = edge, .roundness = 0.6f });
+    push_prim(L, (ccr_prim){ .kind = CCR_PRIM_BLOCK, .node = node,
+        .rect = { x + TAB_X + 1.0f, top - 2.5f, TAB_W - 2.0f, 3.5f },
+        .fill = bg, .edge = bg, .roundness = 0.0f });
+}
+
+static bool ends_flow(ccr_node_kind k)
+{
+    return k == CCR_NODE_RETURN || k == CCR_NODE_BREAK || k == CCR_NODE_CONTINUE ||
+           k == CCR_NODE_GOTO;
+}
+
 static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w)
 {
     const bool off = (N(L, id)->flags & CCR_FLAG_COMMENTED) != 0;
+    const uint32_t first = L->out->prim_count;
     L->dim += off;
     float h = emit_stmt_body(L, id, x, y, max_w);
     L->dim -= off;
+
+    /* a block of its own (not a group of others): notch on top, tab under */
+    if (!L->oom && first < L->out->prim_count) {
+        const ccr_prim top = L->out->prims[first];
+        if (top.node == id && top.kind == CCR_PRIM_BLOCK && top.rect.x == x && top.rect.y == y) {
+            add_dent(L, x, y, top.edge, id);
+            if (!ends_flow(N(L, id)->kind) && N(L, id)->kind != CCR_NODE_LABEL)
+                add_tab(L, x, y + h, top.fill, top.edge, id);
+        }
+    }
     return h;
 }
 
@@ -688,7 +750,10 @@ static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *
         /* `done:` then the labelled statement right under it */
         push_jump(L, id);
         it_fmt(&head, "%s:", S(L, n->name));
+        const uint32_t line = L->out->prim_count;
         sz = emit_line_block(L, &head, CAT_CONTROL, x, y, id);
+        if (n->first_child != CCR_NONE && line < L->out->prim_count)
+            add_tab(L, x, y + sz.h, L->out->prims[line].fill, L->out->prims[line].edge, id);
         if (sz.w > *max_w) *max_w = sz.w;
         float h2 = 0.0f;
         if (n->first_child != CCR_NONE)
@@ -821,7 +886,9 @@ static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
 
     /* the round "hat" bump, then the body of the block over it */
     push_shape(L, SHAPE_PILL, CAT_EVENT, (ccr_rect){ x, y, w * 0.5f, HAT_BUMP * 2.0f }, fn);
+    const uint32_t hat_prim = L->out->prim_count;
     push_shape(L, SHAPE_BLOCK, CAT_EVENT, (ccr_rect){ x, y + HAT_BUMP, w, h }, fn);
+    add_tab(L, x, y + HAT_BUMP + h, L->out->prims[hat_prim].fill, L->out->prims[hat_prim].edge, fn);
     emit_items(L, &head, x + BLOCK_PAD_X, y + HAT_BUMP, h, CAT_EVENT, fn);
     if (w > *max_w) *max_w = w;
 
@@ -986,6 +1053,9 @@ bool ccr_blocks_build_script(ccr_blocks *out, const ccr_ast *ast, ccr_node_id ro
     else
         emit_decl_block(&L, root, 0.0f, 0.0f, &w);
 
+    for (uint32_t i = 0; i < L.tab_count && !L.oom; ++i)
+        push_prim(&L, L.tabs[i]);
+    free(L.tabs);
     if (L.oom) {
         ccr_blocks_free(out);
         return false;
