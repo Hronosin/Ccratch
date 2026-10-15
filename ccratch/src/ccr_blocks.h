@@ -94,6 +94,10 @@ ccr_node_id ccr_blocks_hit(const ccr_blocks *b, ccr_vec2 local);
 /* Rectangle of the first primitive drawn for `node`, if any. */
 bool ccr_blocks_find(const ccr_blocks *b, ccr_node_id node, ccr_rect *out);
 
+/* The script's outline in one flat colour: a shadow under a lifted stack. */
+void ccr_blocks_draw_shadow(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport,
+                            ccr_vec2 offset, ccr_color color);
+
 /* Draws the script at `offset` (world), alpha scaled by `alpha` (0..1). */
 void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport,
                      ccr_vec2 offset, float alpha);

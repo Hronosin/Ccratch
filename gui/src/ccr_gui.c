@@ -6,9 +6,6 @@
 
 #include <string.h>
 
-#define RAYGUI_IMPLEMENTATION
-#include <raygui.h>
-
 static Texture2D g_shapes_tex;
 static Font      g_font;          /* loaded TTF; .texture.id == 0: raylib's pixel font */
 static bool      g_font_loaded;
@@ -66,10 +63,7 @@ bool ccr_gui_init(int width, int height, const char *title)
     SetTextureFilter(font.texture, TEXTURE_FILTER_TRILINEAR);
 
     /* raylib draws shapes with a white pixel borrowed from the font
-     * texture; the mipmaps above would smear it, so shapes get their own.
-     * raygui re-borrows the font pixel when it loads its style, so load
-     * that style first and override after. */
-    GuiLoadStyleDefault();
+     * texture; the mipmaps above would smear it, so shapes get their own. */
     Image white = GenImageColor(1, 1, WHITE);
     g_shapes_tex = LoadTextureFromImage(white);
     UnloadImage(white);
@@ -126,11 +120,6 @@ bool ccr_gui_load_font(const unsigned char *ttf, unsigned int size, float base_s
         UnloadFont(g_font);
     g_font = f;
     g_font_loaded = true;
-    GuiSetFont(g_font);
-    GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
-    GuiSetStyle(DEFAULT, TEXT_SPACING, 0);
-    /* raygui may have borrowed the font's white pixel for shapes again */
-    SetShapesTexture(g_shapes_tex, (Rectangle){ 0, 0, 1, 1 });
     return true;
 }
 
@@ -295,9 +284,28 @@ bool ccr_gui_file_dropped(char *out, unsigned int cap)
     return ok;
 }
 
-bool ccr_gui_button(ccr_rect r, const char *label)
+bool ccr_gui_button(ccr_rect r, const char *label, const ccr_button_style *st)
 {
-    return GuiButton(rect_to_rl(r), label) != 0;
+    /* a click: pressed and let go over the button */
+    static Vector2 pressed_at = { -1e9f, -1e9f };
+    const Vector2 m = GetMousePosition();
+    const Rectangle rr = rect_to_rl(r);
+    const bool over = CheckCollisionPointRec(m, rr);
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        pressed_at = m;
+    const bool held = IsMouseButtonDown(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(pressed_at, rr);
+    const bool clicked = over && IsMouseButtonReleased(MOUSE_BUTTON_LEFT) &&
+                         CheckCollisionPointRec(pressed_at, rr);
+
+    ccr_color fill = held && over ? st->press : over ? st->hover : st->fill;
+    const float round = r.h > 0.0f ? 8.0f / r.h : 0.3f;
+    DrawRectangleRounded(rr, round, 8, to_rl(st->edge));
+    DrawRectangleRounded((Rectangle){ r.x + 1.5f, r.y + 1.5f, r.w - 3.0f, r.h - 3.0f }, round, 8,
+                         to_rl(fill));
+    const float size = r.h * 0.6f > 18.0f ? 18.0f : r.h * 0.6f;
+    const float tw = ccr_gui_text_width(label, size);
+    ccr_gui_text(label, r.x + (r.w - tw) * 0.5f, r.y + (r.h - size) * 0.5f, size, st->text);
+    return clicked;
 }
 
 /* ---- text box ----
@@ -335,6 +343,15 @@ static int utf8_next(const char *s, int i, int len)
     while (i < len && ((unsigned char)s[i] & 0xC0) == 0x80)
         ++i;
     return i;
+}
+
+static ccr_color g_tb_edge = 0x2E8EB8FFu, g_tb_fill = 0xF5F5F5FFu, g_tb_text = 0x303440FFu;
+
+void ccr_gui_textbox_colors(ccr_color edge, ccr_color fill, ccr_color text)
+{
+    g_tb_edge = edge;
+    g_tb_fill = fill;
+    g_tb_text = text;
 }
 
 bool ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size)
@@ -396,15 +413,15 @@ bool ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size)
     if (scroll < 0.0f)
         scroll = 0.0f;
 
-    DrawRectangleRec(rect_to_rl(r), (Color){ 0x2E, 0x8E, 0xB8, 0xFF });
-    DrawRectangleRec((Rectangle){ r.x + 2, r.y + 2, r.w - 4, r.h - 4 }, RAYWHITE);
+    DrawRectangleRec(rect_to_rl(r), to_rl(g_tb_edge));
+    DrawRectangleRec((Rectangle){ r.x + 2, r.y + 2, r.w - 4, r.h - 4 }, to_rl(g_tb_fill));
     BeginScissorMode((int)r.x + 2, (int)r.y + 2, (int)r.w - 4, (int)r.h - 4);
     const float ty = r.y + (r.h - font_size) * 0.5f;
     DrawTextEx(font, buf, (Vector2){ r.x + pad - scroll, ty }, font_size, spacing,
-               (Color){ 0x30, 0x34, 0x40, 0xFF });
+               to_rl(g_tb_text));
     if (((int)(GetTime() * 2.0)) % 2 == 0)   /* blinking cursor */
         DrawRectangleRec((Rectangle){ r.x + pad - scroll + cursor_x, ty, 2.0f, font_size },
-                         (Color){ 0x30, 0x34, 0x40, 0xFF });
+                         to_rl(g_tb_text));
     EndScissorMode();
 
     Vector2 m = GetMousePosition();

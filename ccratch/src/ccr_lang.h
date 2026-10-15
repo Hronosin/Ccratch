@@ -85,6 +85,9 @@
       "line %u: changed code in a place I cannot locate in the file")                    \
     X(GEN_EMPTY_SLOT,   "save.empty_slot",       0,                                      \
       "line %u: an empty slot; type into it or drop a block there") \
+    X(THEME_SHRINE,     "theme.shrine",          0, "Shrine")                            \
+    X(THEME_BUTTON,     "topbar.theme",          0, "Theme")                             \
+    X(THEME_STATUS,     "status.theme",          0, "Theme: %s")                         \
     X(JUMP_MISSING,     "jump.missing",          0, "no label %s: in this function")     \
     X(JUMP_ELSEWHERE,   "jump.elsewhere",        0,                                      \
       "label %s: is not in this function (loose on the canvas, or in another one)")      \

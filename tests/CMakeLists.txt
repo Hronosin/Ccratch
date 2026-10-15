@@ -118,6 +118,28 @@ if(XVFB_RUN)
                      $<TARGET_FILE:test_jumps> ${PROJECT_SOURCE_DIR}/examples/goto.c)
 endif()
 
+# Every shipped theme sets every colour, and nothing else.
+file(GLOB CCR_SHIPPED_THEMES ${PROJECT_SOURCE_DIR}/themes/*.theme)
+foreach(theme ${CCR_SHIPPED_THEMES})
+    get_filename_component(code ${theme} NAME_WE)
+    add_test(NAME theme_check_${code} COMMAND ${CCR_BIN} --check-theme ${theme})
+endforeach()
+# A broken theme is reported line by line, not half-applied silently.
+add_test(NAME theme_check_broken
+         COMMAND ${CCR_BIN} --check-theme ${CMAKE_CURRENT_SOURCE_DIR}/data/broken.theme)
+set_tests_properties(theme_check_broken PROPERTIES
+    PASS_REGULAR_EXPRESSION "broken.theme:3: not a colour.*broken.theme:4: not a colour.*unknown key 'sparkles'")
+# Each theme opens a window and draws.
+if(XVFB_RUN)
+    foreach(theme shrine serious masochist scratch)
+        add_test(NAME gui_theme_${theme}
+                 COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
+                         ${CCR_BIN} ${PROJECT_SOURCE_DIR}/examples/goto.c --theme ${theme}
+                         --smoke-frames 3)
+        set_tests_properties(gui_theme_${theme} PROPERTIES FAIL_REGULAR_EXPRESSION "no theme")
+    endforeach()
+endif()
+
 # Saving: moves land in the file, everything else stays as written.
 add_executable(test_save test_save.c)
 target_link_libraries(test_save PRIVATE ccratch_core)

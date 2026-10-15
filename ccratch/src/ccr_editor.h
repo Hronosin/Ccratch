@@ -121,6 +121,9 @@ ccr_rect ccr_editor_bounds(const ccr_editor *ed);
 /* World rectangle of a node's first block, for tests and "jump to". */
 bool ccr_editor_node_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out);
 
+/* Lays every script out again (the theme changed its colours). */
+void ccr_editor_relayout_all(ccr_editor *ed);
+
 /* How many loose stacks lie on the canvas. */
 uint32_t ccr_editor_loose_count(const ccr_editor *ed);
 

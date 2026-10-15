@@ -1,5 +1,6 @@
 #include "ccr_editor.h"
 #include "ccr_codegen.h"
+#include "ccr_theme.h"
 #include "ccr_lang.h"
 
 #include <math.h>
@@ -317,6 +318,17 @@ bool ccr_editor_node_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out)
         return false;
     *out = (ccr_rect){ r.x + ed->scripts[i].pos.x, r.y + ed->scripts[i].pos.y, r.w, r.h };
     return true;
+}
+
+void ccr_editor_relayout_all(ccr_editor *ed)
+{
+    for (uint32_t i = 0; i < ed->script_count; ++i) {
+        ccr_blocks fresh;
+        if (ccr_blocks_build_script(&fresh, &ed->ast, ed->scripts[i].root, &ed->cache)) {
+            ccr_blocks_free(&ed->scripts[i].blocks);
+            ed->scripts[i].blocks = fresh;
+        }
+    }
 }
 
 uint32_t ccr_editor_loose_count(const ccr_editor *ed)
@@ -1116,6 +1128,8 @@ ccr_jump_state ccr_editor_jump(const ccr_editor *ed, ccr_node_id go, ccr_node_id
     return CCR_JUMP_MISSING;
 }
 
+static ccr_color alpha_of(ccr_color c, uint32_t a) { return (c & 0xFFFFFF00u) | (a & 0xFFu); }
+
 static void dashed_line(ccr_vec2 a, ccr_vec2 b, float thick, ccr_color c)
 {
     const float dx = b.x - a.x, dy = b.y - a.y, len = sqrtf(dx * dx + dy * dy);
@@ -1193,8 +1207,8 @@ static void draw_jumps(const ccr_editor *ed, const ccr_canvas *cv)
             if (st == CCR_JUMP_MISSING) {
                 ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ from.x, from.y });
                 ccr_rect r = { tl.x - 3, tl.y - 3, from.w * z + 6, from.h * z + 6 };
-                ccr_gui_rect_rounded(r, 0.3f, 0xD9464BC0u);
-                ccr_gui_circle((ccr_vec2){ a.x + 14.0f * z, a.y }, 9.0f * z, 0xD9464BFFu);
+                ccr_gui_rect_rounded(r, 0.3f, alpha_of(ccr_th(CCR_C_ERROR), 0xC0u));
+                ccr_gui_circle((ccr_vec2){ a.x + 14.0f * z, a.y }, 9.0f * z, ccr_th(CCR_C_ERROR));
                 ccr_gui_text("!", a.x + 11.5f * z, a.y - 8.0f * z, 16.0f * z, 0xFFFFFFFFu);
             } else {
                 ccr_rect to;
@@ -1214,8 +1228,9 @@ static void draw_jumps(const ccr_editor *ed, const ccr_canvas *cv)
                 const ccr_vec2 pts[4] = { a, l1, l2, { b.x + 9.0f * z, b.y } };
                 const bool broken = st != CCR_JUMP_OK;
                 const bool loose = is_loose_root(ed, s->root);
-                ccr_color c = broken ? 0xD9464BFFu : hot ? 0xFFE066FFu
-                            : loose ? 0xFFAB1950u : 0xFFAB1990u;
+                const ccr_color line = ccr_th_cat(CCR_CAT_CONTROL, CCR_EDGE);
+                ccr_color c = broken ? ccr_th(CCR_C_ERROR) : hot ? ccr_th(CCR_C_GLOW)
+                            : alpha_of(line, loose ? 0x60u : 0xB0u);
                 polyline(pts, 4, hot ? thick * 1.6f : thick, c, broken);
                 ccr_gui_circle(a, thick * 1.4f, c);
                 ccr_gui_triangle((ccr_vec2){ b.x + 1.0f, b.y },
@@ -1231,7 +1246,7 @@ static void draw_jumps(const ccr_editor *ed, const ccr_canvas *cv)
                         ccr_ast_str(&ed->ast, N(ed, go)->name));
                 const float tw = ccr_gui_text_width(msg, 16.0f);
                 ccr_rect box = { a.x + 30.0f * z, a.y - 14.0f, tw + 16.0f, 28.0f };
-                ccr_gui_rect_rounded(box, 0.4f, 0xD9464BFFu);
+                ccr_gui_rect_rounded(box, 0.4f, ccr_th(CCR_C_ERROR));
                 ccr_gui_text(msg, box.x + 8.0f, box.y + 5.0f, 16.0f, 0xFFFFFFFFu);
             }
         }
@@ -1252,13 +1267,27 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
             const float w = ed->snap.width * cv->zoom, h = ed->snap.height * cv->zoom;
             const float m = 5.0f * (cv->zoom < 1.0f ? 1.0f : cv->zoom);
             ccr_gui_rect_rounded((ccr_rect){ p.x - m, p.y - m, w + 2 * m, h + 2 * m }, 1.0f,
-                                 0xFFE066FFu);
-            ccr_gui_rect_rounded((ccr_rect){ p.x, p.y, w, h }, 1.0f, 0x2A2E37FFu);
+                                 ccr_th(CCR_C_GLOW));
+            ccr_gui_rect_rounded((ccr_rect){ p.x, p.y, w, h }, 1.0f, ccr_th(CCR_C_BG));
         } else if (dragging && ed->snap_ok) {
             ccr_vec2 p = ccr_canvas_to_screen(cv, ed->snap.at);
             float w = (ed->snap.width > 60.0f ? ed->snap.width : 60.0f) * cv->zoom;
             float h = 6.0f * (cv->zoom < 1.0f ? 1.0f : cv->zoom);
-            ccr_gui_rect_rounded((ccr_rect){ p.x, p.y - h * 0.5f, w, h }, 1.0f, 0xFFFFFFDDu);
+            ccr_gui_rect_rounded((ccr_rect){ p.x, p.y - h * 0.5f, w, h }, 1.0f, ccr_th(CCR_C_GLOW));
+        }
+        if (dragging) {
+            /* lifted off the canvas: a shadow, as one solid colour so the
+             * blocks nested inside do not darken it twice */
+            const ccr_color sh = ccr_th(CCR_C_SHADOW), bg = ccr_th(CCR_C_BG);
+            const uint32_t a = sh & 0xFFu;
+            ccr_color flat = 0xFFu;
+            for (int k = 0; k < 3; ++k) {
+                uint32_t sc = (sh >> (24 - 8 * k)) & 0xFFu, bc = (bg >> (24 - 8 * k)) & 0xFFu;
+                flat |= ((sc * a + bc * (255u - a)) / 255u) << (24 - 8 * k);
+            }
+            const float lift = 7.0f;
+            ccr_blocks_draw_shadow(&s->blocks, cv, viewport,
+                                   (ccr_vec2){ s->pos.x + lift * 0.6f, s->pos.y + lift }, flat);
         }
         ccr_blocks_draw(&s->blocks, cv, viewport, s->pos, alpha);
     }

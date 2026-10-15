@@ -6,4 +6,4 @@ target_include_directories(ccr_gui PUBLIC include)
 target_include_directories(ccr_gui SYSTEM PRIVATE ${raylib_SOURCE_DIR}/src/external/glfw/include)
 target_link_libraries(ccr_gui
     PUBLIC  ccr_warnings
-    PRIVATE raylib raygui)
+    PRIVATE raylib)

@@ -14,6 +14,13 @@
 /* $XDG_<var> if set and absolute, else $HOME/<fallback>. */
 bool ccr_config_home(const char *xdg_var, const char *fallback, char *out, size_t cap);
 
+/*
+ * Folders an add-on of kind `sub` ("lang", "themes") may live in, best
+ * first: $CCRATCH_<SUB>_DIR, ~/.local/share/ccratch/<sub>, and
+ * share/ccratch/<sub> next to the program (the build tree too).
+ */
+int  ccr_config_data_dirs(const char *sub, const char *env_var, char dirs[][1024], int cap);
+
 /* The value of `key`, if the file has it. */
 bool ccr_config_get(const char *key, char *out, size_t cap);
 

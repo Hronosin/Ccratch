@@ -1,4 +1,5 @@
 #include "ccr_blocks.h"
+#include "ccr_theme.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,19 +27,8 @@ typedef enum category {
     CAT_COUNT
 } category;
 
-/* Scratch 3 palette, more or less. fill, edge, text */
-static const ccr_color g_palette[CAT_COUNT][3] = {
-    [CAT_CONTROL]  = { 0xFFAB19FF, 0xCF8B17FF, 0xFFFFFFFF },
-    [CAT_OPERATOR] = { 0x59C059FF, 0x389438FF, 0xFFFFFFFF },
-    [CAT_VARIABLE] = { 0xFF8C1AFF, 0xDB6E00FF, 0xFFFFFFFF },
-    [CAT_CALL]     = { 0xFF6680FF, 0xFF3355FF, 0xFFFFFFFF },
-    [CAT_EVENT]    = { 0xFFBF00FF, 0xCC9900FF, 0xFFFFFFFF },
-    [CAT_TYPE]     = { 0x5CB1D6FF, 0x2E8EB8FF, 0xFFFFFFFF },
-    [CAT_PREPROC]  = { 0x9966FFFF, 0x774DCBFF, 0xFFFFFFFF },
-    [CAT_POINTER]  = { 0xE6544DFF, 0xB8372FFF, 0xFFFFFFFF },
-    [CAT_LITERAL]  = { 0xFFFFFFFF, 0xC8CCD6FF, 0x575E75FF },
-    [CAT_DRAGON]   = { 0x8A8F9CFF, 0x5F6470FF, 0xFFFFFFFF },
-};
+/* Colours come from the theme; its categories are in this same order. */
+#define PAL(cat, role) ccr_th_cat((ccr_theme_cat)(cat), (role))
 
 typedef enum shape { SHAPE_PILL, SHAPE_HEX, SHAPE_BLOCK } shape;
 
@@ -120,11 +110,11 @@ static void push_prim(layout *L, ccr_prim p)
 /* Commented-out code: the colour drained towards slate grey. */
 static ccr_color dimmed(ccr_color c)
 {
-    const uint32_t grey[3] = { 0x4A, 0x4F, 0x5A };
+    const ccr_color grey = ccr_th(CCR_C_DIM);
     uint32_t out = c & 0xFFu;
     for (int i = 0; i < 3; ++i) {
-        uint32_t ch = (c >> (24 - 8 * i)) & 0xFFu;
-        out |= ((ch + grey[i] * 5u) / 6u) << (24 - 8 * i);
+        uint32_t ch = (c >> (24 - 8 * i)) & 0xFFu, g = (grey >> (24 - 8 * i)) & 0xFFu;
+        out |= ((ch + g * 5u) / 6u) << (24 - 8 * i);
     }
     return out;
 }
@@ -134,8 +124,8 @@ static void push_shape(layout *L, shape sh, category cat, ccr_rect r, ccr_node_i
     ccr_prim p = {
         .kind = (sh == SHAPE_HEX) ? CCR_PRIM_HEX : CCR_PRIM_BLOCK,
         .rect = r,
-        .fill = L->dim ? dimmed(g_palette[cat][0]) : g_palette[cat][0],
-        .edge = L->dim ? dimmed(g_palette[cat][1]) : g_palette[cat][1],
+        .fill = L->dim ? dimmed(PAL(cat, CCR_FILL)) : PAL(cat, CCR_FILL),
+        .edge = L->dim ? dimmed(PAL(cat, CCR_EDGE)) : PAL(cat, CCR_EDGE),
         .roundness = (sh == SHAPE_PILL) ? 1.0f : 0.18f,
         .node = node,
     };
@@ -157,7 +147,7 @@ static void push_text(layout *L, const char *s, float x, float y, ccr_color colo
     ccr_prim p = {
         .kind = CCR_PRIM_TEXT,
         .rect = { x, y, ccr_gui_text_width(s, FONT), FONT },
-        .fill = L->dim ? 0xAEB4C0FFu : color,
+        .fill = L->dim ? ccr_th(CCR_C_DIM_TEXT) : color,
         .text = at,
         .font = FONT,
         .node = node,
@@ -421,7 +411,7 @@ static void emit_expr(layout *L, ccr_node_id id, float x, float y);
 static void emit_items(layout *L, const items *it, float x, float y, float h,
                        category cat, ccr_node_id owner)
 {
-    const ccr_color text_color = g_palette[cat][2];
+    const ccr_color text_color = PAL(cat, CCR_TEXT);
     for (int i = 0; i < it->n; ++i) {
         const item *e = &it->v[i];
         if (e->text) {
@@ -1052,6 +1042,25 @@ static ccr_color fade(ccr_color c, float alpha)
         return c;
     uint32_t a = (uint32_t)((float)(c & 0xFFu) * alpha);
     return (c & 0xFFFFFF00u) | (a & 0xFFu);
+}
+
+void ccr_blocks_draw_shadow(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport,
+                            ccr_vec2 offset, ccr_color color)
+{
+    const float z = cv->zoom;
+    for (uint32_t i = 0; i < b->prim_count; ++i) {
+        const ccr_prim *p = &b->prims[i];
+        if (p->kind == CCR_PRIM_TEXT)
+            continue;
+        ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ p->rect.x + offset.x, p->rect.y + offset.y });
+        ccr_rect r = { tl.x, tl.y, p->rect.w * z, p->rect.h * z };
+        if (!overlaps(r, viewport))
+            continue;
+        if (p->kind == CCR_PRIM_HEX)
+            ccr_gui_hex(r, color);
+        else
+            ccr_gui_rect_rounded(r, p->roundness, color);
+    }
 }
 
 void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport,

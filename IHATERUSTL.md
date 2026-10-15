@@ -41,8 +41,7 @@ ccratch --eula --lang ru  # по-русски
 
 Built into Ccratch, each under its own license:
 
-- [raylib](https://github.com/raysan5/raylib) and
-  [raygui](https://github.com/raysan5/raygui): zlib/libpng license
+- [raylib](https://github.com/raysan5/raylib): zlib/libpng license
 - [Nunito](https://github.com/googlefonts/nunito) font: SIL Open Font
   License 1.1, see `assets/fonts/OFL.txt`
 

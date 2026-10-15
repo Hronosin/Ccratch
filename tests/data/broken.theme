@@ -1,0 +1,6 @@
+# a theme with mistakes in it
+@name = Broken
+bg        = #12345
+grid      = #GGHHII
+sparkles  = #FFFFFF
+control   = #FFAB19

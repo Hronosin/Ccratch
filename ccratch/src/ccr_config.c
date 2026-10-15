@@ -1,3 +1,4 @@
+#define _GNU_SOURCE   /* readlink */
 #include "ccr_config.h"
 
 #include <errno.h>
@@ -5,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define MAX_CONFIG_SIZE (64u * 1024u)
 
@@ -17,6 +19,28 @@ bool ccr_config_home(const char *xdg_var, const char *fallback, char *out, size_
     if (!home || !*home)
         return false;
     return snprintf(out, cap, "%s/%s", home, fallback) < (int)cap;
+}
+
+int ccr_config_data_dirs(const char *sub, const char *env_var, char dirs[][1024], int cap)
+{
+    int n = 0;
+    const char *env = getenv(env_var);
+    if (env && *env && n < cap)
+        snprintf(dirs[n++], 1024, "%s", env);
+    char base[900];
+    if (n < cap && ccr_config_home("XDG_DATA_HOME", ".local/share", base, sizeof base))
+        snprintf(dirs[n++], 1024, "%s/ccratch/%s", base, sub);
+    char exe[900];
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (len > 0 && n < cap) {
+        exe[len] = '\0';
+        char *slash = strrchr(exe, '/');
+        if (slash) {
+            *slash = '\0';
+            snprintf(dirs[n++], 1024, "%s/../share/ccratch/%s", exe, sub);
+        }
+    }
+    return n;
 }
 
 static bool config_path(char *out, size_t cap)

@@ -81,3 +81,8 @@ eula.rusted = Принято к сведению. Borrow checker уведомл�
 # стрелки goto
 jump.missing = в этой функции нет метки %s:
 jump.elsewhere = метка %s: не в этой функции (лежит на холсте или в другой функции)
+
+# темы
+theme.shrine = Храм
+topbar.theme = Тема
+status.theme = Тема: %s

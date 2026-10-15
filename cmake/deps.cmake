@@ -13,18 +13,5 @@ FetchContent_Declare(raylib
     GIT_TAG        5.5
     GIT_SHALLOW    TRUE)
 
-# --- raygui: panels and buttons (single header) ---------------------------
-FetchContent_Declare(raygui
-    GIT_REPOSITORY https://github.com/raysan5/raygui.git
-    GIT_TAG        4.0
-    GIT_SHALLOW    TRUE)
-
 FetchContent_MakeAvailable(raylib)
 
-FetchContent_GetProperties(raygui)
-if(NOT raygui_POPULATED)
-    FetchContent_Populate(raygui)
-endif()
-
-add_library(raygui INTERFACE)
-target_include_directories(raygui SYSTEM INTERFACE ${raygui_SOURCE_DIR}/src)

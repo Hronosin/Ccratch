@@ -1,5 +1,6 @@
 #include "ccr_pie.h"
 #include "ccr_lang.h"
+#include "ccr_theme.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -98,14 +99,14 @@ ccr_action ccr_pie_update(ccr_pie *pie, ccr_vec2 mouse, bool click, bool cancel)
 #define BOX_H         30.0f
 #define BOX_PAD       10.0f
 
-#define COL_BOX       0x2A2E37F2u
-#define COL_BOX_EDGE  0x454B57FFu
-#define COL_HOT       0x4C7BD9FFu
-#define COL_HOT_OFF   0x3A3F4BFFu
-#define COL_TEXT      0xF2F2F2FFu
-#define COL_HINT      0x9AA0ABFFu
-#define COL_OFF       0x666C78FFu
-#define COL_RING      0x1E2128D0u
+#define COL_BOX       ccr_th(CCR_C_PANEL)
+#define COL_BOX_EDGE  ccr_th(CCR_C_PANEL_EDGE)
+#define COL_HOT       ccr_th(CCR_C_HOT)
+#define COL_HOT_OFF   ccr_th(CCR_C_PANEL_EDGE)
+#define COL_TEXT      ccr_th(CCR_C_PANEL_TEXT)
+#define COL_HINT      ccr_th(CCR_C_PANEL_HINT)
+#define COL_OFF       ccr_th(CCR_C_DISABLED)
+#define COL_RING      ((ccr_th(CCR_C_PANEL) & 0xFFFFFF00u) | 0xD0u)
 
 /* How far out each slice's box sits: further at the sides, so the boxes
  * clear each other, like Blender's. */
@@ -160,8 +161,8 @@ void ccr_pie_draw(const ccr_pie *pie)
                              hot && on ? COL_HOT : COL_BOX_EDGE);
         ccr_gui_rect_rounded(b, 0.45f, hot && on ? COL_HOT : COL_BOX);
         ccr_gui_text(label, b.x + BOX_PAD, b.y + (BOX_H - LABEL_SIZE) * 0.5f, LABEL_SIZE,
-                     on ? COL_TEXT : COL_OFF);
+                     on ? (hot ? 0xFFFFFFFFu : COL_TEXT) : COL_OFF);
         ccr_gui_text(hint, b.x + b.w - BOX_PAD - hw, b.y + (BOX_H - HINT_SIZE) * 0.5f + 1.0f,
-                     HINT_SIZE, on ? (hot ? COL_TEXT : COL_HINT) : COL_OFF);
+                     HINT_SIZE, on ? (hot ? 0xFFFFFFFFu : COL_HINT) : COL_OFF);
     }
 }

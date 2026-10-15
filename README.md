@@ -20,6 +20,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 9: the interface speaks other languages, from packs you drop in a folder.
 - Step 10: expressions come out of their slots and go into other ones.
 - Step 11: every `goto` has an arrow to its label.
+- Step 12: themes, as files, and four of them to start with.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -122,6 +123,36 @@ why; delete it and the `goto` gets a red mark. That is the "use of
 undeclared label" clang would tell you about after saving, shown while
 you are still holding the block. `examples/goto.c` has the classic kernel
 style cleanup ladder to play with.
+
+## Themes
+
+The **Theme** button in the top bar goes round them, and remembers the one
+you stop at:
+
+![Shrine, Super Serious, Masochist and Scratch](docs/themes.png)
+
+| Theme | What |
+| --- | --- |
+| **Shrine** | dark, shrine red; built in |
+| **Super Serious** | soft pink pastels that do not burn your eyes, deeply serious about it |
+| **Masochist** | white. All of it. You asked for this |
+| **Scratch** | the editor all of this started from, blue bar and all; pointers are Pen green, dragons are Sound purple |
+
+A theme is a text file like a language pack: `themes/NAME.theme`, found
+in `$CCRATCH_THEME_DIR`, `~/.local/share/ccratch/themes/` and
+`share/ccratch/themes/` next to the program. It sets only the colours it
+changes, everything else stays Shrine:
+
+```
+@name    = Super Serious
+@name.ru = Суровая
+bg       = #F3E1E8
+control  = #FFD9A8
+```
+
+Every key is in `ccratch/src/ccr_theme.h` (or copy one of `themes/`);
+`ccratch --check-theme mine.theme` says what is wrong, `--theme NAME`
+starts with one, `--list-themes` shows what was found.
 
 ## The pie menu
 
@@ -258,11 +289,14 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_codegen tree -> C: copies untouched text, rebuilds changed blocks
   ccr_pie     the pie menu: picks an action by direction, knows no editor
   ccr_lang    every text the window shows, and the language packs
+  ccr_theme   every colour, and the theme files
+  ccr_config  ~/.config/ccratch/config, and where add-ons are found
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so; hello/ is the template
 examples/   C files to feed the parser
 lang/       language packs (ru.lang...); English is built in
+themes/     themes (serious.theme...); Shrine is built in
 assets/     icon and font, built into libccratch
 tools/      make_font.py: how assets/fonts was made from upstream Nunito
 docs/       screenshots

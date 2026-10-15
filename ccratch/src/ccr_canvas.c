@@ -1,4 +1,5 @@
 #include "ccr_canvas.h"
+#include "ccr_theme.h"
 
 #include <math.h>
 
@@ -66,7 +67,7 @@ void ccr_canvas_draw_grid(const ccr_canvas *cv, ccr_rect viewport)
     if (start_x < viewport.x) start_x += step;
     if (start_y < viewport.y) start_y += step;
 
-    const ccr_color dot = 0x3A3F4BFF;
+    const ccr_color dot = ccr_th(CCR_C_GRID);
     for (float y = start_y; y < viewport.y + viewport.h; y += step)
         for (float x = start_x; x < viewport.x + viewport.w; x += step)
             ccr_gui_rect((ccr_rect){ x - 1.0f, y - 1.0f, 2.0f, 2.0f }, dot);

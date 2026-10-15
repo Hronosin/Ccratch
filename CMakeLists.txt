@@ -37,12 +37,12 @@ endif()
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 include(cmake/deps.cmake)
 
-add_subdirectory(gui)       # libccr_gui   - thin wrapper over raylib + raygui
+add_subdirectory(gui)       # libccr_gui   - thin wrapper over raylib
 add_subdirectory(ccratch)   # libccratch   - the whole IDE, one library
 add_subdirectory(app)       # ccratch      - the launcher, one line of logic
 add_subdirectory(plugins)   # *.so         - everything optional
 
-# Language packs are plain files found at run time, next to the program in
+# Language packs and themes are plain files found at run time, next to the program in
 # share/ccratch/lang (bin/../share/...). Copied there on every build, so a
 # pack edited in lang/ shows up after `cmake --build`.
 file(GLOB CCR_LANG_PACKS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/lang/*.lang)
@@ -52,6 +52,13 @@ add_custom_target(ccratch_lang ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CCR_LANG_PACKS} ${CCR_LANG_OUT}
     DEPENDS ${CCR_LANG_PACKS}
     COMMENT "Language packs")
+file(GLOB CCR_THEMES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/themes/*.theme)
+set(CCR_THEME_OUT ${CMAKE_BINARY_DIR}/share/ccratch/themes)
+add_custom_target(ccratch_themes ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CCR_THEME_OUT}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CCR_THEMES} ${CCR_THEME_OUT}
+    DEPENDS ${CCR_THEMES}
+    COMMENT "Themes")
 
 include(CTest)
 if(BUILD_TESTING)

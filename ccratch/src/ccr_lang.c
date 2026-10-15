@@ -477,30 +477,6 @@ void ccr_lang_write_template(FILE *out)
 
 /* --------------------------------------------------- finding packs */
 
-/* Where packs may live, best first. */
-static int pack_dirs(char dirs[][1024], int cap)
-{
-    int n = 0;
-    const char *env = getenv("CCRATCH_LANG_DIR");
-    if (env && *env && n < cap)
-        snprintf(dirs[n++], 1024, "%s", env);
-    char base[900];
-    if (n < cap && ccr_config_home("XDG_DATA_HOME", ".local/share", base, sizeof base))
-        snprintf(dirs[n++], 1024, "%s/ccratch/lang", base);
-    /* next to the program: bin/../share/ccratch/lang (the build tree too) */
-    char exe[900];
-    ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
-    if (len > 0 && n < cap) {
-        exe[len] = '\0';
-        char *slash = strrchr(exe, '/');
-        if (slash) {
-            *slash = '\0';
-            snprintf(dirs[n++], 1024, "%s/../share/ccratch/lang", exe);
-        }
-    }
-    return n;
-}
-
 static int compare_info(const void *a, const void *b)
 {
     return strcmp(((const ccr_lang_info *)a)->code, ((const ccr_lang_info *)b)->code);
@@ -517,7 +493,7 @@ int ccr_lang_scan(ccr_lang_info *out, int cap)
     out[n++].path[0] = '\0';
 
     char dirs[4][1024];
-    int nd = pack_dirs(dirs, 4);
+    int nd = ccr_config_data_dirs("lang", "CCRATCH_LANG_DIR", dirs, 4);
     for (int d = 0; d < nd; ++d) {
         DIR *dir = opendir(dirs[d]);
         if (!dir)

@@ -8,20 +8,21 @@
 #include "ccr_lang.h"
 #include "ccr_parse.h"
 #include "ccr_pie.h"
+#include "ccr_theme.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Palette */
-#define COL_BG        0x1E2028FFu
-#define COL_BAR       0x16181EFFu
-#define COL_BAR_TEXT  0x9AA3B5FFu
-#define COL_TITLE     0xE8ECF4FFu
-#define COL_HINT      0x5A6170FFu
-#define COL_ACCENT    0xD9464BFFu   /* shrine red */
-#define COL_OK        0x59C059FFu
+/* Colours: whatever the theme says */
+#define COL_BG        ccr_th(CCR_C_BG)
+#define COL_BAR       ccr_th(CCR_C_BAR)
+#define COL_BAR_TEXT  ccr_th(CCR_C_BAR_TEXT)
+#define COL_TITLE     ccr_th(CCR_C_TITLE)
+#define COL_HINT      ccr_th(CCR_C_HINT)
+#define COL_ACCENT    ccr_th(CCR_C_ACCENT)
+#define COL_OK        ccr_th(CCR_C_OK)
 
 /* Generated from assets/icon.png at build time */
 extern const unsigned char ccr_icon_png[];
@@ -47,11 +48,7 @@ static bool load_font(void)
 
 #define TOPBAR_H     40.0f
 #define PALETTE_W   176.0f
-#define COL_PALETTE  0x1A1C23FFu
-#define COL_CONTROL  0xFFAB19FFu
-#define COL_CONTROL_EDGE 0xCF8B17FFu
-#define COL_CODE     0xFF6680FFu
-#define COL_CODE_EDGE 0xFF3355FFu
+#define COL_PALETTE  ccr_th(CCR_C_PALETTE)
 #define STATUSBAR_H  26.0f
 #define PATH_MAX_LEN 4096
 
@@ -65,6 +62,7 @@ typedef struct ccr_options {
     int         zoom_percent;   /* initial zoom, 0 = 100% */
     const char *lang;           /* --lang CODE, NULL: pick one */
     bool        eula;           /* --eula: print the agreement, exit */
+    const char *theme;          /* --theme NAME, NULL: the saved one */
     const char *const *clang_args;  /* everything after "--" */
     int         clang_arg_count;
 } ccr_options;
@@ -104,6 +102,9 @@ static void print_usage(const char *argv0)
            "  --list-langs           show the language packs found, and where\n"
            "  --lang-template        print the English text as a pack to translate\n"
            "  --eula                 the IHATERUSTL agreement (a joke; LICENSE is real)\n"
+           "  --theme NAME           look: shrine, serious, masochist, scratch...\n"
+           "  --list-themes          show the themes found, and where\n"
+           "  --check-theme FILE     check a theme file for unknown keys and bad colours\n"
            "  --check-lang FILE      check a language pack for missing or broken text\n"
            "  --smoke-frames N       run N frames and exit (for CI)\n"
            "  --screenshot FILE.png  save the last frame before exiting\n",
@@ -242,6 +243,16 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             opt->smoke_frames = atoi(argv[++i]);
         } else if (strcmp(a, "--screenshot") == 0 && i + 1 < argc) {
             opt->screenshot = argv[++i];
+        } else if (strcmp(a, "--theme") == 0 && i + 1 < argc) {
+            opt->theme = argv[++i];
+        } else if (strcmp(a, "--list-themes") == 0) {
+            static ccr_theme_info themes[64];
+            int n = ccr_theme_scan(themes, 64);
+            for (int k = 0; k < n; ++k)
+                printf("%-12s %s\n", themes[k].code, themes[k].path[0] ? themes[k].path : "(built in)");
+            return 0;
+        } else if (strcmp(a, "--check-theme") == 0 && i + 1 < argc) {
+            return ccr_theme_check(argv[++i], true, stdout) == 0 ? 0 : 1;
         } else if (strcmp(a, "--eula") == 0) {
             opt->eula = true;
         } else if (strcmp(a, "--ranges") == 0) {
@@ -431,6 +442,24 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
 
 /* -------------------------------------------------------- drawing */
 
+/* A button the colour of the theme; `main`: the one to press. */
+static const ccr_button_style *button_style(bool main)
+{
+    static ccr_button_style st;
+    st = (ccr_button_style){
+        .fill  = main ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_BUTTON),
+        .hover = main ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_BUTTON_HOVER),
+        .press = ccr_th(CCR_C_BUTTON_PRESS),
+        .edge  = main ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_BUTTON_EDGE),
+        .text  = main ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT),
+    };
+    if (main)   /* a little lighter under the mouse */
+        st.hover = (st.fill & 0xFFu) | (((((st.fill >> 24) & 0xFFu) * 7 + 0xFF) / 8) << 24) |
+                   (((((st.fill >> 16) & 0xFFu) * 7 + 0xFF) / 8) << 16) |
+                   (((((st.fill >> 8) & 0xFFu) * 7 + 0xFF) / 8) << 8);
+    return &st;
+}
+
 /* ------------------------------------------------------- the agreement */
 
 /* What the IHATERUSTL agreement says, in order. */
@@ -572,22 +601,22 @@ static float eula_body(float x, float y, float w, bool draw)
             h += 46.0f;
             break;
         case EULA_SMALL:
-            h += wrap_text(t, x, y + h, w, 15.0f, COL_BAR_TEXT, draw);
+            h += wrap_text(t, x, y + h, w, 15.0f, ccr_th(CCR_C_PANEL_HINT), draw);
             break;
         case EULA_LEAD:
-            h += wrap_text(t, x, y + h, w, 21.0f, COL_TITLE, draw);
+            h += wrap_text(t, x, y + h, w, 21.0f, ccr_th(CCR_C_PANEL_TEXT), draw);
             break;
         case EULA_TEXT:
-            h += wrap_text(t, x, y + h, w, 17.0f, COL_TITLE, draw) + 6.0f;
+            h += wrap_text(t, x, y + h, w, 17.0f, ccr_th(CCR_C_PANEL_TEXT), draw) + 6.0f;
             break;
         case EULA_WARN:
-            h += wrap_text(t, x, y + h, w, 17.0f, 0xFFE066FFu, draw) + 6.0f;
+            h += wrap_text(t, x, y + h, w, 17.0f, ccr_th(CCR_C_GLOW), draw) + 6.0f;
             break;
         case EULA_CLAUSE:
             snprintf(num, sizeof num, "%d.", ++n);
             if (draw)
                 ccr_gui_text(num, x, y + h, 17.0f, COL_ACCENT);
-            h += wrap_text(t, x + 34.0f, y + h, w - 34.0f, 17.0f, COL_BAR_TEXT, draw) + 6.0f;
+            h += wrap_text(t, x + 34.0f, y + h, w - 34.0f, 17.0f, ccr_th(CCR_C_PANEL_HINT), draw) + 6.0f;
             break;
         }
     }
@@ -599,13 +628,13 @@ static void eula_frame(eula_view *ev, int width, int height, ccr_document *doc)
 {
     if (!ev->open)
         return;
-    ccr_gui_rect((ccr_rect){ 0, 0, (float)width, (float)height }, 0x000000B0u);
+    ccr_gui_rect((ccr_rect){ 0, 0, (float)width, (float)height }, ccr_th(CCR_C_BACKDROP));
     const float pw = width - 80.0f < 780.0f ? (float)width - 80.0f : 780.0f;
     const float ph = (float)height - 80.0f;
     const ccr_rect panel = { ((float)width - pw) * 0.5f, 40.0f, pw, ph };
     ccr_gui_rect_rounded((ccr_rect){ panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4 }, 0.03f,
                          COL_ACCENT);
-    ccr_gui_rect_rounded(panel, 0.03f, COL_BG);
+    ccr_gui_rect_rounded(panel, 0.03f, ccr_th(CCR_C_PANEL) | 0xFFu);
 
     const float pad = 28.0f, buttons_h = 64.0f;
     const ccr_rect text = { panel.x + pad, panel.y + pad, panel.w - pad * 2.0f,
@@ -622,15 +651,15 @@ static void eula_frame(eula_view *ev, int width, int height, ccr_document *doc)
     if (max_scroll > 0.0f) {   /* a thin scroll bar */
         float bh = text.h * text.h / full;
         float by = text.y + (text.h - bh) * (ev->scroll / max_scroll);
-        ccr_gui_rect_rounded((ccr_rect){ text.x + text.w - 4.0f, by, 4.0f, bh }, 1.0f, COL_HINT);
+        ccr_gui_rect_rounded((ccr_rect){ text.x + text.w - 4.0f, by, 4.0f, bh }, 1.0f, ccr_th(CCR_C_PANEL_EDGE));
     }
 
     const float by = panel.y + panel.h - buttons_h + 14.0f;
     if (ev->first_run) {
         const ccr_rect rust = { panel.x + panel.w - pad - 180.0f, by, 180.0f, 34.0f };
         const ccr_rect ok = { rust.x - 12.0f - 180.0f, by, 180.0f, 34.0f };
-        bool accepted = ccr_gui_button(ok, ccr_tr(CCR_T_EULA_ACCEPT));
-        bool rusted = !accepted && ccr_gui_button(rust, ccr_tr(CCR_T_EULA_RUST));
+        bool accepted = ccr_gui_button(ok, ccr_tr(CCR_T_EULA_ACCEPT), button_style(true));
+        bool rusted = !accepted && ccr_gui_button(rust, ccr_tr(CCR_T_EULA_RUST), button_style(false));
         if (accepted || rusted) {
             if (!ccr_config_set("eula", accepted ? "accepted" : "rust"))
                 fprintf(stderr, "ccratch: could not remember the answer in ~/.config/ccratch\n");
@@ -641,7 +670,8 @@ static void eula_frame(eula_view *ev, int width, int height, ccr_document *doc)
         }
     } else {
         const ccr_rect close = { panel.x + panel.w - pad - 180.0f, by, 180.0f, 34.0f };
-        if (ccr_gui_button(close, ccr_tr(CCR_T_EULA_CLOSE)) || ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+        if (ccr_gui_button(close, ccr_tr(CCR_T_EULA_CLOSE), button_style(true)) ||
+            ccr_gui_key_pressed(CCR_KEY_ESCAPE))
             ev->open = false;
     }
 }
@@ -660,9 +690,36 @@ static void next_language(ccr_document *doc)
         if (ccr_lang_use(li->code, stderr)) {
             if (!ccr_lang_save_choice(li->code))
                 fprintf(stderr, "ccratch: could not remember the language in ~/.config/ccratch\n");
+            char theme[32];
+            snprintf(theme, sizeof theme, "%s", ccr_theme_code());
+            ccr_theme_use(theme, NULL);   /* theme names come in this language too */
             ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
             doc->has_errors = false;
             return;   /* blocks show C, not words: nothing to lay out again */
+        }
+    }
+}
+
+/* The theme button: the next theme each click, remembered. Blocks keep
+ * their colours from when they were laid out, so all are laid out again. */
+static void next_theme(ccr_document *doc)
+{
+    static ccr_theme_info themes[64];
+    int n = ccr_theme_scan(themes, 64);
+    int cur = 0;
+    for (int i = 0; i < n; ++i)
+        if (strcmp(themes[i].code, ccr_theme_code()) == 0)
+            cur = i;
+    for (int step = 1; step <= n; ++step) {
+        const ccr_theme_info *ti = &themes[(cur + step) % n];
+        if (ccr_theme_use(ti->code, stderr)) {
+            if (!ccr_theme_save_choice(ti->code))
+                fprintf(stderr, "ccratch: could not remember the theme in ~/.config/ccratch\n");
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_THEME_STATUS, ccr_theme_name());
+            doc->has_errors = false;
+            if (doc->loaded)
+                ccr_editor_relayout_all(&doc->ed);
+            return;
         }
     }
 }
@@ -686,15 +743,22 @@ static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
     for (char *c = code; *c; ++c)
         if (*c >= 'a' && *c <= 'z')
             *c = (char)(*c - 'a' + 'A');
-    if (ccr_gui_button((ccr_rect){ (float)width - 166.0f, 7.0f, 48.0f, 26.0f }, code) && !modal)
+    const ccr_button_style *bs = button_style(false);
+    const float tw = ccr_gui_text_width(ccr_tr(CCR_T_THEME_BUTTON), 16.0f) + 24.0f;
+    if (ccr_gui_button((ccr_rect){ (float)width - 166.0f, 7.0f, 48.0f, 26.0f }, code, bs) && !modal)
         next_language(doc);
-    if (ccr_gui_button((ccr_rect){ (float)width - 206.0f, 7.0f, 32.0f, 26.0f }, "?") && !modal) {
+    if (ccr_gui_button((ccr_rect){ (float)width - 174.0f - tw, 7.0f, tw, 26.0f },
+                       ccr_tr(CCR_T_THEME_BUTTON), bs) && !modal)
+        next_theme(doc);
+    if (ccr_gui_button((ccr_rect){ (float)width - 214.0f - tw, 7.0f, 32.0f, 26.0f }, "?", bs) &&
+        !modal) {
         ev->open = true;   /* the agreement again, to read it at leisure */
         ev->scroll = 0.0f;
     }
 
     float x = (float)width - 110.0f;
-    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(CCR_T_BUILD)) && !modal)
+    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(CCR_T_BUILD), button_style(true)) &&
+        !modal)
         printf("[ccratch] build: nothing to build yet. Go do some shrine work.\n");
 }
 
@@ -704,7 +768,7 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
     ccr_gui_rect((ccr_rect){ 0, y, (float)width, STATUSBAR_H }, COL_BAR);
 
     const char *msg = doc->status[0] ? doc->status : ccr_tr(CCR_T_NO_FILE);
-    ccr_color dot = doc->has_errors ? COL_ACCENT : COL_OK;
+    ccr_color dot = doc->has_errors ? ccr_th(CCR_C_ERROR) : COL_OK;
     ccr_gui_circle((ccr_vec2){ 14.0f, y + STATUSBAR_H * 0.5f }, 4.0f, dot);
     ccr_gui_text(msg, 26.0f, y + 5.0f, 15.0f, COL_BAR_TEXT);
 
@@ -753,21 +817,23 @@ static int palette_hit(ccr_vec2 m)
 static void draw_palette(int height, bool dragging_over)
 {
     ccr_gui_rect((ccr_rect){ 0, TOPBAR_H, PALETTE_W, (float)height - TOPBAR_H - STATUSBAR_H },
-                 dragging_over ? 0x2A1E22FFu : COL_PALETTE);
+                 dragging_over ? ccr_th(CCR_C_TRASH) : COL_PALETTE);
     ccr_gui_text(dragging_over ? ccr_tr(CCR_T_PALETTE_DROP) : ccr_tr(CCR_T_PALETTE_TITLE), 16.0f, TOPBAR_H + 12.0f, 19.0f,
-                 dragging_over ? COL_ACCENT : COL_BAR_TEXT);
+                 dragging_over ? ccr_th(CCR_C_ERROR) : ccr_th(CCR_C_PALETTE_TEXT));
 
     for (int i = 0; i < CCR_TEMPLATE_COUNT; ++i) {
         ccr_rect r = palette_item(i);
         bool code = i == CCR_TEMPLATE_CODE;
         bool mouth = i >= CCR_TEMPLATE_IF && i <= CCR_TEMPLATE_DO_WHILE;
-        ccr_color fill = code ? COL_CODE : COL_CONTROL;
-        ccr_color edge = code ? COL_CODE_EDGE : COL_CONTROL_EDGE;
+        const ccr_theme_cat cat = code ? CCR_CAT_CALL : CCR_CAT_CONTROL;
+        ccr_color fill = ccr_th_cat(cat, CCR_FILL);
+        ccr_color edge = ccr_th_cat(cat, CCR_EDGE);
         ccr_gui_rect_rounded(r, 0.25f, edge);
         ccr_gui_rect_rounded((ccr_rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 0.25f, fill);
         if (mouth)   /* a hint of the C shape: there is room inside */
             ccr_gui_rect((ccr_rect){ r.x + 14.0f, r.y + r.h - 7.0f, r.w - 28.0f, 4.0f }, edge);
-        ccr_gui_text(ccr_template_label((ccr_template)i), r.x + 12.0f, r.y + 6.0f, 19.0f, 0xFFFFFFFFu);
+        ccr_gui_text(ccr_template_label((ccr_template)i), r.x + 12.0f, r.y + 6.0f, 19.0f,
+                     ccr_th_cat(cat, CCR_TEXT));
     }
 }
 
@@ -872,6 +938,7 @@ int ccr_run(int argc, char **argv)
         return 1;
     }
     ccr_lang_pick(opt.lang, stderr);
+    ccr_theme_pick(opt.theme, stderr);
     char answered[16];
     eula_view eula = { 0 };
     eula.open = eula.first_run =
@@ -1036,7 +1103,9 @@ int ccr_run(int argc, char **argv)
                 ccr_rect box = { tl.x - 4.0f, tl.y - 4.0f, bw < 320.0f ? 320.0f : bw + 40.0f, 34.0f };
                 if (ccr_gui_key_pressed(CCR_KEY_ESCAPE)) {
                     te.node = CCR_NONE;                     /* cancel */
-                } else if (ccr_gui_textbox(box, te.buf, (int)sizeof te.buf, 20.0f)) {
+                } else if (ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD),
+                                                  ccr_th(CCR_C_FIELD_TEXT)),
+                           ccr_gui_textbox(box, te.buf, (int)sizeof te.buf, 20.0f)) {
                     ccr_editor_set_text(&doc.ed, te.node, te.buf);
                     te.node = CCR_NONE;
                 }
