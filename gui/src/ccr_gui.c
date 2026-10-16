@@ -174,6 +174,39 @@ void ccr_gui_rect_rounded(ccr_rect r, float roundness, ccr_color c)
     DrawRectangleRounded(rect_to_rl(r), roundness, 8, to_rl(c));
 }
 
+void ccr_gui_rect_corners(ccr_rect r, float radius, unsigned corners, ccr_color c)
+{
+    if (r.w <= 0.0f || r.h <= 0.0f)
+        return;
+    float rad = radius;
+    if (rad > r.w * 0.5f) rad = r.w * 0.5f;
+    if (rad > r.h * 0.5f) rad = r.h * 0.5f;
+    if (rad < 0.0f) rad = 0.0f;
+    const Color col = to_rl(c);
+    /* middle column, then the two side strips between the corners */
+    DrawRectangleRec((Rectangle){ r.x + rad, r.y, r.w - rad * 2.0f, r.h }, col);
+    DrawRectangleRec((Rectangle){ r.x, r.y + rad, rad, r.h - rad * 2.0f }, col);
+    DrawRectangleRec((Rectangle){ r.x + r.w - rad, r.y + rad, rad, r.h - rad * 2.0f }, col);
+    if (rad <= 0.0f)
+        return;
+    /* each corner: a quarter circle, or the square it would sit in */
+    const struct { unsigned bit; float cx, cy, from; } k[4] = {
+        { CCR_CORNER_TL, r.x + rad,       r.y + rad,       180.0f },
+        { CCR_CORNER_TR, r.x + r.w - rad, r.y + rad,       270.0f },
+        { CCR_CORNER_BR, r.x + r.w - rad, r.y + r.h - rad,   0.0f },
+        { CCR_CORNER_BL, r.x + rad,       r.y + r.h - rad,  90.0f },
+    };
+    for (int i = 0; i < 4; ++i) {
+        if (corners & k[i].bit) {
+            DrawCircleSector((Vector2){ k[i].cx, k[i].cy }, rad, k[i].from, k[i].from + 90.0f, 8, col);
+        } else {
+            float sx = (k[i].bit == CCR_CORNER_TL || k[i].bit == CCR_CORNER_BL) ? r.x : r.x + r.w - rad;
+            float sy = (k[i].bit == CCR_CORNER_TL || k[i].bit == CCR_CORNER_TR) ? r.y : r.y + r.h - rad;
+            DrawRectangleRec((Rectangle){ sx, sy, rad, rad }, col);
+        }
+    }
+}
+
 void ccr_gui_hex(ccr_rect r, ccr_color c)
 {
     const float half = r.h * 0.5f;

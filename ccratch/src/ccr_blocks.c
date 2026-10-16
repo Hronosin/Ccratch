@@ -1101,38 +1101,36 @@ static ccr_color fade(ccr_color c, float alpha)
 }
 
 /*
- * A block with the puzzle notch cut out of its top, as a real hole: the
- * rounded block is drawn three times, each time clipped to one part around
- * the notch (on whole pixels, so the parts neither overlap nor leave a
- * gap), then the notch's walls in the outline colour. With `outline`
- * false, one flat colour (shadows).
+ * The block shape with the puzzle notch cut out of its top, as a real hole
+ * (what is under the block shows through it), in one pass: three pieces
+ * that do not overlap - the column left of the notch with the block's two
+ * left corners rounded, the column right of it with the right corners,
+ * and the part under the notch. With an outline the same is done again,
+ * inset by its width, so the notch gets walls and a floor for free.
  */
+static void notched_shape(ccr_rect r, float rad, float z, float inset, ccr_color c)
+{
+    const float x1 = r.x + TAB_X * z, x2 = r.x + (TAB_X + TAB_W) * z, y1 = r.y + TAB_H * z;
+    const float e = inset;
+    const ccr_rect in = { r.x + e, r.y + e, r.w - e * 2.0f, r.h - e * 2.0f };
+    if (in.w <= 0.0f || in.h <= 0.0f)
+        return;
+    const float rr = rad - e > 0.0f ? rad - e : 0.0f;
+    ccr_gui_rect_corners((ccr_rect){ in.x, in.y, (x1 - e) - in.x, in.h }, rr,
+                         CCR_CORNER_TL | CCR_CORNER_BL, c);
+    ccr_gui_rect_corners((ccr_rect){ x2 + e, in.y, in.x + in.w - (x2 + e), in.h }, rr,
+                         CCR_CORNER_TR | CCR_CORNER_BR, c);
+    ccr_gui_rect((ccr_rect){ x1 - e, y1 + e, (x2 + e) - (x1 - e), in.y + in.h - (y1 + e) }, c);
+}
+
 static void draw_notched(ccr_rect r, float roundness, float z, float e, ccr_color edge, ccr_color fill,
                          bool outline)
 {
-    const float x0 = floorf(r.x), x3 = ceilf(r.x + r.w), y0 = floorf(r.y), y2 = ceilf(r.y + r.h);
-    const float x1 = roundf(r.x + TAB_X * z), x2 = roundf(r.x + (TAB_X + TAB_W) * z);
-    const float y1 = roundf(r.y + TAB_H * z);
-    const ccr_rect parts[3] = {
-        { x0, y0, x1 - x0, y2 - y0 },   /* left of the notch */
-        { x2, y0, x3 - x2, y2 - y0 },   /* right of it */
-        { x1, y1, x2 - x1, y2 - y1 },   /* under it */
-    };
-    const ccr_rect inner = { r.x + e, r.y + e, r.w - e * 2.0f, r.h - e * 2.0f };
-    for (int k = 0; k < 3; ++k) {
-        if (parts[k].w <= 0.0f || parts[k].h <= 0.0f)
-            continue;
-        ccr_gui_clip_begin(parts[k]);
-        ccr_gui_rect_rounded(r, roundness, outline ? edge : fill);
-        if (outline && inner.w > 0.0f && inner.h > 0.0f)
-            ccr_gui_rect_rounded(inner, roundness, fill);
-        ccr_gui_clip_end();
-    }
-    if (outline && y1 > y0) {   /* the notch's walls and floor */
-        ccr_gui_rect((ccr_rect){ x1 - e, y0 + e, e, y1 - y0 }, edge);
-        ccr_gui_rect((ccr_rect){ x2, y0 + e, e, y1 - y0 }, edge);
-        ccr_gui_rect((ccr_rect){ x1, y1, x2 - x1, e }, edge);
-    }
+    /* the radius raylib's rounded rectangles use, so the corners match */
+    const float rad = roundness * (r.w < r.h ? r.w : r.h) * 0.5f;
+    notched_shape(r, rad, z, 0.0f, outline ? edge : fill);
+    if (outline)
+        notched_shape(r, rad, z, e, fill);
 }
 
 void ccr_blocks_draw_shadow(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport,

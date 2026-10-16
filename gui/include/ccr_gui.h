@@ -75,6 +75,13 @@ bool     ccr_gui_file_dropped(char *out, unsigned int cap);
 /* Drawing. Text sizes are floats so the canvas can zoom smoothly. */
 void  ccr_gui_rect(ccr_rect r, ccr_color c);
 void  ccr_gui_rect_rounded(ccr_rect r, float roundness, ccr_color c);
+/* A rectangle with only some corners rounded (radius in pixels), built
+ * from pieces that do not overlap: safe to draw see-through. */
+#define CCR_CORNER_TL 1u
+#define CCR_CORNER_TR 2u
+#define CCR_CORNER_BR 4u
+#define CCR_CORNER_BL 8u
+void  ccr_gui_rect_corners(ccr_rect r, float radius, unsigned corners, ccr_color c);
 void  ccr_gui_hex(ccr_rect r, ccr_color c);   /* Scratch-style boolean shape */
 void  ccr_gui_circle(ccr_vec2 center, float radius, ccr_color c);
 void  ccr_gui_line(ccr_vec2 a, ccr_vec2 b, float thick, ccr_color c);
