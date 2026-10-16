@@ -59,7 +59,8 @@ const char *ccr_template_label(ccr_template t);
 typedef enum ccr_drag_state {
     CCR_DRAG_IDLE,
     CCR_DRAG_PRESSED,      /* button down, not moved far enough yet */
-    CCR_DRAG_MOVING
+    CCR_DRAG_MOVING,
+    CCR_DRAG_SETTLING      /* let go over a snap point: gliding into place */
 } ccr_drag_state;
 
 typedef struct ccr_editor_input {
@@ -69,7 +70,17 @@ typedef struct ccr_editor_input {
     bool     released;
     float    zoom;         /* so "moved far enough" is in screen pixels */
     bool     over_trash;   /* over the palette: a stack dropped here is deleted */
+    float    dt;           /* seconds since the last update; 0: no animation */
 } ccr_editor_input;
+
+/* A bit of a block that was just deleted, flying off. */
+typedef struct ccr_particle {
+    ccr_vec2  pos, vel;    /* world */
+    float     size, life, max_life;
+    ccr_color color;
+} ccr_particle;
+
+#define CCR_MAX_PARTICLES 256
 
 typedef struct ccr_editor {
     ccr_ast          ast;
@@ -106,6 +117,16 @@ typedef struct ccr_editor {
 
     /* the node under the mouse when nothing is being dragged */
     ccr_node_id    hover;
+
+    /* animations (off unless the app turns them on; tests leave them off) */
+    bool           animate;
+    ccr_vec2       settle_from, settle_to;
+    float          settle_t;
+    ccr_node_id    landed_first, landed_last;   /* just snapped in: a ripple */
+    float          landed_t;
+    ccr_particle   particles[CCR_MAX_PARTICLES];
+    uint32_t       particle_count;
+    uint32_t       rng;
 } ccr_editor;
 
 /* Takes ownership of `ast` (parsed, bodies wrapped). Needs an open window. */
@@ -183,6 +204,13 @@ bool ccr_editor_toggle_comment(ccr_editor *ed, ccr_node_id item);
 /* Undo/redo one drag. False if there is nothing to do (or a drag is on). */
 bool ccr_editor_can_undo(const ccr_editor *ed);
 bool ccr_editor_can_redo(const ccr_editor *ed);
+/* Moves animations on by `dt` seconds. ccr_editor_update does this too;
+ * call it on frames where update is not called (a menu is open). */
+void ccr_editor_tick(ccr_editor *ed, float dt);
+/* A stack still gliding into place is put there now. Every change
+ * (undo, delete, ...) does this first; call it before saving. */
+void ccr_editor_settle(ccr_editor *ed);
+
 bool ccr_editor_undo(ccr_editor *ed);
 bool ccr_editor_redo(ccr_editor *ed);
 

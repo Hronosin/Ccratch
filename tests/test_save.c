@@ -61,7 +61,7 @@ static ccr_node_id stmt(const ccr_editor *ed, const char *prefix)
 
 static void frame(ccr_editor *ed, ccr_vec2 m, bool pressed, bool down, bool released)
 {
-    ccr_editor_input in = { m, pressed, down, released, 1.0f, false };
+    ccr_editor_input in = { m, pressed, down, released, 1.0f, false, 0.0f };
     ccr_editor_update(ed, &in);
 }
 
@@ -601,7 +601,7 @@ static void test_trash(void)
     CHECK(load(&ed), "load failed");
     ccr_vec2 start = far_away(0);
     ccr_editor_spawn(&ed, CCR_TEMPLATE_WHILE, start);
-    ccr_editor_input in = { start, false, false, true, 1.0f, true };
+    ccr_editor_input in = { start, false, false, true, 1.0f, true, 0.0f };
     ccr_editor_update(&ed, &in);
     CHECK(ccr_editor_loose_count(&ed) == 0, "a block dropped on the palette stayed");
 
@@ -610,7 +610,7 @@ static void test_trash(void)
     ccr_vec2 c = corner(&ed, bump);
     frame(&ed, c, true, true, false);
     frame(&ed, (ccr_vec2){ c.x + 50.0f, c.y }, false, true, false);
-    ccr_editor_input drop = { { c.x + 60.0f, c.y }, false, false, true, 1.0f, true };
+    ccr_editor_input drop = { { c.x + 60.0f, c.y }, false, false, true, 1.0f, true, 0.0f };
     ccr_editor_update(&ed, &drop);
     CHECK(ccr_editor_loose_count(&ed) == 0, "the thrown-away statement is still loose");
 

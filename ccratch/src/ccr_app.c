@@ -63,6 +63,7 @@ typedef struct ccr_options {
     const char *lang;           /* --lang CODE, NULL: pick one */
     bool        eula;           /* --eula: print the agreement, exit */
     const char *theme;          /* --theme NAME, NULL: the saved one */
+    bool        no_animations;  /* --no-animations */
     const char *const *clang_args;  /* everything after "--" */
     int         clang_arg_count;
 } ccr_options;
@@ -77,6 +78,10 @@ typedef struct ccr_document {
     char       status[512];
     bool       has_errors;
 } ccr_document;
+
+/* Blocks glide, menus pop, deleted blocks go poof. Off with
+ * --no-animations or "animations = off" in the config file. */
+static bool g_animate = true;
 
 const char *ccr_version(void)
 {
@@ -106,6 +111,8 @@ static void print_usage(const char *argv0)
            "  --list-themes          show the themes found, and where\n"
            "  --check-theme FILE     check a theme file for unknown keys and bad colours\n"
            "  --check-lang FILE      check a language pack for missing or broken text\n"
+           "  --no-animations        blocks just jump into place (for good: put\n"
+           "                         'animations = off' in ~/.config/ccratch/config)\n"
            "  --smoke-frames N       run N frames and exit (for CI)\n"
            "  --screenshot FILE.png  save the last frame before exiting\n",
            ccr_version(), argv0);
@@ -243,6 +250,8 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             opt->smoke_frames = atoi(argv[++i]);
         } else if (strcmp(a, "--screenshot") == 0 && i + 1 < argc) {
             opt->screenshot = argv[++i];
+        } else if (strcmp(a, "--no-animations") == 0) {
+            opt->no_animations = true;
         } else if (strcmp(a, "--theme") == 0 && i + 1 < argc) {
             opt->theme = argv[++i];
         } else if (strcmp(a, "--list-themes") == 0) {
@@ -303,13 +312,57 @@ static void document_close(ccr_document *doc)
     doc->loaded = false;
 }
 
+/* "Home" glides the view back instead of jumping (when animating). */
+static struct {
+    bool       active;
+    ccr_canvas from, to;
+    float      t;
+} g_glide;
+
 static void fit_view(ccr_canvas *cv, const ccr_document *doc, ccr_rect viewport, float zoom)
 {
+    g_glide.active = false;   /* a jump ends any glide */
     if (zoom < 0.25f) zoom = 0.25f;
     if (zoom > 3.0f)  zoom = 3.0f;
     cv->zoom = zoom;
     ccr_rect b = doc->loaded ? ccr_editor_bounds(&doc->ed) : (ccr_rect){ 0, 0, 0, 0 };
     cv->offset = (ccr_vec2){ viewport.x + 48.0f - b.x * zoom, viewport.y + 32.0f - b.y * zoom };
+}
+
+#define GLIDE_TIME 0.32f
+
+static void fit_view_smooth(ccr_canvas *cv, const ccr_document *doc, ccr_rect viewport)
+{
+    ccr_canvas to = *cv;
+    fit_view(&to, doc, viewport, 1.0f);
+    if (!g_animate) {
+        *cv = to;
+        return;
+    }
+    g_glide.active = true;
+    g_glide.from = *cv;
+    g_glide.to = to;
+    g_glide.t = 0.0f;
+}
+
+/* Moves the glide on; true while it is still going. */
+static bool glide_step(ccr_canvas *cv, float dt)
+{
+    if (!g_glide.active)
+        return false;
+    g_glide.t += dt;
+    float k = g_glide.t / GLIDE_TIME;
+    if (k >= 1.0f) {
+        *cv = g_glide.to;
+        g_glide.active = false;
+        return false;
+    }
+    /* ease in and out */
+    const float e = k < 0.5f ? 4.0f * k * k * k : 1.0f - powf(-2.0f * k + 2.0f, 3.0f) * 0.5f;
+    cv->zoom = g_glide.from.zoom + (g_glide.to.zoom - g_glide.from.zoom) * e;
+    cv->offset.x = g_glide.from.offset.x + (g_glide.to.offset.x - g_glide.from.offset.x) * e;
+    cv->offset.y = g_glide.from.offset.y + (g_glide.to.offset.y - g_glide.from.offset.y) * e;
+    return true;
 }
 
 static bool document_open(ccr_document *doc, const char *path, const ccr_options *opt)
@@ -345,6 +398,7 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
         return false;
     }
     next.loaded = true;
+    next.ed.animate = g_animate;
     next.has_errors = errors > 0;
     if (errors)
         ccr_trnf(next.status, sizeof next.status, CCR_T_LOADED_ERRORS, errors,
@@ -377,6 +431,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
 {
     if (!doc->loaded)
         return;
+    ccr_editor_settle(&doc->ed);   /* a block still gliding in goes in first */
     const char *name = base_name(doc->path);
 
     char *text = NULL, err[256];
@@ -898,7 +953,7 @@ static void run_action(ccr_action a, const ccr_context *ctx, ccr_vec2 world,
     case CCR_ACTION_SAVE:      document_save(doc, opt); break;
     case CCR_ACTION_UNDO:      ccr_editor_undo(ed); break;
     case CCR_ACTION_REDO:      ccr_editor_redo(ed); break;
-    case CCR_ACTION_FIT_VIEW:  fit_view(cv, doc, viewport, 1.0f); break;
+    case CCR_ACTION_FIT_VIEW:  fit_view_smooth(cv, doc, viewport); break;
     case CCR_ACTION_DELETE:    ccr_editor_delete(ed, ctx->target); break;
     case CCR_ACTION_DUPLICATE: ccr_editor_duplicate(ed, ctx->target, world); break;
     case CCR_ACTION_COMMENT:   ccr_editor_toggle_comment(ed, ctx->item); break;
@@ -949,6 +1004,10 @@ int ccr_run(int argc, char **argv)
     }
     ccr_lang_pick(opt.lang, stderr);
     ccr_theme_pick(opt.theme, stderr);
+    char anim[16];
+    g_animate = !opt.no_animations &&
+                !(ccr_config_get("animations", anim, sizeof anim) &&
+                  (strcmp(anim, "off") == 0 || strcmp(anim, "no") == 0 || strcmp(anim, "0") == 0));
     char answered[16];
     eula_view eula = { 0 };
     eula.open = eula.first_run =
@@ -982,7 +1041,15 @@ int ccr_run(int argc, char **argv)
     ccr_vec2 rmb_from = { 0 };
     bool rmb_armed = false;
 
+    double last_time = ccr_gui_time();
     while (!ccr_gui_should_close()) {
+        /* seconds since the last frame, for animations; a stall (window
+         * dragged, laptop asleep) does not make things jump */
+        const double now = ccr_gui_time();
+        float dt = (float)(now - last_time);
+        last_time = now;
+        if (dt < 0.0f) dt = 0.0f;
+        if (dt > 0.05f) dt = 0.05f;
         const int w = ccr_gui_width();
         const int h = ccr_gui_height();
         viewport = (ccr_rect){ PALETTE_W, TOPBAR_H, (float)w - PALETTE_W,
@@ -1031,6 +1098,7 @@ int ccr_run(int argc, char **argv)
             bool en[CCR_ACTION_COUNT];
             pie_ctx = ccr_editor_context(&doc.ed, world);
             pie_enabled(&doc.ed, &pie_ctx, en);
+            pie.animate = g_animate;
             ccr_pie_open(&pie, m, en, pie_ctx.commented);
         }
         rmb_armed = rmb_armed && ccr_gui_mouse_down(CCR_MOUSE_RIGHT);
@@ -1066,10 +1134,17 @@ int ccr_run(int argc, char **argv)
             }
         }
         if (ccr_gui_key_pressed(CCR_KEY_HOME) && !pie.open)
-            fit_view(&canvas, &doc, viewport, 1.0f);
+            fit_view_smooth(&canvas, &doc, viewport);
 
-        if (!pie.open && !was_open && !eula.open)
+        const bool gliding = glide_step(&canvas, dt);
+        if (!pie.open && !was_open && !eula.open) {
+            const ccr_canvas before = canvas;
             ccr_canvas_update(&canvas, viewport);
+            /* the user panned or zoomed: they have the wheel now */
+            if (gliding && (canvas.zoom != before.zoom || canvas.offset.x != before.offset.x ||
+                            canvas.offset.y != before.offset.y))
+                g_glide.active = false;
+        }
 
         if (can_act && !pie.open && !was_open) {
             /* a carried copy (Duplicate) lands on a click anywhere, the
@@ -1085,12 +1160,15 @@ int ccr_run(int argc, char **argv)
                 .released   = ccr_gui_mouse_released(CCR_MOUSE_LEFT),
                 .zoom       = canvas.zoom,
                 .over_trash = over_palette,
+                .dt         = dt,
             };
             ccr_editor_update(&doc.ed, &in);
 
             ccr_node_id req = ccr_editor_take_edit_request(&doc.ed);
             if (req != CCR_NONE)
                 start_editing(&te, &doc.ed, req);
+        } else if (doc.loaded) {
+            ccr_editor_tick(&doc.ed, dt);   /* menu open: things still move */
         }
 
         ccr_gui_begin_frame(COL_BG);

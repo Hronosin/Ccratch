@@ -54,6 +54,7 @@ void ccr_pie_open(ccr_pie *pie, ccr_vec2 center, const bool enabled[CCR_ACTION_C
         pie->enabled[i] = enabled[i];
     pie->uncomment = uncomment;
     pie->hot = CCR_ACTION_NONE;
+    pie->opened_at = ccr_gui_time();
 }
 
 void ccr_pie_close(ccr_pie *pie)
@@ -119,11 +120,14 @@ static float radius_of(int dir)
     }
 }
 
-static ccr_rect box_of(const ccr_pie *pie, int dir, float w)
+#define OPEN_TIME     0.16f   /* seconds to pop out */
+#define STAGGER       0.012f  /* each slice a little after the one before */
+
+static ccr_rect box_of(const ccr_pie *pie, int dir, float w, float out)
 {
     float a = (float)dir * 45.0f * PI_F / 180.0f;
     float sx = sinf(a), sy = -cosf(a);
-    float r = radius_of(dir);
+    float r = radius_of(dir) * out;
     float px = pie->center.x + sx * r, py = pie->center.y + sy * r;
     ccr_rect b = { px - w * 0.5f, py - BOX_H * 0.5f, w, BOX_H };
     if (sx > 0.3f) b.x = px;              /* right side: grows away */
@@ -133,36 +137,65 @@ static ccr_rect box_of(const ccr_pie *pie, int dir, float w)
     return b;
 }
 
+/* 0..1 with a little overshoot past 1 on the way: things pop. */
+static float ease_out_back(float k)
+{
+    const float c1 = 1.70158f, c3 = c1 + 1.0f;
+    const float u = k - 1.0f;
+    return 1.0f + c3 * u * u * u + c1 * u * u;
+}
+
+static float clamp01(float k) { return k < 0.0f ? 0.0f : k > 1.0f ? 1.0f : k; }
+
+/* `c` with its alpha scaled by k */
+static ccr_color faded(ccr_color c, float k)
+{
+    return (c & 0xFFFFFF00u) | (ccr_color)((float)(c & 0xFFu) * clamp01(k));
+}
+
 void ccr_pie_draw(const ccr_pie *pie)
 {
     if (!pie->open)
         return;
     const ccr_vec2 c = pie->center;
+    const float since = pie->animate ? (float)(ccr_gui_time() - pie->opened_at) : 1.0f;
 
-    /* the dial in the middle: a ring with the aimed-at slice lit */
-    ccr_gui_ring(c, CCR_PIE_DEAD_ZONE - 8.0f, CCR_PIE_DEAD_ZONE, 0.0f, 360.0f, COL_RING);
+    /* the dial in the middle: a ring with the aimed-at slice lit; it
+     * opens like an iris */
+    const float iris = ease_out_back(clamp01(since / OPEN_TIME));
+    const float fade_in = clamp01(since / (OPEN_TIME * 0.6f));
+    const float ro = CCR_PIE_DEAD_ZONE * iris;
+    ccr_gui_ring(c, ro - 8.0f > 0.0f ? ro - 8.0f : 0.0f, ro, 0.0f, 360.0f * clamp01(since / OPEN_TIME),
+                 faded(COL_RING, fade_in));
     if (pie->hot != CCR_ACTION_NONE) {
         float mid = (float)pie->hot * 45.0f - 90.0f;
         ccr_color col = pie->enabled[pie->hot] ? COL_HOT : COL_HOT_OFF;
-        ccr_gui_ring(c, CCR_PIE_DEAD_ZONE - 9.0f, CCR_PIE_DEAD_ZONE + 1.0f,
-                     mid - 22.5f, mid + 22.5f, col);
+        ccr_gui_ring(c, ro - 9.0f > 0.0f ? ro - 9.0f : 0.0f, ro + 1.0f,
+                     mid - 22.5f, mid + 22.5f, faded(col, fade_in));
     }
 
     for (int d = 0; d < CCR_PIE_DIRS; ++d) {
         const ccr_action a = (ccr_action)d;
+        /* slices fly out of the centre one after another, clockwise */
+        const float k = clamp01((since - STAGGER * (float)d) / OPEN_TIME);
+        if (k <= 0.0f)
+            continue;
+        const float out = 0.25f + 0.75f * ease_out_back(k);
+        const float alpha = clamp01(k * 2.0f);
+
         const char *label = ccr_action_label(a, pie->uncomment);
         const char *hint = ccr_action_shortcut(a);
         float lw = ccr_gui_text_width(label, LABEL_SIZE);
         float hw = ccr_gui_text_width(hint, HINT_SIZE);
-        ccr_rect b = box_of(pie, d, lw + hw + BOX_PAD * 3.0f);
+        ccr_rect b = box_of(pie, d, lw + hw + BOX_PAD * 3.0f, out);
 
         const bool on = pie->enabled[a], hot = pie->hot == a;
         ccr_gui_rect_rounded((ccr_rect){ b.x - 1.0f, b.y - 1.0f, b.w + 2.0f, b.h + 2.0f }, 0.45f,
-                             hot && on ? COL_HOT : COL_BOX_EDGE);
-        ccr_gui_rect_rounded(b, 0.45f, hot && on ? COL_HOT : COL_BOX);
+                             faded(hot && on ? COL_HOT : COL_BOX_EDGE, alpha));
+        ccr_gui_rect_rounded(b, 0.45f, faded(hot && on ? COL_HOT : COL_BOX, alpha));
         ccr_gui_text(label, b.x + BOX_PAD, b.y + (BOX_H - LABEL_SIZE) * 0.5f, LABEL_SIZE,
-                     on ? (hot ? 0xFFFFFFFFu : COL_TEXT) : COL_OFF);
+                     faded(on ? (hot ? 0xFFFFFFFFu : COL_TEXT) : COL_OFF, alpha));
         ccr_gui_text(hint, b.x + b.w - BOX_PAD - hw, b.y + (BOX_H - HINT_SIZE) * 0.5f + 1.0f,
-                     HINT_SIZE, on ? (hot ? 0xFFFFFFFFu : COL_HINT) : COL_OFF);
+                     HINT_SIZE, faded(on ? (hot ? 0xFFFFFFFFu : COL_HINT) : COL_OFF, alpha));
     }
 }

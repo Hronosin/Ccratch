@@ -91,9 +91,11 @@ static ccr_vec2 top_left(const ccr_editor *ed, ccr_node_id node)
     return (ccr_vec2){ r.x, r.y };
 }
 
+static float g_dt;   /* 0: no animation, like most tests want */
+
 static void frame(ccr_editor *ed, ccr_vec2 m, bool pressed, bool down, bool released)
 {
-    ccr_editor_input in = { m, pressed, down, released, 1.0f, false };
+    ccr_editor_input in = { m, pressed, down, released, 1.0f, false, g_dt };
     ccr_editor_update(ed, &in);
 }
 
@@ -159,6 +161,55 @@ static void test_snap_back(ccr_editor *ed)
     describe(ed, body, got, sizeof got);
     CHECK(strstr(got, "Var countdown, Call free, Goto done, Label done, While") != NULL,
           "main is: %s", got);
+}
+
+/* The same round trip with animations on: the dropped stack glides in
+ * for a few frames and ends up exactly where the instant drop puts it. */
+static void test_animated_drop(ccr_editor *ed)
+{
+    ed->animate = true;
+    g_dt = 1.0f / 60.0f;
+    ccr_node_id fn = find_function(ed, "main");
+    ccr_node_id body = body_of(ed, fn);
+    ccr_node_id free_call = find_stmt(ed, CCR_NODE_CALL, "free");
+    ccr_node_id countdown = find_stmt(ed, CCR_NODE_VAR, "countdown");
+
+    ccr_vec2 at = top_left(ed, free_call);
+    drag(ed, grip(at), grip((ccr_vec2){ at.x + 3000.0f, at.y }));
+    CHECK(ed->drag == CCR_DRAG_IDLE, "a drop on empty canvas should not glide");
+    CHECK(ccr_editor_loose_count(ed) == 1, "tear-off: %u loose", ccr_editor_loose_count(ed));
+
+    ccr_rect target;
+    ccr_editor_node_rect(ed, countdown, &target);
+    at = top_left(ed, free_call);
+    drag(ed, grip(at), grip((ccr_vec2){ target.x + 9.0f, target.y + target.h + 10.0f }));
+    CHECK(ed->drag == CCR_DRAG_SETTLING, "the drop did not start gliding");
+    CHECK(ccr_editor_loose_count(ed) == 1, "snapped in before the glide was over");
+    int frames = 0;
+    while (ed->drag == CCR_DRAG_SETTLING && frames < 100) {
+        frame(ed, (ccr_vec2){ 0, 0 }, false, false, false);
+        ++frames;
+    }
+    CHECK(frames >= 3 && frames <= 20, "glide took %d frames", frames);
+    CHECK(ccr_editor_loose_count(ed) == 0, "stack did not snap, %u loose",
+          ccr_editor_loose_count(ed));
+    char got[512];
+    describe(ed, body, got, sizeof got);
+    CHECK(strstr(got, "Var countdown, Call free, Goto done, Label done, While") != NULL,
+          "main is: %s", got);
+
+    /* deleting throws bits about, and they are gone a second later */
+    ed->particle_count = 0;
+    ccr_editor_delete(ed, find_stmt(ed, CCR_NODE_CALL, "free"));
+    CHECK(ed->particle_count > 0, "deleting made no bits");
+    for (int i = 0; i < 60; ++i)
+        frame(ed, (ccr_vec2){ 0, 0 }, false, false, false);
+    CHECK(ed->particle_count == 0, "%u bits still flying after a second", ed->particle_count);
+    ccr_editor_undo(ed);
+    CHECK(find_stmt(ed, CCR_NODE_CALL, "free") != CCR_NONE, "undo did not bring free(p) back");
+
+    ed->animate = false;
+    g_dt = 0.0f;
 }
 
 static void test_click_is_not_a_drag(ccr_editor *ed)
@@ -274,6 +325,7 @@ int main(int argc, char **argv)
 
     test_tear_off_tail(&ed);
     test_snap_back(&ed);
+    test_animated_drop(&ed);
     test_click_is_not_a_drag(&ed);
     test_move_whole_function(&ed);
     test_empty_mouth(&ed);

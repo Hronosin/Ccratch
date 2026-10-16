@@ -37,7 +37,7 @@ static ccr_node_id find(const ccr_editor *ed, ccr_node_kind kind, const char *na
 
 static void frame(ccr_editor *ed, ccr_vec2 m, bool pressed, bool down, bool released)
 {
-    ccr_editor_input in = { m, pressed, down, released, 1.0f, false };
+    ccr_editor_input in = { m, pressed, down, released, 1.0f, false, 0.0f };
     ccr_editor_update(ed, &in);
 }
 

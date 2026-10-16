@@ -12,12 +12,16 @@
 #define DRAG_THRESHOLD  4.0f   /* screen pixels before a press becomes a drag */
 #define SNAP_RADIUS    36.0f   /* world units */
 #define LOOSE_ALPHA     0.55f
+#define SETTLE_TIME     0.13f   /* seconds a dropped stack takes to glide in */
+#define RIPPLE_TIME     0.35f   /* and how long the ring round it lasts */
 #define HISTORY_MAX    500
 
 static const ccr_node *N(const ccr_editor *ed, ccr_node_id id) { return &ed->ast.nodes[id]; }
 
 static void begin_change(ccr_editor *ed);
 static void find_snap(ccr_editor *ed);
+static void poof_node(ccr_editor *ed, ccr_node_id node);
+static void poof_script(ccr_editor *ed, uint32_t si);
 static void commit_change(ccr_editor *ed);
 static void forget_sizes(ccr_editor *ed, ccr_node_id id);
 static ccr_node_id new_node(ccr_editor *ed, ccr_node_kind kind, ccr_node_id parent);
@@ -222,6 +226,8 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     ed->dragged = UINT32_MAX;
     ed->edit_request = CCR_NONE;
     ed->hover = CCR_NONE;
+    ed->landed_first = ed->landed_last = CCR_NONE;
+    ed->rng = 0x9E3779B9u;
     if (ed->ast.node_count == 0)
         return true;
 
@@ -322,6 +328,7 @@ bool ccr_editor_node_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out)
 
 void ccr_editor_relayout_all(ccr_editor *ed)
 {
+    ccr_editor_settle(ed);
     for (uint32_t i = 0; i < ed->script_count; ++i) {
         ccr_blocks fresh;
         if (ccr_blocks_build_script(&fresh, &ed->ast, ed->scripts[i].root, &ed->cache)) {
@@ -661,6 +668,7 @@ static bool build_template(ccr_editor *ed, ccr_template t, ccr_node_id parent)
 
 bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse)
 {
+    ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE || (unsigned)t >= CCR_TEMPLATE_COUNT)
         return false;
     begin_change(ed);
@@ -688,6 +696,7 @@ bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse)
 
 bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text)
 {
+    ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE || slot >= ed->ast.node_count ||
         N(ed, slot)->kind != CCR_NODE_TEXT)
         return false;
@@ -768,6 +777,7 @@ static bool is_stack_item(const ccr_editor *ed, ccr_node_id id)
 
 bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
 {
+    ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE)
         return false;
     if (!is_stack_item(ed, item)) {
@@ -775,6 +785,7 @@ bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
         if (item >= ed->ast.node_count || !expr_movable(ed, item))
             return false;
         uint32_t si = script_index_of_root(ed, script_root_of(ed, item));
+        poof_node(ed, item);
         begin_change(ed);
         if (vacate(ed, item) != CCR_NONE) {
             ccr_ast_touch(&ed->ast, item);
@@ -794,10 +805,12 @@ bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
     begin_change(ed);
     if (is_loose_root(ed, block) && N(ed, block)->first_child == item) {
         /* the top of a loose stack: the whole stack goes */
+        poof_script(ed, si);
         ccr_ast_touch(&ed->ast, block);
         ed->ast.nodes[block].flags |= CCR_FLAG_DEAD;
         remove_script(ed, si);
     } else {
+        poof_node(ed, item);
         mark_dirty(ed, block);
         ccr_ast_unlink(&ed->ast, item);   /* the rest of the stack closes up */
         ccr_ast_touch(&ed->ast, item);
@@ -833,6 +846,7 @@ static ccr_node_id clone(ccr_editor *ed, ccr_node_id src, unsigned depth)
 
 bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse)
 {
+    ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE || item >= ed->ast.node_count)
         return false;
     /* a statement copies as a stack, an expression (in a slot, or lying
@@ -868,6 +882,7 @@ bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse)
 
 bool ccr_editor_toggle_comment(ccr_editor *ed, ccr_node_id item)
 {
+    ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE || !is_stack_item(ed, item) ||
         (N(ed, N(ed, item)->parent)->flags & CCR_FLAG_REPORTER))
         return false;
@@ -894,6 +909,7 @@ bool ccr_editor_can_redo(const ccr_editor *ed)
 
 bool ccr_editor_undo(ccr_editor *ed)
 {
+    ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE || ed->history_len == 0)
         return false;
     const ccr_change *c = &ed->history[--ed->history_len];
@@ -911,6 +927,7 @@ bool ccr_editor_undo(ccr_editor *ed)
 
 bool ccr_editor_redo(ccr_editor *ed)
 {
+    ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE || ed->history_len == ed->history_count)
         return false;
     const ccr_change *c = &ed->history[ed->history_len++];
@@ -1034,8 +1051,154 @@ static void drop_into_snap(ccr_editor *ed)
         relayout(ed, ti);
 }
 
+/* ------------------------------------------------------- animations */
+
+static float frand(ccr_editor *ed)
+{
+    ed->rng = ed->rng * 1664525u + 1013904223u;
+    return (float)(ed->rng >> 8) / 16777216.0f;
+}
+
+/* Poof: a deleted block breaks into bits of its own colours that fly
+ * off. `r` is the world rectangle going away, inside script `si`. */
+static void poof(ccr_editor *ed, uint32_t si, ccr_rect r)
+{
+    if (!ed->animate || si >= ed->script_count || r.w <= 0.0f || r.h <= 0.0f)
+        return;
+    const ccr_script *s = &ed->scripts[si];
+
+    /* the colours showing in that rectangle, fills and edges */
+    enum { MAX_COLORS = 32 };
+    ccr_color colors[MAX_COLORS];
+    int nc = 0;
+    for (uint32_t i = 0; i < s->blocks.prim_count && nc < MAX_COLORS - 1; ++i) {
+        const ccr_prim *pr = &s->blocks.prims[i];
+        if (pr->kind == CCR_PRIM_TEXT)
+            continue;
+        const float x = pr->rect.x + s->pos.x, y = pr->rect.y + s->pos.y;
+        if (x > r.x + r.w || y > r.y + r.h || x + pr->rect.w < r.x || y + pr->rect.h < r.y)
+            continue;
+        colors[nc++] = pr->fill;
+        colors[nc++] = pr->edge;
+    }
+    if (nc == 0)
+        colors[nc++] = ccr_th(CCR_C_HINT);
+
+    const ccr_vec2 c = { r.x + r.w * 0.5f, r.y + r.h * 0.5f };
+    float area = (r.w * r.h) / 700.0f;
+    const int n = 16 + (int)(area > 48.0f ? 48.0f : area);
+    for (int i = 0; i < n && ed->particle_count < CCR_MAX_PARTICLES; ++i) {
+        ccr_particle *p = &ed->particles[ed->particle_count++];
+        p->pos = (ccr_vec2){ r.x + frand(ed) * r.w, r.y + frand(ed) * r.h };
+        float dx = p->pos.x - c.x, dy = p->pos.y - c.y;
+        float len = sqrtf(dx * dx + dy * dy) + 1.0f;
+        float speed = 120.0f + frand(ed) * 220.0f;
+        p->vel = (ccr_vec2){ dx / len * speed, dy / len * speed - 160.0f * frand(ed) };
+        p->size = 6.0f + frand(ed) * 8.0f;
+        p->max_life = p->life = 0.4f + frand(ed) * 0.35f;
+        p->color = colors[(int)(frand(ed) * (float)nc) % nc];
+    }
+}
+
+static void poof_script(ccr_editor *ed, uint32_t si)
+{
+    const ccr_script *s = &ed->scripts[si];
+    const ccr_rect b = s->blocks.bounds;
+    poof(ed, si, (ccr_rect){ s->pos.x + b.x, s->pos.y + b.y, b.w, b.h });
+}
+
+static void poof_node(ccr_editor *ed, ccr_node_id node)
+{
+    ccr_rect r;
+    if (ccr_editor_node_rect(ed, node, &r))
+        poof(ed, script_index_of_root(ed, script_root_of(ed, node)), r);
+}
+
+static void step_particles(ccr_editor *ed, float dt)
+{
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < ed->particle_count; ++i) {
+        ccr_particle p = ed->particles[i];
+        p.life -= dt;
+        if (p.life <= 0.0f)
+            continue;
+        p.pos.x += p.vel.x * dt;
+        p.pos.y += p.vel.y * dt;
+        p.vel.y += 520.0f * dt;              /* they fall */
+        p.vel.x *= 1.0f - 2.5f * dt;         /* and slow down */
+        ed->particles[keep++] = p;
+    }
+    ed->particle_count = keep;
+}
+
+static float ease_out_cubic(float k)
+{
+    float u = 1.0f - k;
+    return 1.0f - u * u * u;
+}
+
+/* The dropped stack has reached its snap point: put it in for real. */
+static void finish_drop(ccr_editor *ed)
+{
+    /* what lands, for the ripple: the stack's statements, or the whole
+     * thing when it moves as one (an expression, a function) */
+    const ccr_node_id root = ed->scripts[ed->dragged].root;
+    ccr_node_id first = root, last = root;
+    if (ed->snap.kind != CCR_SNAP_SLOT && is_loose_root(ed, root) && N(ed, root)->first_child != CCR_NONE) {
+        first = last = N(ed, root)->first_child;
+        while (N(ed, last)->next_sibling != CCR_NONE)
+            last = N(ed, last)->next_sibling;
+    }
+    drop_into_snap(ed);
+    if (ed->animate) {
+        ed->landed_first = first;
+        ed->landed_last = last;
+        ed->landed_t = 0.0f;
+    }
+    ed->snap_ok = false;
+    ed->dragged = UINT32_MAX;
+    ed->drag = CCR_DRAG_IDLE;
+    commit_change(ed);
+}
+
+void ccr_editor_tick(ccr_editor *ed, float dt)
+{
+    if (dt > 0.0f) {
+        step_particles(ed, dt);
+        ed->landed_t += dt;
+    }
+    if (ed->drag != CCR_DRAG_SETTLING)
+        return;
+    ed->settle_t += dt > 0.0f ? dt : SETTLE_TIME;
+    float k = ed->settle_t / SETTLE_TIME;
+    if (k > 1.0f)
+        k = 1.0f;
+    const float e = ease_out_cubic(k);
+    ed->scripts[ed->dragged].pos = (ccr_vec2){
+        ed->settle_from.x + (ed->settle_to.x - ed->settle_from.x) * e,
+        ed->settle_from.y + (ed->settle_to.y - ed->settle_from.y) * e,
+    };
+    if (k >= 1.0f)
+        finish_drop(ed);
+}
+
+void ccr_editor_settle(ccr_editor *ed)
+{
+    if (ed->drag == CCR_DRAG_SETTLING) {
+        ed->scripts[ed->dragged].pos = ed->settle_to;
+        finish_drop(ed);
+    }
+}
+
 void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
 {
+    ccr_editor_tick(ed, in->dt);
+    if (ed->drag == CCR_DRAG_SETTLING) {
+        if (!in->pressed)
+            return;              /* busy gliding */
+        ccr_editor_settle(ed);   /* grabbing something else: in it goes, now */
+    }
+
     if (ed->drag != CCR_DRAG_MOVING) {
         uint32_t si;
         ed->hover = pick(ed, in->mouse, &si);
@@ -1082,8 +1245,17 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
         if (ed->carrying ? in->pressed : (!in->down || in->released)) {
             const ccr_node_id root = ed->scripts[ed->dragged].root;
             ed->carrying = false;
+            if (ed->snap_ok && !in->over_trash && ed->animate && in->dt > 0.0f) {
+                /* glide the last bit into place, then drop */
+                ed->settle_from = ed->scripts[ed->dragged].pos;
+                ed->settle_to = ed->snap.at;
+                ed->settle_t = 0.0f;
+                ed->drag = CCR_DRAG_SETTLING;
+                break;
+            }
             if (in->over_trash && is_loose_root(ed, root)) {
                 /* thrown back onto the palette: gone (Ctrl+Z brings it back) */
+                poof_script(ed, ed->dragged);
                 ccr_ast_touch(&ed->ast, root);
                 ed->ast.nodes[root].flags |= CCR_FLAG_DEAD;
                 remove_script(ed, ed->dragged);
@@ -1095,6 +1267,9 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
             ed->drag = CCR_DRAG_IDLE;
             commit_change(ed);
         }
+        break;
+
+    case CCR_DRAG_SETTLING:
         break;
     }
 }
@@ -1151,6 +1326,20 @@ static void polyline(const ccr_vec2 *p, int n, float thick, ccr_color c, bool da
     }
     for (int i = 1; i + 1 < n; ++i)   /* round the corners */
         ccr_gui_circle(p[i], thick * 0.5f, c);
+}
+
+/* Dots running along a polyline, from its start to its end. */
+static void march(const ccr_vec2 *p, int n, float spacing, float phase, float radius, ccr_color c)
+{
+    float carry = phase;   /* distance to the next dot */
+    for (int i = 0; i + 1 < n; ++i) {
+        const float dx = p[i + 1].x - p[i].x, dy = p[i + 1].y - p[i].y;
+        const float len = sqrtf(dx * dx + dy * dy);
+        float t = carry;
+        for (; t < len; t += spacing)
+            ccr_gui_circle((ccr_vec2){ p[i].x + dx * t / len, p[i].y + dy * t / len }, radius, c);
+        carry = t - len;
+    }
 }
 
 /*
@@ -1232,6 +1421,12 @@ static void draw_jumps(const ccr_editor *ed, const ccr_canvas *cv)
                 ccr_color c = broken ? ccr_th(CCR_C_ERROR) : hot ? ccr_th(CCR_C_GLOW)
                             : alpha_of(line, loose ? 0x60u : 0xB0u);
                 polyline(pts, 4, hot ? thick * 1.6f : thick, c, broken);
+                if (hot && !broken && ed->animate) {
+                    /* the way the jump goes */
+                    const float spacing = 16.0f * (z < 0.6f ? 0.6f : z);
+                    const float phase = fmodf((float)ccr_gui_time() * 3.0f * spacing, spacing);
+                    march(pts, 4, spacing, phase, thick * 1.3f, c);   /* beads */
+                }
                 ccr_gui_circle(a, thick * 1.4f, c);
                 ccr_gui_triangle((ccr_vec2){ b.x + 1.0f, b.y },
                                  (ccr_vec2){ b.x + 12.0f * z, b.y - 7.0f * z },
@@ -1258,7 +1453,8 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
     for (uint32_t i = 0; i < ed->script_count; ++i) {
         const ccr_script *s = &ed->scripts[i];
         bool loose = is_loose_root(ed, s->root);
-        bool dragging = ed->drag == CCR_DRAG_MOVING && i == ed->dragged;
+        bool dragging = (ed->drag == CCR_DRAG_MOVING || ed->drag == CCR_DRAG_SETTLING) &&
+                        i == ed->dragged;
         float alpha = (loose && !(dragging && ed->snap_ok)) ? LOOSE_ALPHA : 1.0f;
 
         /* where a reporter will land: the slot lights up */
@@ -1297,11 +1493,45 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
                 uint32_t sc = (sh >> (24 - 8 * k)) & 0xFFu, bc = (bg >> (24 - 8 * k)) & 0xFFu;
                 flat |= ((sc * a + bc * (255u - a)) / 255u) << (24 - 8 * k);
             }
-            const float lift = 7.0f;
+            /* while it glides in, it also comes down onto the canvas */
+            float lift = 7.0f;
+            if (ed->drag == CCR_DRAG_SETTLING) {
+                float k = ed->settle_t / SETTLE_TIME;
+                lift *= 1.0f - ease_out_cubic(k > 1.0f ? 1.0f : k);
+            }
             ccr_blocks_draw_shadow(&s->blocks, cv, viewport,
                                    (ccr_vec2){ s->pos.x + lift * 0.6f, s->pos.y + lift }, flat);
         }
         ccr_blocks_draw(&s->blocks, cv, viewport, s->pos, alpha);
     }
     draw_jumps(ed, cv);
+
+    /* a ripple round what just snapped in */
+    if (ed->animate && ed->landed_first != CCR_NONE && ed->landed_t < RIPPLE_TIME) {
+        ccr_rect a, b;
+        if (ccr_editor_node_rect(ed, ed->landed_first, &a) &&
+            ccr_editor_node_rect(ed, ed->landed_last, &b)) {
+            const float k = ed->landed_t / RIPPLE_TIME;
+            const float grow = (2.0f + 9.0f * ease_out_cubic(k)) / cv->zoom;
+            float x0 = fminf(a.x, b.x) - grow, y0 = a.y - grow;
+            float x1 = fmaxf(a.x + a.w, b.x + b.w) + grow, y1 = b.y + b.h + grow;
+            const ccr_vec2 p0 = ccr_canvas_to_screen(cv, (ccr_vec2){ x0, y0 });
+            const ccr_vec2 p1 = ccr_canvas_to_screen(cv, (ccr_vec2){ x1, y1 });
+            const ccr_vec2 pts[5] = { p0, { p1.x, p0.y }, p1, { p0.x, p1.y }, p0 };
+            const ccr_color c = alpha_of(ccr_th(CCR_C_GLOW), (uint32_t)(200.0f * (1.0f - k)));
+            const float th = 3.0f * (1.0f - k) + 1.0f;
+            polyline(pts, 5, th, c, false);
+            ccr_gui_circle(p0, th * 0.5f, c);
+        }
+    }
+
+    /* bits of deleted blocks */
+    for (uint32_t i = 0; i < ed->particle_count; ++i) {
+        const ccr_particle *p = &ed->particles[i];
+        const float k = p->life / p->max_life;
+        const float s = p->size * cv->zoom * (0.4f + 0.6f * k);
+        const ccr_vec2 c = ccr_canvas_to_screen(cv, p->pos);
+        ccr_gui_rect_rounded((ccr_rect){ c.x - s * 0.5f, c.y - s * 0.5f, s, s }, 0.4f,
+                             alpha_of(p->color, (uint32_t)(255.0f * k)));
+    }
 }

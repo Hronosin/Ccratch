@@ -159,6 +159,25 @@ Every key is in `ccratch/src/ccr_theme.h` (or copy one of `themes/`);
 `ccratch --check-theme mine.theme` says what is wrong, `--theme NAME`
 starts with one, `--list-themes` shows what was found.
 
+## Motion
+
+Blocks are toys, so they move like toys:
+
+![Gliding in, a ripple, a poof, the pie popping open](docs/motion.gif)
+
+- a stack let go near a snap point glides the last bit into place and
+  comes down onto the canvas, its shadow shrinking under it; a ring
+  ripples out round it once it is in
+- a deleted block goes *poof*, in bits of its own colours
+- the pie menu opens like an iris, slices flying out clockwise
+- the mouse on a `goto` sends beads running along its arrow, the way the
+  jump goes
+- Home glides the view back instead of teleporting
+
+None of it waits for you: saving, undoing or grabbing something else
+finishes whatever is still moving. `--no-animations`, or
+`animations = off` in `~/.config/ccratch/config`, turns it all off.
+
 ## The pie menu
 
 Everything the keyboard does, the mouse does too. Right click (without
@@ -375,6 +394,7 @@ ccratch --lang ru                        interface in Russian
 ccratch --list-langs                     language packs found, and where
 ccratch --lang-template                  English text as a pack to translate
 ccratch --check-lang uk.lang             check a pack before sharing it
+ccratch file.c --no-animations           blocks just jump into place
 ```
 
 `--dump-ast` exits with 0 if the file is clean, 1 if it has errors,
