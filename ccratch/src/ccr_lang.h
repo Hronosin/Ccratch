@@ -39,6 +39,10 @@
     X(PALETTE_TITLE,    "palette.title",         0, "Blocks")                            \
     X(PALETTE_DROP,     "palette.drop",          0, "drop to delete")                    \
     X(TEMPLATE_CODE,    "palette.code_line",     0, "code line")                         \
+    X(FILES_TITLE,      "files.title",           0, "Files")                             \
+    X(FILES_EMPTY,      "files.empty",           0, "no .c or .h files here")            \
+    X(FILES_UNSAVED,    "files.unsaved",         0, "Not saved! Click x again to close anyway") \
+    X(FILES_TOO_MANY,   "files.too_many",        0, "Too many files open: close one first") \
     X(CAT_CONTROL,      "palette.control",       0, "Control")                           \
     X(CAT_OPERATORS,    "palette.operators",     0, "Operators")                         \
     X(CAT_VARIABLES,    "palette.variables",     0, "Variables")                         \

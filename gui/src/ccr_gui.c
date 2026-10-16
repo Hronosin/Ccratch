@@ -287,6 +287,9 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_D:    return IsKeyPressed(KEY_D);
     case CCR_KEY_DELETE: return IsKeyPressed(KEY_DELETE);
     case CCR_KEY_SLASH:  return IsKeyPressed(KEY_SLASH);
+    case CCR_KEY_P:      return IsKeyPressed(KEY_P);
+    case CCR_KEY_W:      return IsKeyPressed(KEY_W);
+    case CCR_KEY_TAB:    return IsKeyPressed(KEY_TAB);
     }
     return false;
 }

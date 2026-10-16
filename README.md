@@ -22,6 +22,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 11: every `goto` has an arrow to its label.
 - Step 12: themes, as files, and four of them to start with.
 - Step 13: the palette grows up: six categories, operators, variables, pointers, switch, casts.
+- Step 14: goto arrows you can travel along, operators you can swap, several files open at once.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -110,6 +111,17 @@ right side of `-` saves as `total - (n + b)`, `*` into `+` as
 typed into a slot too, and for expressions moved out of the file into new
 places.
 
+### Changing an operator
+
+Click an operator (`+`, `==`, `+=`, `++`, `!`...) and the others of its kind
+drop down: arithmetic, comparisons and `&&`/`||`, bits, assignments,
+prefix, `++`/`--`. It works on code from the file too: the expression
+is printed anew around its operands' own text, with parentheses where the
+new operator binds differently. `a + b + pr.x + pr.y` with the first `+`
+made `*` and the last one too saves as `(a * b + pr.x) * pr.y`, the same
+tree you see. Operators that come out of a macro are not offered. Each
+swap is one undo step.
+
 ## Expressions
 
 Like Scratch reporters: grab `count` out of `i < count` and it comes out
@@ -142,6 +154,13 @@ Every `goto` has an arrow to its label, out of its right side and along a
 lane to the right of the function. Shorter jumps take the inner lanes, so
 the arrows nest like brackets instead of crossing. Put the mouse on a
 `goto` or a label and its arrows light up.
+
+Click an arrow to travel along it: the view glides to the other end and a
+ring shows where you landed. Which end depends on where you click: the
+half by the `goto` takes you to the label, the half by the label brings
+you back to the `goto`. The arrow under the mouse marks the end a click
+goes to, and a click by mistake in a long file is undone by clicking the
+arrow again.
 
 ![left: goto close_file lit up; right: out: dragged away, goto out turns red](docs/goto.png)
 
@@ -278,6 +297,18 @@ Text is drawn with Nunito (SIL Open Font License, `assets/fonts/`), built
 into the program with Latin, Cyrillic and Latin Extended-A, so packs for
 most European languages need no extra font.
 
+## Files
+
+**Files** in the top bar (or Ctrl+P) slides in the project: every `.c` and
+`.h` in the folder of the file you opened and the folders under it
+(hidden folders, `build/` and the like left out, folders with no code
+too). Click a file to open it; the one you were in stays open, with its
+undo history, its unsaved changes and where you were looking, and comes
+back exactly so. Open files have an × to close them; one with unsaved
+changes asks you to click it twice. Ctrl+Tab goes round the open files.
+
+![the files panel: goto.c on screen, tour.c open with unsaved changes](docs/files.png)
+
 ## Saving
 
 Saving splices instead of reprinting: everything you did not touch is
@@ -336,6 +367,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_codegen tree -> C: copies untouched text, rebuilds changed blocks
   ccr_template what the palette offers, as syntax trees (no window)
   ccr_palette the palette: categories, real blocks, scrolling
+  ccr_files   the project tree, and the files panel
   ccr_pie     the pie menu: picks an action by direction, knows no editor
   ccr_lang    every text the window shows, and the language packs
   ccr_theme   every colour, and the theme files
@@ -437,6 +469,9 @@ ccratch file.c --no-animations           blocks just jump into place
   file too: undo everything and the file saves byte for byte as it was
 - Right or middle mouse drag: pan the canvas
 - Mouse wheel: zoom around the cursor
+- Click a goto arrow: travel to its other end
+- Click an operator: swap it for another
+- Ctrl+P: the files panel; Ctrl+Tab: the next open file
 - Home: back to the start of the file at 100%
 - F5: reload the file from disk (throws away unsaved moves; the title shows
   `*` while there are any)

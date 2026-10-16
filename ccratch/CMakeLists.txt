@@ -33,6 +33,7 @@ add_library(ccratch_core OBJECT
     src/ccr_codegen.c
     src/ccr_config.c
     src/ccr_editor.c
+    src/ccr_files.c
     src/ccr_lang.c
     src/ccr_parse.c
     src/ccr_palette.c

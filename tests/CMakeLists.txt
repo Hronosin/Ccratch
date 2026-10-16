@@ -110,6 +110,10 @@ add_test(NAME lang_template
                  ${CCR_BIN} ${CMAKE_CURRENT_BINARY_DIR}/en.lang)
 
 # goto arrows find their labels, and notice when one leaves.
+add_executable(test_files test_files.c)
+target_link_libraries(test_files PRIVATE ccratch_core)
+add_test(NAME project_files COMMAND test_files)
+
 add_executable(test_palette test_palette.c)
 target_link_libraries(test_palette PRIVATE ccratch_core)
 if(XVFB_RUN)

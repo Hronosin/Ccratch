@@ -7,6 +7,7 @@
 #include "ccr_gui.h"
 #include "ccr_lang.h"
 #include "ccr_parse.h"
+#include "ccr_files.h"
 #include "ccr_palette.h"
 #include "ccr_pie.h"
 #include "ccr_theme.h"
@@ -444,6 +445,176 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     return true;
 }
 
+/* ------------------------------------------------- several open files */
+
+/* The file on screen is `doc`; the others wait here, undo history,
+ * unsaved changes and view included. */
+#define MAX_OPEN 12
+
+typedef struct stashed_doc {
+    ccr_document *doc;
+    ccr_canvas    view;
+} stashed_doc;
+
+static stashed_doc g_stash[MAX_OPEN];
+static int         g_stash_n;
+
+/* The project the files panel shows. */
+static ccr_files       g_files;
+static ccr_files_panel g_fpanel;
+static bool            g_files_open;
+static float           g_files_t;   /* 0 hidden .. 1 out */
+
+static bool same_file(const char *a, const char *b) { return ccr_files_same(a, b); }
+
+/* A file from outside the project starts a new project, in its folder. */
+static void project_follow(const char *path)
+{
+    if (g_files.root[0] && ccr_files_inside(g_files.root, path))
+        return;
+    char dir[CCR_FILES_PATH];
+    ccr_files_dir_of(path, dir, (int)sizeof dir);
+    ccr_files_scan(&g_files, dir, path);
+}
+
+/* Shows `path`: brought back if it is open already, opened if not. The
+ * file on screen waits with the others. */
+static bool switch_to(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const char *path,
+                      const ccr_options *opt)
+{
+    if (doc->loaded && same_file(doc->path, path))
+        return true;
+    for (int i = 0; i < g_stash_n; ++i) {
+        if (!same_file(g_stash[i].doc->path, path))
+            continue;
+        stashed_doc back = g_stash[i];
+        if (doc->loaded) {
+            /* swap: the one on screen takes its place in the line */
+            ccr_document *slot = back.doc;
+            ccr_document tmp = *slot;
+            *slot = *doc;
+            g_stash[i].view = *cv;
+            *doc = tmp;
+        } else {
+            *doc = *back.doc;
+            free(back.doc);
+            g_stash[i] = g_stash[--g_stash_n];
+        }
+        *cv = back.view;
+        g_glide.active = false;
+        return true;
+    }
+
+    ccr_document *waiting = NULL;
+    if (doc->loaded) {
+        if (g_stash_n == MAX_OPEN) {
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_FILES_TOO_MANY);
+            doc->has_errors = true;
+            return false;
+        }
+        waiting = malloc(sizeof *waiting);
+        if (!waiting)
+            return false;
+        *waiting = *doc;
+        g_stash[g_stash_n++] = (stashed_doc){ waiting, *cv };
+        doc->loaded = false;   /* its editor belongs to the stash now */
+    }
+    if (!document_open(doc, path, opt)) {
+        if (waiting) {   /* could not read it: the old one comes back */
+            char status[sizeof doc->status];
+            snprintf(status, sizeof status, "%s", doc->status);
+            *doc = *waiting;
+            *cv = g_stash[--g_stash_n].view;
+            free(waiting);
+            snprintf(doc->status, sizeof doc->status, "%s", status);
+            doc->has_errors = true;
+        }
+        return false;
+    }
+    project_follow(path);
+    fit_view(cv, doc, viewport, 1.0f);
+    return true;
+}
+
+/* Closes `path`, saved or not (the panel asked twice if not). */
+static void close_file(ccr_document *doc, ccr_canvas *cv, const char *path)
+{
+    if (doc->loaded && same_file(doc->path, path)) {
+        document_close(doc);
+        if (g_stash_n > 0) {   /* the one that waited longest... no: the last one left */
+            stashed_doc back = g_stash[--g_stash_n];
+            *doc = *back.doc;
+            *cv = back.view;
+            free(back.doc);
+        }
+        g_glide.active = false;
+        return;
+    }
+    for (int i = 0; i < g_stash_n; ++i)
+        if (same_file(g_stash[i].doc->path, path)) {
+            document_close(g_stash[i].doc);
+            free(g_stash[i].doc);
+            for (int k = i + 1; k < g_stash_n; ++k)
+                g_stash[k - 1] = g_stash[k];
+            --g_stash_n;
+            return;
+        }
+}
+
+/* Ctrl+Tab: the file that has waited longest comes, this one waits. */
+static void next_file(ccr_document *doc, ccr_canvas *cv)
+{
+    if (g_stash_n == 0 || !doc->loaded)
+        return;
+    stashed_doc first = g_stash[0];
+    for (int k = 1; k < g_stash_n; ++k)
+        g_stash[k - 1] = g_stash[k];
+    ccr_document tmp = *first.doc;
+    *first.doc = *doc;
+    g_stash[g_stash_n - 1] = (stashed_doc){ first.doc, *cv };
+    *doc = tmp;
+    *cv = first.view;
+    g_glide.active = false;
+}
+
+/* What the panel shows as open. */
+static int open_files(const ccr_document *doc, ccr_open_file *out)
+{
+    int n = 0;
+    if (doc->loaded)
+        out[n++] = (ccr_open_file){ doc->path, ccr_editor_modified(&doc->ed), true };
+    for (int i = 0; i < g_stash_n; ++i)
+        out[n++] = (ccr_open_file){ g_stash[i].doc->path, ccr_editor_modified(&g_stash[i].doc->ed),
+                                    false };
+    return n;
+}
+
+static void files_toggle(const ccr_document *doc)
+{
+    g_files_open = !g_files_open;
+    if (g_files_open) {   /* fresh: files may have come and gone */
+        const char *root = g_files.root[0] ? g_files.root : ".";
+        char dir[CCR_FILES_PATH];
+        if (!g_files.root[0] && doc->loaded) {
+            ccr_files_dir_of(doc->path, dir, (int)sizeof dir);
+            root = dir;
+        }
+        char keep[CCR_FILES_PATH];
+        snprintf(keep, sizeof keep, "%s", root);
+        ccr_files_scan(&g_files, keep, doc->loaded ? doc->path : NULL);
+    }
+}
+
+#define FILES_W 290.0f
+
+static ccr_rect files_area(int w, int h)
+{
+    const float k = g_files_t;
+    const float e = 1.0f - (1.0f - k) * (1.0f - k) * (1.0f - k);
+    return (ccr_rect){ (float)w - FILES_W * e, TOPBAR_H, FILES_W,
+                       (float)h - TOPBAR_H - STATUSBAR_H };
+}
+
 static bool write_file(const char *path, const char *data, size_t len)
 {
     FILE *f = fopen(path, "wb");
@@ -840,6 +1011,10 @@ static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
     if (ccr_gui_button((ccr_rect){ (float)width - 174.0f - tw, 7.0f, tw, 26.0f },
                        ccr_tr(CCR_T_THEME_BUTTON), bs) && !modal)
         next_theme(doc);
+    const float fw = ccr_gui_text_width(ccr_tr(CCR_T_FILES_TITLE), 16.0f) + 24.0f;
+    if (ccr_gui_button((ccr_rect){ (float)width - 222.0f - tw - fw, 7.0f, fw, 26.0f },
+                       ccr_tr(CCR_T_FILES_TITLE), g_files_open ? button_style(true) : bs) && !modal)
+        files_toggle(doc);
     if (ccr_gui_button((ccr_rect){ (float)width - 214.0f - tw, 7.0f, 32.0f, 26.0f }, "?", bs) &&
         !modal) {
         ev->open = true;   /* the agreement again, to read it at leisure */
@@ -1102,9 +1277,10 @@ int ccr_run(int argc, char **argv)
     ccr_rect viewport = { PALETTE_W, TOPBAR_H, (float)ccr_gui_width() - PALETTE_W,
                           (float)ccr_gui_height() - TOPBAR_H - STATUSBAR_H };
     const float start_zoom = opt.zoom_percent > 0 ? (float)opt.zoom_percent / 100.0f : 1.0f;
-    if (opt.open)
-        document_open(&doc, opt.open, &opt);
-    fit_view(&canvas, &doc, viewport, start_zoom);
+    if (opt.open && switch_to(&doc, &canvas, viewport, opt.open, &opt))
+        fit_view(&canvas, &doc, viewport, start_zoom);
+    else
+        fit_view(&canvas, &doc, viewport, start_zoom);
 
     int frame = 0;
     char dropped[PATH_MAX_LEN];
@@ -1136,8 +1312,8 @@ int ccr_run(int argc, char **argv)
             te.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
 
-        if (ccr_gui_file_dropped(dropped, sizeof dropped) && document_open(&doc, dropped, &opt)) {
-            fit_view(&canvas, &doc, viewport, 1.0f);
+        if (ccr_gui_file_dropped(dropped, sizeof dropped) &&
+            switch_to(&doc, &canvas, viewport, dropped, &opt)) {
             te.node = CCR_NONE;
             ccr_pie_close(&pie);
             opm.open = false;
@@ -1151,9 +1327,39 @@ int ccr_run(int argc, char **argv)
 
         const ccr_vec2 m = ccr_gui_mouse();
         const ccr_vec2 world = ccr_canvas_to_world(&canvas, m);
-        const bool inside = point_in(m, viewport);
+        const bool inside = point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h)));
         const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
         const bool can_act = doc.loaded && te.node == CCR_NONE && !eula.open;
+
+        /* the files panel slides in from the right, over the canvas */
+        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_P) && !eula.open)
+            files_toggle(&doc);
+        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_TAB) && !eula.open && te.node == CCR_NONE &&
+            doc.ed.drag == CCR_DRAG_IDLE && !pie.open && !opm.open)
+            next_file(&doc, &canvas);
+        {
+            const float target = g_files_open ? 1.0f : 0.0f;
+            const float step = g_animate ? dt / 0.18f : 1.0f;
+            g_files_t += g_files_t < target ? step : -step;
+            if ((g_files_t > target) == (target > 0.5f) || !g_animate)
+                g_files_t = target;
+            if (g_files_t < 0.0f) g_files_t = 0.0f;
+        }
+        const ccr_rect files_r = files_area(w, h);
+        const bool over_files = g_files_t > 0.0f && point_in(m, files_r);
+        if (g_files_open && !eula.open && !pie.open && !opm.open && te.node == CCR_NONE &&
+            (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
+            ccr_open_file of[MAX_OPEN + 1];
+            const int nof = open_files(&doc, of);
+            char path[CCR_FILES_PATH];
+            ccr_files_event ev = ccr_files_panel_update(
+                &g_fpanel, &g_files, files_r, m, over_files ? ccr_gui_wheel() : 0.0f,
+                over_files && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), of, nof, path, (int)sizeof path);
+            if (ev == CCR_FILES_OPEN && switch_to(&doc, &canvas, viewport, path, &opt))
+                te.node = CCR_NONE;
+            else if (ev == CCR_FILES_CLOSE)
+                close_file(&doc, &canvas, path);
+        }
         if (!pie.open && !eula.open)
             ccr_palette_update(&g_palette, palette_area(h), m, ccr_gui_wheel(),
                                over_palette && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), dt);
@@ -1299,6 +1505,11 @@ int ccr_run(int argc, char **argv)
                 }
             }
         }
+        if (g_files_t > 0.0f) {
+            ccr_open_file of[MAX_OPEN + 1];
+            const int nof = open_files(&doc, of);
+            ccr_files_panel_draw(&g_fpanel, &g_files, files_area(w, h), of, nof);
+        }
         draw_topbar(w, &doc, &eula);
         draw_statusbar(w, h, &canvas, &doc);
         ccr_pie_draw(&pie);
@@ -1317,6 +1528,12 @@ int ccr_run(int argc, char **argv)
     }
 
     document_close(&doc);
+    for (int i = 0; i < g_stash_n; ++i) {
+        document_close(g_stash[i].doc);
+        free(g_stash[i].doc);
+    }
+    g_stash_n = 0;
+    ccr_files_free(&g_files);
     ccr_gui_shutdown();
     ccr_lang_reset();
     return 0;
