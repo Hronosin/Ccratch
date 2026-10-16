@@ -1180,6 +1180,14 @@ static void test_swap_operator(void)
     ccr_editor_free(&ed);
 }
 
+static uint32_t script_of(const ccr_editor *ed, ccr_node_id root)
+{
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        if (ed->scripts[i].root == root)
+            return i;
+    return 0;
+}
+
 /* A declaration from the palette, let go anywhere on the canvas. */
 static ccr_node_id declare(ccr_editor *ed, ccr_template t, float x)
 {
@@ -1292,6 +1300,50 @@ static void test_header_guard(void)
     ccr_editor_free(&ed);
 }
 
+/* Folding is a view: the block gets short, the file stays the same, and
+ * undo neither folds nor unfolds. */
+static void test_fold(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id loop = stmt(&ed, "while (b < 10)");
+    ccr_node_id fn = N(&ed, N(&ed, loop)->parent)->parent;   /* work() */
+    CHECK(ccr_editor_can_fold(&ed, loop) && ccr_editor_can_fold(&ed, fn), "while/function do not fold");
+    CHECK(!ccr_editor_can_fold(&ed, stmt(&ed, "printf(\"hello")), "a call folds");
+
+    ccr_rect open_r, shut_r;
+    ccr_editor_node_rect(&ed, loop, &open_r);
+    const ccr_rect before = ed.scripts[script_of(&ed, fn)].blocks.bounds;
+    CHECK(ccr_editor_toggle_fold(&ed, loop), "fold refused");
+    ccr_editor_node_rect(&ed, loop, &shut_r);
+    const ccr_rect after = ed.scripts[script_of(&ed, fn)].blocks.bounds;
+    CHECK(after.h < before.h, "folding the while did not make main shorter (%.0f -> %.0f)", before.h, after.h);
+    ccr_rect hidden;
+    CHECK(!ccr_editor_node_rect(&ed, stmt(&ed, "b++"), &hidden), "a folded statement is still drawn");
+    CHECK(ed.history_len == 0, "folding made an undo step");
+
+    /* an edit and its undo leave the fold alone */
+    lift_one(&ed, stmt(&ed, "do b--;"), 0);
+    ccr_editor_undo(&ed);
+    while (ccr_editor_undo(&ed))
+        ;
+    CHECK(N(&ed, loop)->flags & CCR_FLAG_COLLAPSED, "undo unfolded the while");
+    char *text = generate(&ed);
+    CHECK(text && strcmp(text, ed.ast.source) == 0, "a fold changed the file");
+    free(text);
+
+    /* a whole function folds to its hat */
+    CHECK(ccr_editor_toggle_fold(&ed, fn), "function fold refused");
+    CHECK(ed.scripts[script_of(&ed, fn)].blocks.bounds.h < 90.0f, "a folded function is %.0f tall",
+          ed.scripts[script_of(&ed, fn)].blocks.bounds.h);
+    /* reveal opens what hides a statement */
+    ccr_editor_reveal(&ed, stmt(&ed, "b++"));
+    CHECK(ccr_editor_node_rect(&ed, stmt(&ed, "b++"), &hidden), "reveal did not show b++");
+    CHECK(!(N(&ed, fn)->flags & CCR_FLAG_COLLAPSED) && !(N(&ed, loop)->flags & CCR_FLAG_COLLAPSED),
+          "reveal left a fold");
+    ccr_editor_free(&ed);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -1320,6 +1372,7 @@ int main(int argc, char **argv)
     test_swap_operator();
     test_new_declarations();
     test_header_guard();
+    test_fold();
     test_trash();
     test_delete();
     test_duplicate();

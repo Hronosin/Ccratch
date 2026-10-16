@@ -46,6 +46,8 @@ typedef struct ccr_pie {
     ccr_vec2   center;                      /* screen position */
     bool       enabled[CCR_ACTION_COUNT];
     bool       uncomment;                   /* the comment slice says "Uncomment" */
+    int        fold;                        /* the fit-view slice folds (1) or
+                                               unfolds (2) the block instead */
     ccr_action hot;                         /* where the mouse points now */
     bool       animate;                     /* pops out instead of just appearing */
     double     opened_at;                   /* ccr_gui_time() when it opened */

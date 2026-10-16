@@ -112,6 +112,9 @@ typedef struct ccr_editor {
     bool           animate;
     ccr_vec2       settle_from, settle_to;
     float          settle_t;
+    double         clock;          /* seconds of updates, for double clicks */
+    double         last_click_at;
+    ccr_node_id    last_click;
     ccr_node_id    hover_arrow;    /* the goto whose arrow is under the mouse */
     ccr_node_id    hover_far;      /* and the end a click there goes to */
     ccr_node_id    landed_first, landed_last;   /* just snapped in: a ripple */
@@ -182,6 +185,8 @@ typedef struct ccr_context {
     bool        can_duplicate;
     bool        can_comment;
     bool        commented;   /* item is currently commented out */
+    ccr_node_id fold;        /* the block a fold would fold, or CCR_NONE */
+    bool        folded;      /* and it is folded now */
 } ccr_context;
 
 ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse);
@@ -219,6 +224,13 @@ void ccr_editor_tick(ccr_editor *ed, float dt);
 /* A stack still gliding into place is put there now. Every change
  * (undo, delete, ...) does this first; call it before saving. */
 void ccr_editor_settle(ccr_editor *ed);
+
+/* Can `node` fold to one line: C blocks, functions, structs. */
+bool ccr_editor_can_fold(const ccr_editor *ed, ccr_node_id node);
+/* Folds or unfolds it. A view, not an edit: no undo step, not saved. */
+bool ccr_editor_toggle_fold(ccr_editor *ed, ccr_node_id node);
+/* Unfolds whatever hides `node`, so it can be seen (and its rect found). */
+void ccr_editor_reveal(ccr_editor *ed, ccr_node_id node);
 
 /* The goto arrow within `tolerance` (world units) of `world`, or CCR_NONE.
  * `far_end` gets the end a click there takes you to: the one further from

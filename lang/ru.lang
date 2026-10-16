@@ -59,6 +59,9 @@ pie.delete = Удалить
 pie.fit_view = В начало
 pie.undo = Отменить
 pie.duplicate = Дублировать
+pie.fold = Свернуть
+pie.unfold = Развернуть
+pie.key.double_click = двойной клик
 pie.key.click_field = клик по полю
 pie.key.delete = Del
 

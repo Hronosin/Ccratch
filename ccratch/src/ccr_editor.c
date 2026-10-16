@@ -15,6 +15,7 @@
 #define SETTLE_TIME     0.13f   /* seconds a dropped stack takes to glide in */
 #define RIPPLE_TIME     0.35f   /* and how long the ring round it lasts */
 #define ARROW_GRIP      7.0f    /* pixels from a goto arrow that still hit it */
+#define DOUBLE_CLICK    0.35    /* seconds between the clicks of a double click */
 #define HISTORY_MAX    500
 
 static const ccr_node *N(const ccr_editor *ed, ccr_node_id id) { return &ed->ast.nodes[id]; }
@@ -231,6 +232,7 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     ed->hover = ed->hover_arrow = ed->hover_far = CCR_NONE;
     ed->press_op = ed->op_request = ed->hover_op = CCR_NONE;
     ed->hover_include = ed->include_request = CCR_NONE;
+    ed->last_click = CCR_NONE;
     ed->landed_first = ed->landed_last = CCR_NONE;
     ed->rng = 0x9E3779B9u;
     if (ed->ast.node_count == 0)
@@ -743,17 +745,82 @@ ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed)
     return id;
 }
 
+/* ------------------------------------------------------------ folding */
+
+bool ccr_editor_can_fold(const ccr_editor *ed, ccr_node_id node)
+{
+    if (node >= ed->ast.node_count)
+        return false;
+    const ccr_node *n = N(ed, node);
+    switch (n->kind) {
+    case CCR_NODE_IF: case CCR_NODE_WHILE: case CCR_NODE_DO_WHILE: case CCR_NODE_FOR:
+    case CCR_NODE_SWITCH: case CCR_NODE_CASE: case CCR_NODE_DEFAULT:
+        return true;
+    case CCR_NODE_BLOCK:   /* a bare { } in a stack; not a body, not a loose root */
+        return n->parent != CCR_NONE && N(ed, n->parent)->kind == CCR_NODE_BLOCK;
+    case CCR_NODE_FUNCTION: case CCR_NODE_STRUCT: case CCR_NODE_UNION: case CCR_NODE_ENUM:
+        return (n->flags & CCR_FLAG_DEFINITION) && !(n->kind == CCR_NODE_ENUM && (n->flags & CCR_FLAG_NEW));
+    default:
+        return false;
+    }
+}
+
+/* What a click on `hit` would fold: its statement, or its script's
+ * declaration, if that folds. Not the if around a statement in its body. */
+static ccr_node_id fold_target(const ccr_editor *ed, ccr_node_id hit)
+{
+    ccr_node_id s = stack_item_of(ed, hit);
+    if (s == CCR_NONE)
+        s = script_root_of(ed, hit);
+    if (s != CCR_NONE && N(ed, s)->kind == CCR_NODE_BLOCK && (N(ed, s)->flags & CCR_FLAG_TOPLEVEL))
+        s = N(ed, s)->first_child;
+    return ccr_editor_can_fold(ed, s) ? s : CCR_NONE;
+}
+
+bool ccr_editor_toggle_fold(ccr_editor *ed, ccr_node_id node)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE || !ccr_editor_can_fold(ed, node))
+        return false;
+    ed->ast.nodes[node].flags ^= CCR_FLAG_COLLAPSED;   /* not journaled: a view */
+    forget_sizes(ed, node);
+    uint32_t i = script_index_of_root(ed, script_root_of(ed, node));
+    if (i != UINT32_MAX)
+        relayout(ed, i);
+    return true;
+}
+
+void ccr_editor_reveal(ccr_editor *ed, ccr_node_id node)
+{
+    if (node >= ed->ast.node_count)
+        return;
+    bool changed = false;
+    for (ccr_node_id a = N(ed, node)->parent; a != CCR_NONE; a = N(ed, a)->parent)
+        if (N(ed, a)->flags & CCR_FLAG_COLLAPSED) {
+            ed->ast.nodes[a].flags &= ~CCR_FLAG_COLLAPSED;
+            changed = true;
+        }
+    if (changed) {
+        uint32_t i = script_index_of_root(ed, script_root_of(ed, node));
+        if (i != UINT32_MAX)
+            relayout(ed, i);
+    }
+}
+
 /* --------------------------------------------------- block actions */
 
 ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse)
 {
-    ccr_context c = { CCR_NONE, CCR_NONE, CCR_NONE, CCR_NONE, false, false, false, false };
+    ccr_context c = { CCR_NONE, CCR_NONE, CCR_NONE, CCR_NONE, false, false, false, false,
+                      CCR_NONE, false };
     if (ed->drag != CCR_DRAG_IDLE)
         return c;
     uint32_t si;
     c.node = pick(ed, mouse, &si);
     if (c.node == CCR_NONE)
         return c;
+    c.fold = fold_target(ed, c.node);
+    c.folded = c.fold != CCR_NONE && (N(ed, c.fold)->flags & CCR_FLAG_COLLAPSED);
     if (N(ed, c.node)->kind == CCR_NODE_TEXT)
         c.text = c.node;
     c.item = stack_item_of(ed, c.node);
@@ -938,8 +1005,13 @@ bool ccr_editor_undo(ccr_editor *ed)
     if (ed->drag != CCR_DRAG_IDLE || ed->history_len == 0)
         return false;
     const ccr_change *c = &ed->history[--ed->history_len];
-    for (uint32_t i = c->node_count; i-- > 0;)
+    for (uint32_t i = c->node_count; i-- > 0;) {
+        /* folding is a view, not an edit: undo leaves it as it is */
+        const uint32_t folded = c->before[i].id < ed->ast.node_count
+                              ? N(ed, c->before[i].id)->flags & CCR_FLAG_COLLAPSED : 0;
         ccr_ast_set_links(&ed->ast, &c->before[i]);
+        ed->ast.nodes[c->before[i].id].flags = (N(ed, c->before[i].id)->flags & ~CCR_FLAG_COLLAPSED) | folded;
+    }
     for (uint32_t i = 0; i < c->node_count; ++i)   /* slots refilled: sizes change */
         forget_sizes(ed, c->before[i].id);
     /* nodes this step created (a loose stack's root) are gone again */
@@ -956,8 +1028,13 @@ bool ccr_editor_redo(ccr_editor *ed)
     if (ed->drag != CCR_DRAG_IDLE || ed->history_len == ed->history_count)
         return false;
     const ccr_change *c = &ed->history[ed->history_len++];
-    for (uint32_t i = 0; i < c->node_count; ++i)
+    for (uint32_t i = 0; i < c->node_count; ++i) {
+        /* folding is a view, not an edit: undo leaves it as it is */
+        const uint32_t folded = c->after[i].id < ed->ast.node_count
+                              ? N(ed, c->after[i].id)->flags & CCR_FLAG_COLLAPSED : 0;
         ccr_ast_set_links(&ed->ast, &c->after[i]);
+        ed->ast.nodes[c->after[i].id].flags = (N(ed, c->after[i].id)->flags & ~CCR_FLAG_COLLAPSED) | folded;
+    }
     for (uint32_t i = 0; i < c->node_count; ++i)
         forget_sizes(ed, c->after[i].id);
     restore_scripts(ed, c->scripts_after, c->na);
@@ -1316,6 +1393,7 @@ static void remove_new_decl(ccr_editor *ed, ccr_node_id d)
 
 void ccr_editor_tick(ccr_editor *ed, float dt)
 {
+    ed->clock += dt;
     if (dt > 0.0f) {
         step_particles(ed, dt);
         ed->landed_t += dt;
@@ -1383,7 +1461,16 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
     case CCR_DRAG_PRESSED: {
         if (!in->down) {
             ed->drag = CCR_DRAG_IDLE;   /* a click, not a drag */
-            if (ed->press_op != CCR_NONE)
+            /* a second click on the same block, quickly: fold or unfold it */
+            const ccr_node_id fold = fold_target(ed, ed->press_node);
+            const bool twice = fold != CCR_NONE && fold == ed->last_click &&
+                               ed->clock - ed->last_click_at < DOUBLE_CLICK && in->dt > 0.0f;
+            ed->last_click = fold;
+            ed->last_click_at = ed->clock;
+            if (twice && N(ed, ed->press_node)->kind != CCR_NODE_TEXT && ed->press_op == CCR_NONE) {
+                ed->last_click = CCR_NONE;
+                ccr_editor_toggle_fold(ed, fold);
+            } else if (ed->press_op != CCR_NONE)
                 ed->op_request = ed->press_op;
             else if (include_of(ed, ed->press_node) != CCR_NONE)
                 ed->include_request = include_of(ed, ed->press_node);
@@ -1526,6 +1613,15 @@ typedef struct jump_arrow {
 
 enum { MAX_ARROWS = 256 };
 
+/* Where `node` is drawn, or the folded block hiding it. */
+static bool shown_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *r)
+{
+    for (ccr_node_id a = node; a != CCR_NONE; a = N(ed, a)->parent)
+        if (ccr_editor_node_rect(ed, a, r))
+            return true;
+    return false;
+}
+
 /* The arrows of script `si`; shorter jumps get the lanes nearer the
  * blocks, so arrows nest like brackets instead of crossing. */
 static uint32_t script_arrows(const ccr_editor *ed, uint32_t si, jump_arrow *out)
@@ -1541,8 +1637,7 @@ static uint32_t script_arrows(const ccr_editor *ed, uint32_t si, jump_arrow *out
         ccr_node_id label;
         ccr_jump_state st = ccr_editor_jump(ed, go, &label);
         float span = 1e9f;
-        if (ccr_editor_node_rect(ed, go, &f) && label != CCR_NONE &&
-            ccr_editor_node_rect(ed, label, &t))
+        if (shown_rect(ed, go, &f) && label != CCR_NONE && shown_rect(ed, label, &t))
             span = fabsf(t.y - f.y);
         uint32_t j = na++;
         while (j > 0 && v[j - 1].span > span) {
@@ -1558,7 +1653,7 @@ static uint32_t script_arrows(const ccr_editor *ed, uint32_t si, jump_arrow *out
     uint32_t n = 0, lane = 0;
     for (uint32_t k = 0; k < na; ++k) {
         ccr_rect from;
-        if (!ccr_editor_node_rect(ed, v[k].go, &from))
+        if (!shown_rect(ed, v[k].go, &from))
             continue;
         jump_arrow *a = &out[n];
         a->go = v[k].go;
@@ -1569,8 +1664,10 @@ static uint32_t script_arrows(const ccr_editor *ed, uint32_t si, jump_arrow *out
         if (a->st != CCR_JUMP_MISSING) {
             ccr_rect to;
             const uint32_t ls = script_index_of_root(ed, script_root_of(ed, a->label));
-            if (!ccr_editor_node_rect(ed, a->label, &to) || ls == UINT32_MAX)
+            if (!shown_rect(ed, a->label, &to) || ls == UINT32_MAX)
                 continue;
+            if (to.x == from.x && to.y == from.y)
+                continue;   /* both folded away in the same block */
             /* the lane: right of both scripts, one lane per arrow */
             float right = s->pos.x + s->blocks.bounds.x + s->blocks.bounds.w;
             const ccr_script *o = &ed->scripts[ls];

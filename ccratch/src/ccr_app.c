@@ -363,6 +363,8 @@ static void fit_view_smooth(ccr_canvas *cv, const ccr_document *doc, ccr_rect vi
 static void glide_to_node(ccr_canvas *cv, ccr_document *doc, ccr_rect viewport, ccr_node_id node)
 {
     ccr_rect r;
+    if (doc->loaded)
+        ccr_editor_reveal(&doc->ed, node);   /* a label in a folded block: unfold it */
     if (!doc->loaded || !ccr_editor_node_rect(&doc->ed, node, &r))
         return;
     ccr_canvas to = *cv;
@@ -1238,7 +1240,12 @@ static void run_action(ccr_action a, const ccr_context *ctx, ccr_vec2 world,
     case CCR_ACTION_SAVE:      document_save(doc, opt); break;
     case CCR_ACTION_UNDO:      ccr_editor_undo(ed); break;
     case CCR_ACTION_REDO:      ccr_editor_redo(ed); break;
-    case CCR_ACTION_FIT_VIEW:  fit_view_smooth(cv, doc, viewport); break;
+    case CCR_ACTION_FIT_VIEW:   /* over a block that folds, that slice folds it */
+        if (ctx->fold != CCR_NONE)
+            ccr_editor_toggle_fold(ed, ctx->fold);
+        else
+            fit_view_smooth(cv, doc, viewport);
+        break;
     case CCR_ACTION_DELETE:    ccr_editor_delete(ed, ctx->target); break;
     case CCR_ACTION_DUPLICATE: ccr_editor_duplicate(ed, ctx->target, world); break;
     case CCR_ACTION_COMMENT:   ccr_editor_toggle_comment(ed, ctx->item); break;
@@ -1433,6 +1440,7 @@ int ccr_run(int argc, char **argv)
             pie_enabled(&doc.ed, &pie_ctx, en);
             pie.animate = g_animate;
             ccr_pie_open(&pie, m, en, pie_ctx.commented);
+            pie.fold = pie_ctx.fold == CCR_NONE ? 0 : pie_ctx.folded ? 2 : 1;
         }
         rmb_armed = rmb_armed && ccr_gui_mouse_down(CCR_MOUSE_RIGHT);
 

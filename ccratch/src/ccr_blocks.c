@@ -575,9 +575,49 @@ typedef struct mouth {
     const items *label_after;  /* line under this mouth, may be NULL */
 } mouth;
 
+/* How many statements there are under `id`, at any depth: what a folded
+ * block hides. */
+static uint32_t hidden_count(const layout *L, ccr_node_id id)
+{
+    uint32_t n = 0;
+    for (ccr_node_id c = N(L, id)->first_child; c != CCR_NONE; c = N(L, c)->next_sibling) {
+        if (N(L, id)->kind == CCR_NODE_BLOCK || N(L, c)->kind == CCR_NODE_FIELD ||
+            N(L, c)->kind == CCR_NODE_ENUM_CONST)
+            ++n;
+        n += hidden_count(L, c);
+    }
+    return n;
+}
+
+static bool folded(const layout *L, ccr_node_id id)
+{
+    return (N(L, id)->flags & CCR_FLAG_COLLAPSED) != 0;
+}
+
+static size2 emit_line_block(layout *L, const items *it, category cat, float x, float y,
+                             ccr_node_id owner);
+
+/* A folded C block: its head, a count of what is inside, and a do-while's
+ * foot, on one line. */
+static size2 emit_folded(layout *L, const items *head, const items *foot, category cat,
+                         float x, float y, ccr_node_id owner, float *max_w)
+{
+    items line = *head;   /* its words still point into `head`, alive meanwhile */
+    it_fmt(&line, "{ %u }", hidden_count(L, owner));
+    for (int i = 0; foot && i < foot->n && line.n < MAX_ITEMS; ++i)
+        line.v[line.n++] = foot->v[i];
+    size2 sz = emit_line_block(L, &line, cat, x, y, owner);
+    if (sz.w > *max_w)
+        *max_w = sz.w;
+    return sz;
+}
+
 static size2 emit_c_block(layout *L, const items *head, const mouth *mouths, int mouth_count,
                           category cat, float x, float y, ccr_node_id owner, float *max_w)
 {
+    if (folded(L, owner))
+        return emit_folded(L, head, mouth_count ? mouths[mouth_count - 1].label_after : NULL,
+                           cat, x, y, owner, max_w);
     float hw, hh;
     measure_items(L, head, &hw, &hh);
     hw += BLOCK_PAD_X * 2.0f;
@@ -976,6 +1016,8 @@ static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
         new_signature(L, fn, &head);
     else
         signature(L, fn, &head);
+    if (folded(L, fn))
+        it_fmt(&head, "{ %u }", hidden_count(L, fn));   /* the body is folded away */
 
     float w, h;
     measure_items(L, &head, &w, &h);
@@ -992,7 +1034,7 @@ static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
     if (w > *max_w) *max_w = w;
 
     float body_h = 0.0f;
-    for (ccr_node_id c = N(L, fn)->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
+    for (ccr_node_id c = N(L, fn)->first_child; c != CCR_NONE && !folded(L, fn); c = N(L, c)->next_sibling)
         if (N(L, c)->kind == CCR_NODE_BLOCK)
             body_h = emit_body(L, c, x, y + HAT_BUMP + h, max_w);
 
@@ -1089,7 +1131,9 @@ static size2 emit_decl_block(layout *L, ccr_node_id id, float x, float y, float 
         const char *word = n->kind == CCR_NODE_STRUCT ? "struct"
                          : n->kind == CCR_NODE_UNION  ? "union" : "enum";
         it_fmt(&head, "%s %s", word, S(L, n->name));
-        if (!(n->flags & CCR_FLAG_DEFINITION)) {
+        if ((n->flags & CCR_FLAG_DEFINITION) && folded(L, id))
+            it_fmt(&head, "{ %u }", hidden_count(L, id));
+        if (!(n->flags & CCR_FLAG_DEFINITION) || folded(L, id)) {
             sz = emit_line_block(L, &head, CAT_TYPE, x, y, id);
             break;
         }

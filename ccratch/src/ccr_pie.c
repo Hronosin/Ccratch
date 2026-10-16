@@ -53,6 +53,7 @@ void ccr_pie_open(ccr_pie *pie, ccr_vec2 center, const bool enabled[CCR_ACTION_C
     for (int i = 0; i < CCR_ACTION_COUNT; ++i)
         pie->enabled[i] = enabled[i];
     pie->uncomment = uncomment;
+    pie->fold = 0;
     pie->hot = CCR_ACTION_NONE;
     pie->opened_at = ccr_gui_time();
 }
@@ -185,6 +186,10 @@ void ccr_pie_draw(const ccr_pie *pie)
 
         const char *label = ccr_action_label(a, pie->uncomment);
         const char *hint = ccr_action_shortcut(a);
+        if (a == CCR_ACTION_FIT_VIEW && pie->fold) {   /* over a block that folds */
+            label = ccr_tr(pie->fold == 1 ? CCR_T_PIE_FOLD : CCR_T_PIE_UNFOLD);
+            hint = ccr_tr(CCR_T_PIE_KEY_DOUBLE);
+        }
         float lw = ccr_gui_text_width(label, LABEL_SIZE);
         float hw = ccr_gui_text_width(hint, HINT_SIZE);
         ccr_rect b = box_of(pie, d, lw + hw + BOX_PAD * 3.0f, out);

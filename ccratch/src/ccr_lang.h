@@ -95,6 +95,9 @@
     X(PIE_FIT_VIEW,     "pie.fit_view",          0, "Fit view")                          \
     X(PIE_UNDO,         "pie.undo",              0, "Undo")                              \
     X(PIE_DUPLICATE,    "pie.duplicate",         0, "Duplicate")                         \
+    X(PIE_FOLD,         "pie.fold",              0, "Fold")                              \
+    X(PIE_UNFOLD,       "pie.unfold",            0, "Unfold")                            \
+    X(PIE_KEY_DOUBLE,   "pie.key.double_click",  0, "double click")                      \
     X(PIE_CLICK_FIELD,  "pie.key.click_field",   0, "click field")                       \
     X(PIE_KEY_DELETE,   "pie.key.delete",        0, "Del")                               \
     /* saving refused */                                                                 \
