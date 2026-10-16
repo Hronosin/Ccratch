@@ -159,6 +159,9 @@ typedef struct ccr_node {
                                             label, field): no reporter goes in */
 #define CCR_FLAG_WORD_TYPE   (1u << 16)  /* the same for its parent's type */
 #define CCR_FLAG_WORD        (CCR_FLAG_WORD_NAME | CCR_FLAG_WORD_TYPE)
+#define CCR_FLAG_TOPLEVEL    (1u << 17)  /* loose root holding one declaration
+                                            for the file itself (a function,
+                                            a struct, an #include...) */
 
 typedef enum ccr_diag_severity {
     CCR_DIAG_NOTE,

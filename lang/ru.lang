@@ -17,6 +17,16 @@ palette.variables = Переменные
 palette.pointers = Указатели
 palette.functions = Функции
 palette.types = Типы
+palette.declarations = Файл
+files.new_file = + файл
+files.new_dir = + папка
+files.name_file = Имя файла (.c или .h), Enter — создать
+files.name_dir = Имя папки, Enter — создать
+files.exists = %s уже есть
+files.created = %s создан
+files.cannot = Не получилось создать %s
+include.not_found = %s нет ни рядом, ни в проекте
+include.system = %s — системный заголовок, его не открываю
 empty.title = Перетащи сюда .c файл
 empty.hint = (или: ccratch file.c)
 

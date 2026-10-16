@@ -43,12 +43,22 @@
     X(FILES_EMPTY,      "files.empty",           0, "no .c or .h files here")            \
     X(FILES_UNSAVED,    "files.unsaved",         0, "Not saved! Click x again to close anyway") \
     X(FILES_TOO_MANY,   "files.too_many",        0, "Too many files open: close one first") \
+    X(FILES_NEW_FILE,   "files.new_file",        0, "+ file")                            \
+    X(FILES_NEW_DIR,    "files.new_dir",         0, "+ folder")                          \
+    X(FILES_NAME_FILE,  "files.name_file",       0, "File name (.c or .h), Enter to create") \
+    X(FILES_NAME_DIR,   "files.name_dir",        0, "Folder name, Enter to create")      \
+    X(FILES_EXISTS,     "files.exists",          0, "%s is already there")               \
+    X(FILES_CREATED,    "files.created",         0, "%s created")                        \
+    X(FILES_CANNOT,     "files.cannot",          0, "Could not create %s")               \
+    X(INCLUDE_NOT_FOUND, "include.not_found",    0, "%s is neither next to this file nor in the project") \
+    X(INCLUDE_SYSTEM,   "include.system",        0, "%s is a system header, not opening it") \
     X(CAT_CONTROL,      "palette.control",       0, "Control")                           \
     X(CAT_OPERATORS,    "palette.operators",     0, "Operators")                         \
     X(CAT_VARIABLES,    "palette.variables",     0, "Variables")                         \
     X(CAT_POINTERS,     "palette.pointers",      0, "Pointers")                          \
     X(CAT_FUNCTIONS,    "palette.functions",     0, "Functions")                         \
     X(CAT_TYPES,        "palette.types",         0, "Types")                             \
+    X(CAT_DECLS,        "palette.declarations",  0, "File")                              \
     X(EMPTY_TITLE,      "empty.title",           0, "Drop a .c file here")               \
     X(EMPTY_HINT,       "empty.hint",            0, "(or: ccratch file.c)")              \
     /* status bar, left: what just happened */                                           \

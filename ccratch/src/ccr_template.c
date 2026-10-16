@@ -112,6 +112,11 @@ const char *const *ccr_op_choices(const char *op, bool unary, int *count)
     return NULL;
 }
 
+bool ccr_template_is_toplevel(ccr_template t)
+{
+    return ccr_template_category(t) == CCR_TCAT_DECLS;
+}
+
 bool ccr_template_is_reporter(ccr_template t)
 {
     switch (t) {
@@ -272,6 +277,64 @@ ccr_node_id ccr_template_build(ccr_ast *ast, ccr_template t, ccr_node_id parent)
     case CCR_TEMPLATE_SIZEOF_EXPR:
         s = ccr_template_node(ast, CCR_NODE_SIZEOF, parent);
         ccr_template_text(ast, s, "");
+        break;
+
+    /* the file's own declarations; a function's return type is its `type`,
+     * its parameters one text slot ("int a, char *b") */
+    case CCR_TEMPLATE_FUNC_DEF:
+    case CCR_TEMPLATE_FUNC_DECL:
+        s = ccr_template_node(ast, CCR_NODE_FUNCTION, parent);
+        word(ast, s, CCR_FLAG_WORD_TYPE, "int");
+        word(ast, s, CCR_FLAG_WORD_NAME, "name");
+        ccr_template_text(ast, s, "void");
+        if (t == CCR_TEMPLATE_FUNC_DEF && s != CCR_NONE) {
+            ast->nodes[s].flags |= CCR_FLAG_DEFINITION;
+            ccr_node_id body = ccr_template_node(ast, CCR_NODE_BLOCK, s);
+            if (body != CCR_NONE)
+                ast->nodes[body].close_indent = ccr_ast_intern(ast, "");
+        }
+        break;
+    case CCR_TEMPLATE_STRUCT_DEF:
+        s = ccr_template_node(ast, CCR_NODE_STRUCT, parent);
+        word(ast, s, CCR_FLAG_WORD_NAME, "point");
+        if (s != CCR_NONE) {
+            ast->nodes[s].flags |= CCR_FLAG_DEFINITION;
+            ccr_template_node(ast, CCR_NODE_BLOCK, s);   /* fields: declarations go in */
+        }
+        break;
+    case CCR_TEMPLATE_ENUM_DEF:
+        s = ccr_template_node(ast, CCR_NODE_ENUM, parent);
+        word(ast, s, CCR_FLAG_WORD_NAME, "mood");
+        ccr_template_text(ast, s, "CALM, ANGRY");
+        if (s != CCR_NONE)
+            ast->nodes[s].flags |= CCR_FLAG_DEFINITION;
+        break;
+    case CCR_TEMPLATE_TYPEDEF:
+        s = ccr_template_node(ast, CCR_NODE_TYPEDEF, parent);
+        word(ast, s, CCR_FLAG_WORD_TYPE, "struct point");
+        word(ast, s, CCR_FLAG_WORD_NAME, "point");
+        break;
+    case CCR_TEMPLATE_GLOBAL_VAR:
+        s = ccr_template_node(ast, CCR_NODE_VAR, parent);
+        word(ast, s, CCR_FLAG_WORD_TYPE, "static int");
+        word(ast, s, CCR_FLAG_WORD_NAME, "counter");
+        if (s != CCR_NONE) {
+            ccr_node_id v = ccr_template_text(ast, s, "0");
+            if (v != CCR_NONE)
+                ast->nodes[v].flags |= CCR_FLAG_INIT;
+        }
+        break;
+    case CCR_TEMPLATE_INCLUDE_SYS:
+    case CCR_TEMPLATE_INCLUDE_LOC:
+        s = ccr_template_node(ast, CCR_NODE_INCLUDE, parent);
+        word(ast, s, CCR_FLAG_WORD_NAME, t == CCR_TEMPLATE_INCLUDE_SYS ? "stdio.h" : "util.h");
+        if (t == CCR_TEMPLATE_INCLUDE_SYS && s != CCR_NONE)
+            ast->nodes[s].flags |= CCR_FLAG_ANGLED;
+        break;
+    case CCR_TEMPLATE_DEFINE:
+        s = ccr_template_node(ast, CCR_NODE_MACRO_DEFINE, parent);
+        word(ast, s, CCR_FLAG_WORD_NAME, "SIZE");
+        ccr_template_text(ast, s, "64");
         break;
 
     case CCR_TEMPLATE_COUNT:

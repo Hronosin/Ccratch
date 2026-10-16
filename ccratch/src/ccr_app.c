@@ -410,7 +410,22 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     if (!ccr_ast_init(&ast))
         return false;
 
-    if (!ccr_parse_file(path, opt->clang_args, opt->clang_arg_count, &ast)) {
+    /* the project's own headers are found without -I: its root and its
+     * include/ are searched, after whatever was given on the command line */
+    enum { MAX_ARGS = 64 };
+    const char *args[MAX_ARGS + 2];
+    int nargs = 0;
+    for (int i = 0; i < opt->clang_arg_count && nargs < MAX_ARGS; ++i)
+        args[nargs++] = opt->clang_args[i];
+    static char inc_root[CCR_FILES_PATH + 3], inc_dir[CCR_FILES_PATH + 11];
+    char project[CCR_FILES_PATH];
+    ccr_files_project_of(path, project, (int)sizeof project);
+    snprintf(inc_root, sizeof inc_root, "-I%s", project);
+    snprintf(inc_dir, sizeof inc_dir, "-I%s/include", project);
+    args[nargs++] = inc_root;
+    args[nargs++] = inc_dir;
+
+    if (!ccr_parse_file(path, args, nargs, &ast)) {
         ccr_ast_free(&ast);
         ccr_trf(doc->status, sizeof doc->status, CCR_T_CANNOT_READ, base_name(path));
         doc->has_errors = true;
@@ -473,7 +488,7 @@ static void project_follow(const char *path)
     if (g_files.root[0] && ccr_files_inside(g_files.root, path))
         return;
     char dir[CCR_FILES_PATH];
-    ccr_files_dir_of(path, dir, (int)sizeof dir);
+    ccr_files_project_of(path, dir, (int)sizeof dir);
     ccr_files_scan(&g_files, dir, path);
 }
 
@@ -577,6 +592,26 @@ static void next_file(ccr_document *doc, ccr_canvas *cv)
     g_glide.active = false;
 }
 
+/* A click on an #include: the header it names, opened next to this file. */
+static void open_include(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, ccr_node_id inc,
+                         const ccr_options *opt)
+{
+    const ccr_node *n = &doc->ed.ast.nodes[inc];
+    char name[512], path[CCR_FILES_PATH], from[sizeof doc->path];
+    snprintf(name, sizeof name, "%s", ccr_ast_str(&doc->ed.ast, n->name));
+    snprintf(from, sizeof from, "%s", doc->path);
+    const bool angled = (n->flags & CCR_FLAG_ANGLED) != 0;
+    if (!g_files.root[0])
+        project_follow(from);
+    if (ccr_files_find_include(&g_files, from, name, path, (int)sizeof path)) {
+        switch_to(doc, cv, viewport, path, opt);
+        return;
+    }
+    ccr_trf(doc->status, sizeof doc->status, angled ? CCR_T_INCLUDE_SYSTEM : CCR_T_INCLUDE_NOT_FOUND,
+            name);
+    doc->has_errors = !angled;
+}
+
 /* What the panel shows as open. */
 static int open_files(const ccr_document *doc, ccr_open_file *out)
 {
@@ -596,7 +631,7 @@ static void files_toggle(const ccr_document *doc)
         const char *root = g_files.root[0] ? g_files.root : ".";
         char dir[CCR_FILES_PATH];
         if (!g_files.root[0] && doc->loaded) {
-            ccr_files_dir_of(doc->path, dir, (int)sizeof dir);
+            ccr_files_project_of(doc->path, dir, (int)sizeof dir);
             root = dir;
         }
         char keep[CCR_FILES_PATH];
@@ -1329,7 +1364,8 @@ int ccr_run(int argc, char **argv)
         const ccr_vec2 world = ccr_canvas_to_world(&canvas, m);
         const bool inside = point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h)));
         const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
-        const bool can_act = doc.loaded && te.node == CCR_NONE && !eula.open;
+        const bool can_act = doc.loaded && te.node == CCR_NONE && !eula.open &&
+                             g_fpanel.naming == CCR_NAMING_NONE;   /* typing a new file's name */
 
         /* the files panel slides in from the right, over the canvas */
         if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_P) && !eula.open)
@@ -1470,6 +1506,9 @@ int ccr_run(int argc, char **argv)
             ccr_node_id req = ccr_editor_take_edit_request(&doc.ed);
             if (req != CCR_NONE)
                 start_editing(&te, &doc.ed, req);
+            ccr_node_id incq = ccr_editor_take_include_request(&doc.ed);
+            if (incq != CCR_NONE)
+                open_include(&doc, &canvas, viewport, incq, &opt);
             ccr_node_id opq = ccr_editor_take_op_request(&doc.ed);
             if (opq != CCR_NONE)
                 op_menu_open(&opm, &doc.ed, opq, m);
@@ -1509,6 +1548,15 @@ int ccr_run(int argc, char **argv)
             ccr_open_file of[MAX_OPEN + 1];
             const int nof = open_files(&doc, of);
             ccr_files_panel_draw(&g_fpanel, &g_files, files_area(w, h), of, nof);
+            if (g_files_open && te.node == CCR_NONE && !eula.open && !pie.open && !opm.open) {
+                char made[CCR_FILES_PATH];
+                if (ccr_files_panel_tools(&g_fpanel, &g_files, files_area(w, h), button_style(false),
+                                          made, (int)sizeof made) == CCR_FILES_OPEN &&
+                    switch_to(&doc, &canvas, viewport, made, &opt))
+                    te.node = CCR_NONE;
+            } else {
+                g_fpanel.naming = CCR_NAMING_NONE;
+            }
         }
         draw_topbar(w, &doc, &eula);
         draw_statusbar(w, h, &canvas, &doc);

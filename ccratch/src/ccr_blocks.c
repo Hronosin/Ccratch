@@ -959,10 +959,23 @@ static void signature(const layout *L, ccr_node_id fn, items *it)
     it_fmt(it, "%s", buf);
 }
 
+/* A new function's head: return type, name and parameters, all typed in. */
+static void new_signature(const layout *L, ccr_node_id fn, items *it)
+{
+    it_expr(it, word_of(L, fn, CCR_FLAG_WORD_TYPE));
+    it_expr(it, word_of(L, fn, CCR_FLAG_WORD_NAME));
+    it_text(it, "(");
+    it_expr(it, operand(L, fn, 0));
+    it_text(it, ")");
+}
+
 static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
 {
     items head = { .n = 0, .used = 0 };
-    signature(L, fn, &head);
+    if (N(L, fn)->flags & CCR_FLAG_NEW)
+        new_signature(L, fn, &head);
+    else
+        signature(L, fn, &head);
 
     float w, h;
     measure_items(L, &head, &w, &h);
@@ -986,11 +999,75 @@ static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
     return (size2){ *max_w, HAT_BUMP + h + body_h };
 }
 
+/* A new declaration from the palette: its names, types and values are
+ * fields to type into. False if `id` is not one. */
+static bool emit_new_decl(layout *L, ccr_node_id id, float x, float y, float *max_w, size2 *sz)
+{
+    const ccr_node *n = N(L, id);
+    if (!(n->flags & CCR_FLAG_NEW))
+        return false;
+    items head = { .n = 0, .used = 0 };
+    const ccr_node_id name = word_of(L, id, CCR_FLAG_WORD_NAME);
+    switch (n->kind) {
+    case CCR_NODE_INCLUDE: {
+        const bool angled = (n->flags & CCR_FLAG_ANGLED) != 0;
+        it_text(&head, "#include");
+        it_text(&head, angled ? "<" : "\"");
+        it_expr(&head, name);
+        it_text(&head, angled ? ">" : "\"");
+        *sz = emit_line_block(L, &head, CAT_PREPROC, x, y, id);
+        return true;
+    }
+    case CCR_NODE_MACRO_DEFINE:
+        it_text(&head, "#define");
+        it_expr(&head, name);
+        it_expr(&head, operand(L, id, 0));
+        *sz = emit_line_block(L, &head, CAT_PREPROC, x, y, id);
+        return true;
+    case CCR_NODE_TYPEDEF:
+        it_text(&head, "typedef");
+        it_expr(&head, word_of(L, id, CCR_FLAG_WORD_TYPE));
+        it_expr(&head, name);
+        *sz = emit_line_block(L, &head, CAT_TYPE, x, y, id);
+        return true;
+    case CCR_NODE_ENUM:
+        it_text(&head, "enum");
+        it_expr(&head, name);
+        it_text(&head, "{");
+        it_expr(&head, operand(L, id, 0));
+        it_text(&head, "}");
+        *sz = emit_line_block(L, &head, CAT_TYPE, x, y, id);
+        return true;
+    case CCR_NODE_STRUCT:
+    case CCR_NODE_UNION: {
+        /* a C block: the fields are declarations dropped into its mouth */
+        it_text(&head, n->kind == CCR_NODE_STRUCT ? "struct" : "union");
+        it_expr(&head, name);
+        mouth m = { operand(L, id, 0), NULL };
+        *sz = emit_c_block(L, &head, &m, 1, CAT_TYPE, x, y, id, max_w);
+        return true;
+    }
+    case CCR_NODE_FUNCTION:   /* a prototype; a definition is a hat */
+        it_text(&head, "declare");
+        new_signature(L, id, &head);
+        *sz = emit_line_block(L, &head, CAT_CALL, x, y, id);
+        return true;
+    default:
+        return false;
+    }
+}
+
 static size2 emit_decl_block(layout *L, ccr_node_id id, float x, float y, float *max_w)
 {
     const ccr_node *n = N(L, id);
     items head = { .n = 0, .used = 0 };
     size2 sz;
+
+    if (emit_new_decl(L, id, x, y, max_w, &sz)) {
+        if (sz.w > *max_w)
+            *max_w = sz.w;
+        return sz;
+    }
 
     switch (n->kind) {
     case CCR_NODE_INCLUDE:
@@ -1132,6 +1209,14 @@ bool ccr_blocks_build_script(ccr_blocks *out, const ccr_ast *ast, ccr_node_id ro
     if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_REPORTER)) {
         if (n->first_child != CCR_NONE)
             emit_expr(&L, n->first_child, 0.0f, 0.0f);
+    } else if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_TOPLEVEL)) {
+        /* a declaration for the file, on its way there from the palette */
+        const ccr_node_id d = n->first_child;
+        if (d != CCR_NONE && N(&L, d)->kind == CCR_NODE_FUNCTION &&
+            (N(&L, d)->flags & CCR_FLAG_DEFINITION))
+            emit_hat(&L, d, 0.0f, 0.0f, &w);
+        else if (d != CCR_NONE)
+            emit_decl_block(&L, d, 0.0f, 0.0f, &w);
     } else if (n->kind == CCR_NODE_BLOCK && (n->flags & CCR_FLAG_LOOSE))
         emit_stack(&L, n->first_child, 0.0f, 0.0f, &w);
     else if (n->kind == CCR_NODE_FUNCTION && (n->flags & CCR_FLAG_DEFINITION))

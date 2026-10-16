@@ -61,9 +61,11 @@ static int compare_child(const void *a, const void *b)
     return strcmp(x->name, y->name);
 }
 
-/* Adds what is under `dir` that holds sources; false if nothing did. */
-static bool scan_dir(ccr_files *f, const char *dir, int depth)
+/* Adds what is under `dir` that holds sources; false if nothing did.
+ * `*empty`: there is nothing in it at all (a folder just made: shown). */
+static bool scan_dir(ccr_files *f, const char *dir, int depth, bool *empty)
 {
+    *empty = depth < CCR_FILES_DEPTH;   /* too deep to look: not "empty" */
     if (depth >= CCR_FILES_DEPTH)
         return false;
     DIR *d = opendir(dir);
@@ -72,7 +74,10 @@ static bool scan_dir(ccr_files *f, const char *dir, int depth)
     child *kids = NULL;
     int n = 0, cap = 0;
     for (struct dirent *e = readdir(d); e; e = readdir(d)) {
-        if (e->d_name[0] == '.' || strlen(e->d_name) >= sizeof kids[0].name)
+        if (e->d_name[0] == '.')
+            continue;
+        *empty = false;
+        if (strlen(e->d_name) >= sizeof kids[0].name)
             continue;
         char full[CCR_FILES_PATH];
         if (snprintf(full, sizeof full, "%s/%s", dir, e->d_name) >= (int)sizeof full)
@@ -106,7 +111,8 @@ static bool scan_dir(ccr_files *f, const char *dir, int depth)
         const int at = f->count;
         if (!push(f, &e))
             break;
-        if (e.dir && !scan_dir(f, e.path, depth + 1)) {
+        bool hollow;
+        if (e.dir && !scan_dir(f, e.path, depth + 1, &hollow) && !hollow) {
             f->count = at;   /* a folder with no code in it: not worth a row */
             continue;
         }
@@ -168,7 +174,8 @@ bool ccr_files_scan(ccr_files *f, const char *root, const char *focus)
     f->root[rn] = '\0';
     f->count = 0;
     f->truncated = false;
-    scan_dir(f, f->root, 0);
+    bool hollow;
+    scan_dir(f, f->root, 0, &hollow);
 
     char focus_full[FULL_PATH] = "";
     if (focus && !realpath(focus, focus_full))
@@ -196,6 +203,150 @@ void ccr_files_free(ccr_files *f)
     f->count = f->cap = 0;
 }
 
+/* ------------------------------------------------------------ creating */
+
+static bool bad_name(const char *name)
+{
+    return !*name || strchr(name, '/') || strcmp(name, ".") == 0 || strcmp(name, "..") == 0 ||
+           strlen(name) > 120;
+}
+
+static bool exists(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+ccr_create_result ccr_files_create_file(const char *dir, const char *name, char *out, int cap)
+{
+    char clean[128];
+    snprintf(clean, sizeof clean, "%s", name);
+    /* no spaces around it */
+    char *s = clean;
+    while (*s == ' ')
+        ++s;
+    for (char *e = s + strlen(s); e > s && e[-1] == ' ';)
+        *--e = '\0';
+    if (bad_name(s))
+        return CCR_CREATE_BAD_NAME;
+    char file[136];
+    snprintf(file, sizeof file, "%s%s", s, strchr(s, '.') ? "" : ".c");
+
+    if (snprintf(out, (size_t)cap, "%s/%s", dir, file) >= cap)
+        return CCR_CREATE_BAD_NAME;
+    if (exists(out))
+        return CCR_CREATE_EXISTS;
+
+    const size_t n = strlen(file);
+    const bool header = n > 2 && strcmp(file + n - 2, ".h") == 0;
+    char text[512];
+    if (header) {
+        /* util.h -> UTIL_H */
+        char guard[136];
+        size_t g = 0;
+        for (const char *c = file; *c && g + 1 < sizeof guard; ++c)
+            guard[g++] = (*c >= 'a' && *c <= 'z') ? (char)(*c - 'a' + 'A')
+                       : ((*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9')) ? *c : '_';
+        guard[g] = '\0';
+        snprintf(text, sizeof text, "#ifndef %s\n#define %s\n\n#endif\n", guard, guard);
+    } else {
+        /* util.c next to util.h: it includes it */
+        char stem[136], sibling[CCR_FILES_PATH + 140];
+        snprintf(stem, sizeof stem, "%s", file);
+        char *dot = strrchr(stem, '.');
+        if (dot)
+            *dot = '\0';
+        snprintf(sibling, sizeof sibling, "%s/%s.h", dir, stem);
+        if (exists(sibling))
+            snprintf(text, sizeof text, "/* %s */\n#include \"%s.h\"\n", file, stem);
+        else
+            snprintf(text, sizeof text, "/* %s */\n", file);
+    }
+    FILE *f = fopen(out, "wx");   /* never over a file that appeared meanwhile */
+    if (!f)
+        return exists(out) ? CCR_CREATE_EXISTS : CCR_CREATE_FAILED;
+    bool ok = fputs(text, f) >= 0;
+    ok = fclose(f) == 0 && ok;
+    return ok ? CCR_CREATED : CCR_CREATE_FAILED;
+}
+
+ccr_create_result ccr_files_create_dir(const char *dir, const char *name, char *out, int cap)
+{
+    char clean[128];
+    snprintf(clean, sizeof clean, "%s", name);
+    char *s = clean;
+    while (*s == ' ')
+        ++s;
+    for (char *e = s + strlen(s); e > s && e[-1] == ' ';)
+        *--e = '\0';
+    if (bad_name(s))
+        return CCR_CREATE_BAD_NAME;
+    if (snprintf(out, (size_t)cap, "%s/%s", dir, s) >= cap)
+        return CCR_CREATE_BAD_NAME;
+    if (exists(out))
+        return CCR_CREATE_EXISTS;
+    return mkdir(out, 0755) == 0 ? CCR_CREATED : CCR_CREATE_FAILED;
+}
+
+void ccr_files_project_of(const char *path, char *out, int cap)
+{
+    static const char *const marks[] = { ".git", "CMakeLists.txt", "Makefile", "makefile",
+                                         "meson.build", "compile_commands.json" };
+    char dir[FULL_PATH];
+    ccr_files_dir_of(path, dir, (int)sizeof dir);
+    char d[FULL_PATH];
+    snprintf(d, sizeof d, "%s", dir);
+    for (int up = 0; up < 6 && d[0]; ++up) {
+        for (size_t i = 0; i < sizeof marks / sizeof marks[0]; ++i) {
+            char probe[FULL_PATH + 32];
+            snprintf(probe, sizeof probe, "%s/%s", d, marks[i]);
+            if (exists(probe)) {
+                snprintf(out, (size_t)cap, "%s", d);
+                return;
+            }
+        }
+        char *slash = strrchr(d, '/');
+        if (!slash || slash == d)
+            break;
+        *slash = '\0';
+    }
+    snprintf(out, (size_t)cap, "%s", dir);
+}
+
+bool ccr_files_find_include(const ccr_files *f, const char *from, const char *name,
+                            char *out, int cap)
+{
+    if (!*name)
+        return false;
+    char dir[CCR_FILES_PATH];
+    ccr_files_dir_of(from, dir, (int)sizeof dir);
+    if (snprintf(out, (size_t)cap, "%s/%s", dir, name) < cap && exists(out))
+        return true;
+    /* src/x.c including "x.h" from ../include: the usual layout */
+    char d[CCR_FILES_PATH];
+    snprintf(d, sizeof d, "%s", dir);
+    for (int up = 0; up < 4; ++up) {
+        char *slash = strrchr(d, '/');
+        if (!slash || slash == d)
+            break;
+        *slash = '\0';
+        if (snprintf(out, (size_t)cap, "%s/include/%s", d, name) < cap && exists(out))
+            return true;
+        if (snprintf(out, (size_t)cap, "%s/%s", d, name) < cap && exists(out))
+            return true;
+    }
+    const size_t n = strlen(name);
+    for (int i = 0; i < f->count; ++i) {
+        const char *p = f->v[i].path;
+        const size_t len = strlen(p);
+        if (!f->v[i].dir && len > n && strcmp(p + len - n, name) == 0 && p[len - n - 1] == '/') {
+            snprintf(out, (size_t)cap, "%s", p);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool ccr_files_visible(const ccr_files *f, int i)
 {
     int need = f->v[i].depth;   /* the nearest folder above at each shallower depth */
@@ -212,6 +363,7 @@ bool ccr_files_visible(const ccr_files *f, int i)
 /* -------------------------------------------------------------- panel */
 
 #define HEADER_H 38.0f
+#define TOOLS_W  136.0f   /* "+ file" "+ folder" in the header */
 #define INDENT   16.0f
 #define TEXT     17.0f
 
@@ -276,8 +428,10 @@ ccr_files_event ccr_files_panel_update(ccr_files_panel *p, ccr_files *f, ccr_rec
             return CCR_FILES_NOTHING;
         if (f->v[i].dir) {
             f->v[i].expanded = !f->v[i].expanded;
+            snprintf(p->target, sizeof p->target, "%s", f->v[i].path);   /* new files go here */
             return CCR_FILES_NOTHING;
         }
+        ccr_files_dir_of(f->v[i].path, p->target, (int)sizeof p->target);
         snprintf(path_out, (size_t)cap, "%s", f->v[i].path);
         if (p->hot_close) {
             /* unsaved work: the first click only warns */
@@ -311,7 +465,9 @@ void ccr_files_panel_draw(const ccr_files_panel *p, const ccr_files *f, ccr_rect
     ccr_gui_text(ccr_tr(CCR_T_FILES_TITLE), area.x + 12.0f, area.y + 10.0f, 17.0f,
                  ccr_th(CCR_C_PALETTE_TEXT));
     const float tw = ccr_gui_text_width(ccr_tr(CCR_T_FILES_TITLE), 17.0f);
+    ccr_gui_clip_begin((ccr_rect){ area.x, area.y, area.w - TOOLS_W - 8.0f, HEADER_H });
     ccr_gui_text(root, area.x + 22.0f + tw, area.y + 12.0f, 14.0f, ccr_th(CCR_C_HINT));
+    ccr_gui_clip_end();
 
     ccr_gui_clip_begin((ccr_rect){ area.x, area.y + HEADER_H, area.w, area.h - HEADER_H });
     if (f->count == 0)
@@ -332,6 +488,9 @@ void ccr_files_panel_draw(const ccr_files_panel *p, const ccr_files *f, ccr_rect
             ccr_gui_rect_rounded((ccr_rect){ r.x + 4, r.y + 2, r.w - 8, r.h - 4 }, 0.3f,
                                  with_alpha(ccr_th(CCR_C_BUTTON_HOVER), 0xC0u));
 
+        if (e->dir && p->target[0] && strcmp(p->target, e->path) == 0)   /* new files go here */
+            ccr_gui_rect_rounded((ccr_rect){ r.x + 4, r.y + r.h - 4, r.w - 8, 2 }, 1.0f,
+                                 with_alpha(ccr_th(CCR_C_GLOW), 0xC0u));
         if (e->dir) {
             /* a little triangle: pointing right closed, down open */
             const ccr_color c = ccr_th(CCR_C_PALETTE_TEXT);
@@ -379,4 +538,87 @@ void ccr_files_panel_draw(const ccr_files_panel *p, const ccr_files *f, ccr_rect
             size -= 0.5f;
         ccr_gui_text(msg, box.x + 8.0f, box.y + (box.h - size) * 0.5f, size, 0xFFFFFFFFu);
     }
+}
+
+/* -------------------------------------------------- making new files */
+
+static void note(ccr_files_panel *p, bool bad, ccr_text what, const char *name)
+{
+    ccr_trf(p->note, sizeof p->note, what, name);
+    p->note_bad = bad;
+    p->note_at = ccr_gui_time();
+}
+
+ccr_files_event ccr_files_panel_tools(ccr_files_panel *p, ccr_files *f, ccr_rect area,
+                                      const ccr_button_style *style, char *path_out, int cap)
+{
+    ccr_files_event ev = CCR_FILES_NOTHING;
+    /* the target must still be in this project */
+    if (!p->target[0] || !ccr_files_inside(f->root, p->target))
+        snprintf(p->target, sizeof p->target, "%s", f->root);
+
+    const char *lf = ccr_tr(CCR_T_FILES_NEW_FILE), *ld = ccr_tr(CCR_T_FILES_NEW_DIR);
+    const float wf = ccr_gui_text_width(lf, 14.0f) + 16.0f, wd = ccr_gui_text_width(ld, 14.0f) + 16.0f;
+    const float x = area.x + area.w - 8.0f - wd - 6.0f - wf;
+    if (ccr_gui_button((ccr_rect){ x, area.y + 8.0f, wf, 24.0f }, lf, style)) {
+        p->naming = CCR_NAMING_FILE;
+        p->name[0] = '\0';
+        ccr_gui_textbox_reset();
+    }
+    if (ccr_gui_button((ccr_rect){ x + wf + 6.0f, area.y + 8.0f, wd, 24.0f }, ld, style)) {
+        p->naming = CCR_NAMING_DIR;
+        p->name[0] = '\0';
+        ccr_gui_textbox_reset();
+    }
+
+    if (p->naming != CCR_NAMING_NONE) {
+        /* the name field, at the bottom: where it goes, then what to type */
+        const ccr_rect box = { area.x + 8.0f, area.y + area.h - 92.0f, area.w - 16.0f, 84.0f };
+        ccr_gui_rect_rounded(box, 0.2f, ccr_th(CCR_C_PANEL));
+        const char *where = strrchr(p->target, '/');
+        char line[CCR_FILES_PATH + 8];
+        snprintf(line, sizeof line, "%s/",
+                 strcmp(p->target, f->root) == 0 ? "." : (where ? where + 1 : p->target));
+        ccr_gui_text(line, box.x + 10.0f, box.y + 8.0f, 14.0f, ccr_th(CCR_C_PANEL_HINT));
+        ccr_gui_text(ccr_tr(p->naming == CCR_NAMING_FILE ? CCR_T_FILES_NAME_FILE : CCR_T_FILES_NAME_DIR),
+                     box.x + 10.0f + ccr_gui_text_width(line, 14.0f) + 6.0f, box.y + 8.0f, 13.0f,
+                     ccr_th(CCR_C_PANEL_HINT));
+        if (ccr_gui_key_pressed(CCR_KEY_ESCAPE)) {
+            p->naming = CCR_NAMING_NONE;
+        } else if (ccr_gui_textbox((ccr_rect){ box.x + 8.0f, box.y + 34.0f, box.w - 16.0f, 34.0f },
+                                   p->name, (int)sizeof p->name, 19.0f)) {
+            const bool file = p->naming == CCR_NAMING_FILE;
+            p->naming = CCR_NAMING_NONE;
+            if (p->name[0]) {
+                char made[CCR_FILES_PATH];
+                ccr_create_result r = file ? ccr_files_create_file(p->target, p->name, made, (int)sizeof made)
+                                           : ccr_files_create_dir(p->target, p->name, made, (int)sizeof made);
+                const char *base = strrchr(made, '/') ? strrchr(made, '/') + 1 : made;
+                if (r == CCR_CREATED) {
+                    note(p, false, CCR_T_FILES_CREATED, base);
+                    ccr_files_scan(f, f->root, made);
+                    if (file) {
+                        snprintf(path_out, (size_t)cap, "%s", made);
+                        ev = CCR_FILES_OPEN;
+                    } else {
+                        for (int i = 0; i < f->count; ++i)   /* open it: it is where you are now */
+                            if (strcmp(f->v[i].path, made) == 0)
+                                f->v[i].expanded = true;
+                        snprintf(p->target, sizeof p->target, "%s", made);
+                    }
+                } else {
+                    note(p, true, r == CCR_CREATE_EXISTS ? CCR_T_FILES_EXISTS : CCR_T_FILES_CANNOT,
+                         r == CCR_CREATE_BAD_NAME ? p->name : base);
+                }
+            }
+        }
+    } else if (p->note[0] && ccr_gui_time() - p->note_at < 3.0) {
+        const ccr_rect box = { area.x + 8.0f, area.y + area.h - 44.0f, area.w - 16.0f, 36.0f };
+        ccr_gui_rect_rounded(box, 0.25f, p->note_bad ? ccr_th(CCR_C_ERROR) : ccr_th(CCR_C_OK));
+        float size = 15.0f;
+        while (size > 10.0f && ccr_gui_text_width(p->note, size) > box.w - 16.0f)
+            size -= 0.5f;
+        ccr_gui_text(p->note, box.x + 8.0f, box.y + (box.h - size) * 0.5f, size, 0xFFFFFFFFu);
+    }
+    return ev;
 }

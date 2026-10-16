@@ -24,6 +24,7 @@ static const ccr_text g_cat_names[CCR_TCAT_COUNT] = {
     [CCR_TCAT_POINTERS]  = CCR_T_CAT_POINTERS,
     [CCR_TCAT_FUNCTIONS] = CCR_T_CAT_FUNCTIONS,
     [CCR_TCAT_TYPES]     = CCR_T_CAT_TYPES,
+    [CCR_TCAT_DECLS]     = CCR_T_CAT_DECLS,
 };
 
 static const ccr_theme_cat g_cat_colors[CCR_TCAT_COUNT] = {
@@ -33,6 +34,7 @@ static const ccr_theme_cat g_cat_colors[CCR_TCAT_COUNT] = {
     [CCR_TCAT_POINTERS]  = CCR_CAT_POINTER,
     [CCR_TCAT_FUNCTIONS] = CCR_CAT_CALL,
     [CCR_TCAT_TYPES]     = CCR_CAT_TYPE,
+    [CCR_TCAT_DECLS]     = CCR_CAT_EVENT,   /* the hat's colour: where code starts */
 };
 
 /* Halfway between two colours (the flyout: between palette and canvas). */
@@ -105,6 +107,8 @@ bool ccr_palette_init(ccr_palette *p)
             p->ast.nodes[root].flags |= CCR_FLAG_LOOSE;
             if (ccr_template_is_reporter((ccr_template)t))
                 p->ast.nodes[root].flags |= CCR_FLAG_REPORTER;
+            if (ccr_template_is_toplevel((ccr_template)t))
+                p->ast.nodes[root].flags |= CCR_FLAG_TOPLEVEL;
             ccr_node_id made = ccr_template_build(&p->ast, (ccr_template)t, root);
             if (made == CCR_NONE)
                 goto oom;

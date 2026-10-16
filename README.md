@@ -23,6 +23,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 12: themes, as files, and four of them to start with.
 - Step 13: the palette grows up: six categories, operators, variables, pointers, switch, casts.
 - Step 14: goto arrows you can travel along, operators you can swap, several files open at once.
+- Step 15: whole files from blocks: functions, structs, headers with guards, new files and folders.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -76,6 +77,14 @@ and next to it every block, drawn as the real thing:
 | **Pointers** | `&a`, `*p`, `a[i]`, `s.field`, `p->field`, `NULL` |
 | **Functions** | a **code line** for anything else, `f(...)` as a statement and as a reporter, `printf`, `malloc`, `free` |
 | **Types** | `(int) a`, `sizeof(int)`, `sizeof a` |
+| **File** | a function (a hat to stack its body under), a prototype, `struct` (declarations go in its mouth), `enum`, `typedef`, a global, `#include <...>`, `#include "..."`, `#define` |
+
+Blocks from **File** are the file's own: let one go anywhere on the canvas
+and it joins the file where C wants it, after the last one of its kind:
+`#include`s, then `#define`s, types, prototypes, globals, functions. In a
+header that is inside its guard, before the `#endif`. On the canvas it
+stays where you dropped it. Made by mistake? Delete it, or throw it back
+onto the palette.
 
 Statements snap into stacks; the rounded and pointy ones are reporters
 and go into slots, like Scratch's. Drag one out and it behaves like any
@@ -307,6 +316,29 @@ undo history, its unsaved changes and where you were looking, and comes
 back exactly so. Open files have an × to close them; one with unsaved
 changes asks you to click it twice. Ctrl+Tab goes round the open files.
 
+The project is the nearest folder above the file with `.git`,
+`CMakeLists.txt`, a `Makefile`, `meson.build` or `compile_commands.json`
+in it (else the file's own folder). Its root and its `include/` are
+handed to clang, so the project's own headers are found without `-I`.
+
+**+ file** and **+ folder** make new ones in the folder you last clicked
+(it is underlined). A file with no extension becomes `.c`. A new header
+comes with its guard:
+
+```c
+#ifndef VEC_H
+#define VEC_H
+
+#endif
+```
+
+and a new `vec.c` next to a `vec.h` starts with `#include "vec.h"`. The
+new file opens straight away, ready for blocks from **File**.
+
+Click an `#include "..."` block (not its name field, that is for typing)
+and the header opens: next to the file, in `../include/`, or anywhere in
+the project. `<stdio.h>` and friends are the system's, and stay closed.
+
 ![the files panel: goto.c on screen, tour.c open with unsaved changes](docs/files.png)
 
 ## Saving
@@ -472,6 +504,7 @@ ccratch file.c --no-animations           blocks just jump into place
 - Click a goto arrow: travel to its other end
 - Click an operator: swap it for another
 - Ctrl+P: the files panel; Ctrl+Tab: the next open file
+- Click an `#include "..."`: open that header
 - Home: back to the start of the file at 100%
 - F5: reload the file from disk (throws away unsaved moves; the title shows
   `*` while there are any)

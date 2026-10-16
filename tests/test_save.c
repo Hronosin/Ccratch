@@ -807,8 +807,12 @@ static void test_all_templates_spawn(void)
         CHECK(ed.scripts[ed.script_count - 1].blocks.bounds.w > 10.0f, "%s: drawn as nothing",
               ccr_template_label((ccr_template)t));
     }
-    CHECK(ccr_editor_loose_count(&ed) == CCR_TEMPLATE_COUNT, "%u loose, expected %d",
-          ccr_editor_loose_count(&ed), CCR_TEMPLATE_COUNT);
+    int toplevel = 0;
+    for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t)
+        toplevel += ccr_template_is_toplevel((ccr_template)t);
+    /* declarations for the file join it; everything else lies loose */
+    CHECK(ccr_editor_loose_count(&ed) == (uint32_t)(CCR_TEMPLATE_COUNT - toplevel),
+          "%u loose, expected %d", ccr_editor_loose_count(&ed), CCR_TEMPLATE_COUNT - toplevel);
     ccr_editor_free(&ed);
 }
 
@@ -1176,6 +1180,118 @@ static void test_swap_operator(void)
     ccr_editor_free(&ed);
 }
 
+/* A declaration from the palette, let go anywhere on the canvas. */
+static ccr_node_id declare(ccr_editor *ed, ccr_template t, float x)
+{
+    const ccr_vec2 where = { x, -3000.0f };
+    CHECK(ccr_editor_spawn(ed, t, where), "%s: spawn refused", ccr_template_label(t));
+    ccr_node_id loose = ed->scripts[ed->script_count - 1].root;
+    ccr_node_id made = N(ed, loose)->first_child;
+    frame(ed, where, false, false, true);
+    CHECK(N(ed, made)->parent == 0, "%s did not join the file", ccr_template_label(t));
+    CHECK(ccr_editor_loose_count(ed) == 0, "%s left something loose", ccr_template_label(t));
+    return made;
+}
+
+/* The file's own declarations from the palette: each goes where C wants
+ * it, whatever order they are made in. */
+static void test_new_declarations(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+
+    ccr_node_id fn = declare(&ed, CCR_TEMPLATE_FUNC_DEF, 6000.0f);
+    type(&ed, word(&ed, fn, CCR_FLAG_WORD_NAME), "triple");
+    type(&ed, slot_of(&ed, fn, 0), "int x");
+    ccr_vec2 at = { 0, 0 };
+    snap_at(&ed, CCR_SNAP_FIRST, slot_of(&ed, fn, 1), &at);
+    type(&ed, slot_of(&ed, spawn_at(&ed, CCR_TEMPLATE_RETURN, at), 0), "x * 3");
+
+    ccr_node_id proto = declare(&ed, CCR_TEMPLATE_FUNC_DECL, 6600.0f);
+    type(&ed, word(&ed, proto, CCR_FLAG_WORD_NAME), "triple");
+    type(&ed, slot_of(&ed, proto, 0), "int x");
+
+    ccr_node_id st = declare(&ed, CCR_TEMPLATE_STRUCT_DEF, 7200.0f);
+    snap_at(&ed, CCR_SNAP_FIRST, slot_of(&ed, st, 0), &at);
+    ccr_node_id fx = spawn_at(&ed, CCR_TEMPLATE_DECL, at);
+    snap_at(&ed, CCR_SNAP_AFTER, fx, &at);
+    type(&ed, word(&ed, spawn_at(&ed, CCR_TEMPLATE_DECL, at), CCR_FLAG_WORD_NAME), "y");
+
+    declare(&ed, CCR_TEMPLATE_TYPEDEF, 7800.0f);
+    declare(&ed, CCR_TEMPLATE_ENUM_DEF, 8400.0f);
+    declare(&ed, CCR_TEMPLATE_GLOBAL_VAR, 9000.0f);
+    declare(&ed, CCR_TEMPLATE_INCLUDE_SYS, 9600.0f);
+    type(&ed, word(&ed, declare(&ed, CCR_TEMPLATE_INCLUDE_SYS, 10200.0f), CCR_FLAG_WORD_NAME), "stdlib.h");
+    declare(&ed, CCR_TEMPLATE_DEFINE, 10800.0f);
+    /* one made and thrown away again: gone from the file */
+    ccr_node_id gone = declare(&ed, CCR_TEMPLATE_DEFINE, 11400.0f);
+    CHECK(ccr_editor_delete(&ed, gone), "a new declaration cannot be deleted");
+
+    char err[256];
+    char *text = save_to(&ed, "declarations.c", err, sizeof err);
+    CHECK(text != NULL, "save failed: %s", err);
+    if (text) {
+        CHECK(strncmp(text, "/* save.c: everything saving must keep intact */\n"
+                            "#include <stdio.h>\n#include <stdio.h>\n#include <stdlib.h>\n\n"
+                            "#define TWICE(x) ((x) * 2)\n#define SIZE 64\n", 150) == 0,
+              "the top of the file:\n%.300s", text);
+        check_order(text, "#define SIZE 64", "struct point {\n    int x;\n    int y;\n};");
+        check_order(text, "struct point {", "typedef struct point point;");
+        check_order(text, "typedef struct point point;", "enum mood { CALM, ANGRY };");
+        check_order(text, "enum mood", "int triple(int x);");
+        check_order(text, "int triple(int x);", "static int counter = 0;   // file-level comment");
+        check_order(text, "static int counter = 0;   // file-level", "static int counter = 0;\n");
+        check_order(text, "static int counter = 0;\n", "int work(int n)");
+        check_order(text, "    return 0;\n}\n", "\nint triple(int x)\n{\n    return x * 3;\n}\n");
+        CHECK(count(text, "#define SIZE") == 1, "the deleted #define is still there");
+        free(text);
+    }
+    /* counter twice does not compile; the rest is checked by the order */
+    while (ccr_editor_undo(&ed))
+        ;
+    char *back = generate(&ed);
+    CHECK(back && strcmp(back, ed.ast.source) == 0, "undoing the declarations did not restore the file");
+    free(back);
+    ccr_editor_free(&ed);
+}
+
+/* A header: new declarations go inside its guard, before the #endif. */
+static void test_header_guard(void)
+{
+    char path[1024];
+    snprintf(path, sizeof path, "%s/guarded.h", g_outdir);
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        CHECK(false, "cannot write %s", path);
+        return;
+    }
+    fputs("#ifndef GUARDED_H\n#define GUARDED_H\n\n#endif\n", f);
+    fclose(f);
+
+    ccr_ast ast;
+    ccr_ast_init(&ast);
+    CHECK(ccr_parse_file(path, NULL, 0, &ast), "the header did not parse");
+    ccr_editor ed;
+    CHECK(ccr_editor_init(&ed, &ast), "editor init failed");
+    ccr_node_id proto = declare(&ed, CCR_TEMPLATE_FUNC_DECL, 6000.0f);
+    type(&ed, word(&ed, proto, CCR_FLAG_WORD_NAME), "twice");
+    type(&ed, slot_of(&ed, proto, 0), "int x");
+    declare(&ed, CCR_TEMPLATE_STRUCT_DEF, 6600.0f);
+    declare(&ed, CCR_TEMPLATE_INCLUDE_SYS, 7200.0f);
+
+    char err[256];
+    char *text = save_to(&ed, "guarded_out.h", err, sizeof err);
+    CHECK(text != NULL, "save failed: %s", err);
+    if (text) {
+        CHECK(strcmp(text, "#ifndef GUARDED_H\n#define GUARDED_H\n#include <stdio.h>\n\n"
+                           "struct point {\n};\n\nint twice(int x);\n\n#endif\n") == 0,
+              "the header came out as:\n%s", text);
+        free(text);
+        check_compiles("guarded_out.h");
+    }
+    ccr_editor_free(&ed);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -1202,6 +1318,8 @@ int main(int argc, char **argv)
     test_new_blocks();
     test_all_templates_spawn();
     test_swap_operator();
+    test_new_declarations();
+    test_header_guard();
     test_trash();
     test_delete();
     test_duplicate();

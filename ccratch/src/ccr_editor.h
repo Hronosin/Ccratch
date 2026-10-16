@@ -98,6 +98,8 @@ typedef struct ccr_editor {
     ccr_node_id    press_op;       /* pressed on an operator that can change */
     ccr_node_id    op_request;     /* clicked one: the app shows the choices */
     ccr_node_id    hover_op;       /* an operator under the mouse */
+    ccr_node_id    hover_include;  /* an #include under the mouse: a click opens it */
+    ccr_node_id    include_request;
     ccr_rect       hover_op_rect;  /* world */
 
     /* a duplicate stuck to the mouse: dropped on the next click */
@@ -144,6 +146,10 @@ uint32_t ccr_editor_loose_count(const ccr_editor *ed);
  * Call while the mouse button is down; normal updates carry on the drag.
  */
 bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse);
+/* A declaration from the palette that is now part of the file (it can
+ * be deleted again; the file's own ones cannot, yet). */
+bool ccr_editor_is_new_decl(const ccr_editor *ed, ccr_node_id id);
+
 /* The same, held by `grab` (where in the block, in block units). */
 bool ccr_editor_spawn_held(ccr_editor *ed, ccr_template t, ccr_vec2 mouse, ccr_vec2 grab);
 
@@ -156,6 +162,9 @@ ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed);
 /* An operator was clicked (a + b, x += 1, !ok...): which node, or
  * CCR_NONE. Its choices are ccr_op_choices(). */
 ccr_node_id ccr_editor_take_op_request(ccr_editor *ed);
+
+/* An #include was clicked (not its name field): the app opens the file. */
+ccr_node_id ccr_editor_take_include_request(ccr_editor *ed);
 
 /* Swaps the operator of `node` (one undo step); saving prints it anew,
  * with parentheses if the new one binds differently. */

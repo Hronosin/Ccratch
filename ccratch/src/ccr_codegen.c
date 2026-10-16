@@ -701,6 +701,82 @@ static void print_new(gen *g, ccr_node_id id, unsigned depth)
             puts_(g, ")");
         }
         goto expression_end;
+    /* the file's own declarations */
+    case CCR_NODE_INCLUDE:
+        if (!filled(g, id, name))
+            break;
+        puts_(g, "#include ");
+        puts_(g, (n->flags & CCR_FLAG_ANGLED) ? "<" : "\"");
+        puts_(g, name);
+        puts_(g, (n->flags & CCR_FLAG_ANGLED) ? ">" : "\"");
+        break;
+    case CCR_NODE_MACRO_DEFINE: {
+        if (!filled(g, id, name))
+            break;
+        puts_(g, "#define ");
+        puts_(g, name);
+        const ccr_node_id v = arg(g, id, 0);
+        if (v != CCR_NONE && *ccr_ast_str(g->ast, N(g, v)->name)) {
+            puts_(g, " ");
+            emit(g, v, depth + 1);
+        }
+        break;
+    }
+    case CCR_NODE_TYPEDEF:
+        if (!filled(g, id, type) || !filled(g, id, name))
+            break;
+        puts_(g, "typedef ");
+        puts_(g, type);
+        puts_(g, " ");
+        puts_(g, name);
+        puts_(g, ";");
+        break;
+    case CCR_NODE_ENUM: {
+        if (!filled(g, id, name))
+            break;
+        puts_(g, "enum ");
+        puts_(g, name);
+        puts_(g, " { ");
+        const ccr_node_id v = arg(g, id, 0);
+        if (v != CCR_NONE)
+            emit(g, v, depth + 1);
+        puts_(g, " };");
+        break;
+    }
+    case CCR_NODE_STRUCT:
+    case CCR_NODE_UNION:
+        if (!filled(g, id, name))
+            break;
+        puts_(g, n->kind == CCR_NODE_STRUCT ? "struct " : "union ");
+        puts_(g, name);
+        puts_(g, " ");
+        body(g, arg(g, id, 0), depth);
+        puts_(g, ";");
+        break;
+    case CCR_NODE_FUNCTION: {
+        if (!filled(g, id, type) || !filled(g, id, name))
+            break;
+        puts_(g, type);
+        if (type[strlen(type) - 1] != '*')
+            puts_(g, " ");
+        puts_(g, name);
+        puts_(g, "(");
+        const ccr_node_id params = arg(g, id, 0);
+        if (params != CCR_NONE && N(g, params)->kind == CCR_NODE_TEXT)
+            puts_(g, ccr_ast_str(g->ast, N(g, params)->name));   /* f() is fine too */
+        else if (params != CCR_NONE)
+            emit(g, params, depth + 1);
+        puts_(g, ")");
+        const ccr_node_id fbody = arg(g, id, 1);
+        if (n->flags & CCR_FLAG_DEFINITION) {
+            puts_(g, "\n");
+            body(g, fbody, depth);
+        } else {
+            puts_(g, ";");
+        }
+        break;
+    }
+
     case CCR_NODE_REF:
         puts_(g, name);
     expression_end:
@@ -776,6 +852,20 @@ static void emit(gen *g, ccr_node_id id, unsigned depth)
     for (uint32_t i = 0; i < count && g->ok; ++i) {
         const ccr_node *k = N(g, kids[i]);
         const bool dirty = has_dirty(g, kids[i], 0);
+        if (n->kind == CCR_NODE_TRANSLATION_UNIT && (k->flags & CCR_FLAG_NEW) &&
+            k->place_b == k->place_e && k->place_b >= cur) {
+            /* a declaration from the palette: on lines of its own, here */
+            put_src(g, cur, k->place_b);
+            cur = k->place_b;
+            const bool directive = k->kind == CCR_NODE_INCLUDE || k->kind == CCR_NODE_MACRO_DEFINE;
+            if (g->len > 0 && g->buf[g->len - 1] != '\n')
+                puts_(g, "\n");
+            if (!directive && g->len > 1 && !(g->buf[g->len - 1] == '\n' && g->buf[g->len - 2] == '\n'))
+                puts_(g, "\n");   /* a blank line before a function or a type */
+            print_new(g, kids[i], depth + 1);
+            puts_(g, "\n");
+            continue;
+        }
         if (lives_in_gaps(k->kind) || k->place_e <= k->place_b) {
             if (dirty)
                 fail(g, ccr_tr(CCR_T_GEN_LOST), k->line);

@@ -23,6 +23,7 @@ static void begin_change(ccr_editor *ed);
 static void find_snap(ccr_editor *ed);
 static void poof_node(ccr_editor *ed, ccr_node_id node);
 static void poof_script(ccr_editor *ed, uint32_t si);
+static void remove_new_decl(ccr_editor *ed, ccr_node_id d);
 static void commit_change(ccr_editor *ed);
 static void forget_sizes(ccr_editor *ed, ccr_node_id id);
 static ccr_node_id new_node(ccr_editor *ed, ccr_node_kind kind, ccr_node_id parent);
@@ -229,6 +230,7 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     ed->edit_request = CCR_NONE;
     ed->hover = ed->hover_arrow = ed->hover_far = CCR_NONE;
     ed->press_op = ed->op_request = ed->hover_op = CCR_NONE;
+    ed->hover_include = ed->include_request = CCR_NONE;
     ed->landed_first = ed->landed_last = CCR_NONE;
     ed->rng = 0x9E3779B9u;
     if (ed->ast.node_count == 0)
@@ -602,6 +604,8 @@ bool ccr_editor_spawn_held(ccr_editor *ed, ccr_template t, ccr_vec2 mouse, ccr_v
     ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE;
     if (ccr_template_is_reporter(t))
         ed->ast.nodes[loose].flags |= CCR_FLAG_REPORTER;
+    if (ccr_template_is_toplevel(t))
+        ed->ast.nodes[loose].flags |= CCR_FLAG_TOPLEVEL;
     if (ccr_template_build(&ed->ast, t, loose) == CCR_NONE || ed->journal.oom ||
         !push_script(ed, loose, mouse)) {
         commit_change(ed);
@@ -678,6 +682,23 @@ static ccr_node_id op_under(const ccr_editor *ed, ccr_vec2 world, ccr_rect *rect
     return node;
 }
 
+/* The #include a click on `hit` opens: its block, not its name field. */
+static ccr_node_id include_of(const ccr_editor *ed, ccr_node_id hit)
+{
+    if (hit == CCR_NONE || (N(ed, hit)->flags & CCR_FLAG_WORD))
+        return CCR_NONE;
+    const ccr_node_id root = script_root_of(ed, hit);
+    return root != CCR_NONE && N(ed, root)->kind == CCR_NODE_INCLUDE &&
+           *ccr_ast_str(&ed->ast, N(ed, root)->name) ? root : CCR_NONE;
+}
+
+ccr_node_id ccr_editor_take_include_request(ccr_editor *ed)
+{
+    ccr_node_id id = ed->include_request;
+    ed->include_request = CCR_NONE;
+    return id;
+}
+
 ccr_node_id ccr_editor_take_op_request(ccr_editor *ed)
 {
     ccr_node_id id = ed->op_request;
@@ -745,6 +766,9 @@ ccr_context ccr_editor_context(const ccr_editor *ed, ccr_vec2 mouse)
         if (is_loose_root(ed, root) && N(ed, root)->first_child != CCR_NONE) {
             c.item = c.target = N(ed, root)->first_child;
             c.can_delete = true;
+        } else if (ccr_editor_is_new_decl(ed, root)) {
+            c.item = c.target = root;   /* made here: it may go again */
+            c.can_delete = true;
         }
         return c;
     }
@@ -775,6 +799,12 @@ bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
     ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE)
         return false;
+    if (ccr_editor_is_new_decl(ed, item)) {
+        begin_change(ed);
+        remove_new_decl(ed, item);
+        commit_change(ed);
+        return true;
+    }
     if (!is_stack_item(ed, item)) {
         /* an expression in a slot: the slot stays, empty */
         if (item >= ed->ast.node_count || !expr_movable(ed, item))
@@ -952,6 +982,8 @@ static void find_snap(ccr_editor *ed)
     if (!is_loose_root(ed, d->root))
         return;   /* functions and structs do not snap into stacks */
 
+    if (N(ed, d->root)->flags & CCR_FLAG_TOPLEVEL)
+        return;   /* a declaration for the file finds its own place there */
     const bool reporter = (N(ed, d->root)->flags & CCR_FLAG_REPORTER) != 0;
     float best = SNAP_RADIUS * SNAP_RADIUS;
     for (uint32_t i = 0; i < ed->script_count; ++i) {
@@ -1157,6 +1189,131 @@ static void finish_drop(ccr_editor *ed)
     commit_change(ed);
 }
 
+/* ------------------------------------------- declarations for the file */
+
+/* Where a kind of declaration goes in a C file, top to bottom. */
+static int decl_rank(const ccr_node *n)
+{
+    switch (n->kind) {
+    case CCR_NODE_INCLUDE:      return 0;
+    case CCR_NODE_MACRO_DEFINE: return 1;
+    case CCR_NODE_STRUCT: case CCR_NODE_UNION: case CCR_NODE_ENUM:
+    case CCR_NODE_TYPEDEF:      return 2;
+    case CCR_NODE_FUNCTION:     return (n->flags & CCR_FLAG_DEFINITION) ? 5 : 3;
+    case CCR_NODE_VAR: case CCR_NODE_DECL_GROUP: return 4;
+    default:                    return 5;
+    }
+}
+
+/* Just after the end of the line `at` is on. */
+static uint32_t after_line(const ccr_ast *a, uint32_t at)
+{
+    while (at < a->source_len && a->source[at] != '\n')
+        ++at;
+    return at < a->source_len ? at + 1 : a->source_len;
+}
+
+/* The start of the line `at` is on. */
+static uint32_t line_start(const ccr_ast *a, uint32_t at)
+{
+    if (at > a->source_len)
+        at = a->source_len;
+    while (at > 0 && a->source[at - 1] != '\n')
+        --at;
+    return at;
+}
+
+/* `#define X_H` right after `#ifndef X_H`: the guard of a header. */
+static bool is_guard(const ccr_ast *a, const ccr_node *k)
+{
+    if (k->kind != CCR_NODE_MACRO_DEFINE || (k->flags & CCR_FLAG_NEW) || k->src_b > a->source_len)
+        return false;
+    char want[256];
+    snprintf(want, sizeof want, "#ifndef %s", ccr_ast_str(a, k->name));
+    const size_t n = strlen(want);
+    /* the line before the #define's */
+    uint32_t end = line_start(a, k->src_b);
+    while (end > 0 && (a->source[end - 1] == '\n' || a->source[end - 1] == ' '))
+        --end;
+    const uint32_t start = line_start(a, end);
+    return end - start >= n && memcmp(a->source + start, want, n) == 0;
+}
+
+bool ccr_editor_is_new_decl(const ccr_editor *ed, ccr_node_id id)
+{
+    return id < ed->ast.node_count && N(ed, id)->parent != CCR_NONE &&
+           N(ed, N(ed, id)->parent)->kind == CCR_NODE_TRANSLATION_UNIT &&
+           (N(ed, id)->flags & CCR_FLAG_NEW) && !(N(ed, id)->flags & CCR_FLAG_DEAD);
+}
+
+/*
+ * A declaration from the palette was let go: it joins the file where C
+ * wants it (#include, then #define, types, prototypes, globals, then
+ * functions), after the last one of its kind or earlier. Inside a header's
+ * guard that is before the #endif, as the guard's #define comes first.
+ * On the canvas it stays where it was dropped.
+ */
+static void place_in_file(ccr_editor *ed, uint32_t si)
+{
+    const ccr_node_id loose = ed->scripts[si].root;
+    const ccr_node_id d = N(ed, loose)->first_child;
+    const ccr_vec2 pos = ed->scripts[si].pos;
+    const ccr_node_id tu = 0;
+    if (d == CCR_NONE || ed->ast.node_count == 0 || N(ed, tu)->kind != CCR_NODE_TRANSLATION_UNIT)
+        return;
+    const int rank = decl_rank(N(ed, d));
+
+    ccr_node_id anchor = CCR_NONE, first = CCR_NONE;
+    for (ccr_node_id c = N(ed, tu)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling) {
+        const ccr_node *k = N(ed, c);
+        if ((k->flags & CCR_FLAG_DEAD) || k->kind == CCR_NODE_MACRO_USE)
+            continue;
+        /* a header's guard: `#ifndef X_H` then `#define X_H` comes first */
+        const bool guard = first == CCR_NONE && is_guard(&ed->ast, k);
+        if (first == CCR_NONE)
+            first = c;
+        if (guard || decl_rank(k) <= rank)
+            anchor = c;
+    }
+
+    uint32_t at;
+    ccr_ast_unlink(&ed->ast, d);
+    if (anchor != CCR_NONE) {
+        const ccr_node *a = N(ed, anchor);
+        at = (a->flags & CCR_FLAG_NEW) ? a->place_b
+           : after_line(&ed->ast, a->ext_e > a->src_e ? a->ext_e : a->src_e);
+        ccr_ast_insert_after(&ed->ast, anchor, d);
+    } else if (first != CCR_NONE) {
+        const ccr_node *f = N(ed, first);
+        at = (f->flags & CCR_FLAG_NEW) ? f->place_b
+           : line_start(&ed->ast, f->ext_b < f->src_b && f->ext_e > f->ext_b ? f->ext_b : f->src_b);
+        ccr_ast_insert_first(&ed->ast, tu, d);
+    } else {
+        at = ed->ast.source_len;   /* an empty file */
+        ccr_ast_append(&ed->ast, tu, d);
+    }
+    ccr_ast_touch(&ed->ast, d);
+    ed->ast.nodes[d].place_b = ed->ast.nodes[d].place_e = at;
+
+    ccr_ast_touch(&ed->ast, loose);
+    ed->ast.nodes[loose].flags |= CCR_FLAG_DEAD;
+    remove_script(ed, si);
+    push_script(ed, d, pos);
+}
+
+/* A declaration from the palette taken back out of the file. */
+static void remove_new_decl(ccr_editor *ed, ccr_node_id d)
+{
+    const uint32_t si = script_index_of_root(ed, d);
+    if (si != UINT32_MAX) {
+        poof_script(ed, si);
+        remove_script(ed, si);
+    }
+    ccr_ast_unlink(&ed->ast, d);
+    ccr_ast_touch(&ed->ast, d);
+    ed->ast.nodes[d].flags |= CCR_FLAG_DEAD;
+}
+
 void ccr_editor_tick(ccr_editor *ed, float dt)
 {
     if (dt > 0.0f) {
@@ -1195,12 +1352,13 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
         ccr_editor_settle(ed);   /* grabbing something else: in it goes, now */
     }
 
-    ed->hover_arrow = ed->hover_far = ed->hover_op = CCR_NONE;
+    ed->hover_arrow = ed->hover_far = ed->hover_op = ed->hover_include = CCR_NONE;
     if (ed->drag != CCR_DRAG_MOVING) {
         uint32_t si;
         ed->hover = pick(ed, in->mouse, &si);
         if (ed->hover != CCR_NONE)
             ed->hover_op = op_under(ed, in->mouse, &ed->hover_op_rect);
+        ed->hover_include = include_of(ed, ed->hover);
         if (ed->hover == CCR_NONE)   /* blocks first; between them, arrows */
             ed->hover_arrow = ccr_editor_arrow_at(ed, in->mouse,
                                                   ARROW_GRIP / (in->zoom > 0.0f ? in->zoom : 1.0f),
@@ -1227,6 +1385,8 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
             ed->drag = CCR_DRAG_IDLE;   /* a click, not a drag */
             if (ed->press_op != CCR_NONE)
                 ed->op_request = ed->press_op;
+            else if (include_of(ed, ed->press_node) != CCR_NONE)
+                ed->include_request = include_of(ed, ed->press_node);
             else if (ed->press_node != CCR_NONE && N(ed, ed->press_node)->kind == CCR_NODE_TEXT)
                 ed->edit_request = ed->press_node;
             break;
@@ -1259,7 +1419,9 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
                 ed->drag = CCR_DRAG_SETTLING;
                 break;
             }
-            if (in->over_trash && is_loose_root(ed, root)) {
+            if (in->over_trash && ccr_editor_is_new_decl(ed, root)) {
+                remove_new_decl(ed, root);   /* a new declaration, thrown away */
+            } else if (in->over_trash && is_loose_root(ed, root)) {
                 /* thrown back onto the palette: gone (Ctrl+Z brings it back) */
                 poof_script(ed, ed->dragged);
                 ccr_ast_touch(&ed->ast, root);
@@ -1267,6 +1429,8 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
                 remove_script(ed, ed->dragged);
             } else if (ed->snap_ok) {
                 drop_into_snap(ed);
+            } else if (N(ed, root)->flags & CCR_FLAG_TOPLEVEL) {
+                place_in_file(ed, ed->dragged);
             }
             ed->snap_ok = false;
             ed->dragged = UINT32_MAX;
@@ -1612,6 +1776,15 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
         ccr_blocks_draw(&s->blocks, cv, viewport, s->pos, alpha);
     }
     draw_jumps(ed, cv);
+
+    /* an #include under the mouse: a click opens the file, underlined */
+    ccr_rect inc;
+    if (ed->hover_include != CCR_NONE && ed->drag == CCR_DRAG_IDLE &&
+        ccr_editor_node_rect(ed, ed->hover_include, &inc)) {
+        const ccr_vec2 a = ccr_canvas_to_screen(cv, (ccr_vec2){ inc.x + 10.0f, inc.y + inc.h - 7.0f });
+        const ccr_vec2 b = ccr_canvas_to_screen(cv, (ccr_vec2){ inc.x + inc.w - 10.0f, inc.y + inc.h - 7.0f });
+        ccr_gui_line(a, b, 2.0f * (cv->zoom < 1.0f ? 1.0f : cv->zoom), alpha_of(ccr_th(CCR_C_GLOW), 0xD0u));
+    }
 
     /* an operator under the mouse: a click there offers the others */
     if (ed->hover_op != CCR_NONE && ed->drag == CCR_DRAG_IDLE) {

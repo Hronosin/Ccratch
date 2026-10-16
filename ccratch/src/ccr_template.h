@@ -25,6 +25,7 @@ typedef enum ccr_tcat {
     CCR_TCAT_POINTERS,
     CCR_TCAT_FUNCTIONS,
     CCR_TCAT_TYPES,
+    CCR_TCAT_DECLS,          /* the file's own: functions, structs, #include */
     CCR_TCAT_COUNT
 } ccr_tcat;
 
@@ -87,7 +88,16 @@ typedef enum ccr_tcat {
     X(FREE,        FUNCTIONS, "free")                      \
     X(CAST,        TYPES,     "(T) a")                     \
     X(SIZEOF_TYPE, TYPES,     "sizeof(T)")                 \
-    X(SIZEOF_EXPR, TYPES,     "sizeof a")
+    X(SIZEOF_EXPR, TYPES,     "sizeof a")                  \
+    X(FUNC_DEF,    DECLS,     "int f(void) { }")           \
+    X(FUNC_DECL,   DECLS,     "int f(void);")              \
+    X(STRUCT_DEF,  DECLS,     "struct s { };")             \
+    X(ENUM_DEF,    DECLS,     "enum e { A, B };")          \
+    X(TYPEDEF,     DECLS,     "typedef T name;")           \
+    X(GLOBAL_VAR,  DECLS,     "int x = 0; (global)")       \
+    X(INCLUDE_SYS, DECLS,     "#include <...>")            \
+    X(INCLUDE_LOC, DECLS,     "#include \"...\"")          \
+    X(DEFINE,      DECLS,     "#define NAME value")
 
 typedef enum ccr_template {
 #define X(id, cat, label) CCR_TEMPLATE_##id,
@@ -101,6 +111,9 @@ ccr_tcat    ccr_template_category(ccr_template t);
 
 /* An expression (a reporter: goes into slots) rather than a statement. */
 bool        ccr_template_is_reporter(ccr_template t);
+/* A declaration for the file itself, not a statement in a function: it
+ * goes between the file's other declarations. */
+bool        ccr_template_is_toplevel(ccr_template t);
 
 /* Builds template `t` as the last child of `parent` (a Block: a stack or a
  * reporter's root). Returns the node made, or CCR_NONE if out of memory. */

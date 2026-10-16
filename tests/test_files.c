@@ -110,6 +110,58 @@ int main(void)
     ccr_files_dir_of(p1, d, (int)sizeof d);
     CHECK(strstr(d, "/src") && !strstr(d, "a.c"), "folder of a.c: %s", d);
 
+    /* making files and folders */
+    {
+        char dir[512], made[1024];
+        snprintf(dir, sizeof dir, "%s/include", g_root);
+        CHECK(ccr_files_create_file(dir, "vec.h", made, (int)sizeof made) == CCR_CREATED, "vec.h");
+        FILE *h = fopen(made, "r");
+        char buf[256] = "";
+        if (h) {
+            size_t n = fread(buf, 1, sizeof buf - 1, h);
+            buf[n] = '\0';
+            fclose(h);
+        }
+        CHECK(strcmp(buf, "#ifndef VEC_H\n#define VEC_H\n\n#endif\n") == 0, "vec.h is:\n%s", buf);
+        CHECK(ccr_files_create_file(dir, "vec", made, (int)sizeof made) == CCR_CREATED &&
+              strstr(made, "/vec.c"), "no extension: .c (%s)", made);
+        h = fopen(made, "r");
+        buf[0] = '\0';
+        if (h) {
+            size_t n = fread(buf, 1, sizeof buf - 1, h);
+            buf[n] = '\0';
+            fclose(h);
+        }
+        CHECK(strstr(buf, "#include \"vec.h\"") != NULL, "vec.c does not include its header:\n%s", buf);
+        CHECK(ccr_files_create_file(dir, "vec.h", made, (int)sizeof made) == CCR_CREATE_EXISTS,
+              "vec.h made twice");
+        CHECK(ccr_files_create_file(dir, "a/b.c", made, (int)sizeof made) == CCR_CREATE_BAD_NAME &&
+              ccr_files_create_file(dir, "  ", made, (int)sizeof made) == CCR_CREATE_BAD_NAME &&
+              ccr_files_create_dir(dir, "..", made, (int)sizeof made) == CCR_CREATE_BAD_NAME,
+              "a bad name was taken");
+        CHECK(ccr_files_create_dir(g_root, "lib", made, (int)sizeof made) == CCR_CREATED, "lib/");
+        ccr_files_scan(&f, g_root, NULL);
+        CHECK(find(&f, "lib") >= 0, "a new, empty folder does not show");
+        CHECK(find(&f, "vec.h") >= 0 && find(&f, "vec.c") >= 0, "the new files do not show");
+    }
+
+    /* includes: next to the file, then ../include, then anywhere in the project */
+    {
+        char from[512], out[1024], proj[1024];
+        snprintf(from, sizeof from, "%s/src/a.c", g_root);
+        CHECK(ccr_files_find_include(&f, from, "api.h", out, (int)sizeof out) && strstr(out, "/include/api.h"),
+              "api.h from src/ not found (%s)", out);
+        CHECK(ccr_files_find_include(&f, from, "b.c", out, (int)sizeof out) && strstr(out, "/src/b.c"),
+              "a neighbour not found");
+        CHECK(ccr_files_find_include(&f, from, "x.h", out, (int)sizeof out) && strstr(out, "/deep/x.h"),
+              "x.h from the project not found");
+        CHECK(!ccr_files_find_include(&f, from, "nope.h", out, (int)sizeof out), "a header out of thin air");
+        /* the project: the folder with the build file, not src/ */
+        touch("CMakeLists.txt");
+        ccr_files_project_of(from, proj, (int)sizeof proj);
+        CHECK(strcmp(proj, f.root) == 0, "project of src/a.c is %s, not %s", proj, f.root);
+    }
+
     ccr_files_free(&f);
     char cmd[512];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_root);
