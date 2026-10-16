@@ -28,8 +28,7 @@ typedef enum ccr_prim_kind {
     CCR_PRIM_BLOCK,   /* rounded rectangle with an outline */
     CCR_PRIM_HEX,     /* boolean reporter */
     CCR_PRIM_TEXT,
-    CCR_PRIM_TAB,     /* puzzle tab hanging under a block; rect.y = the block's bottom */
-    CCR_PRIM_DENT     /* puzzle notch cut into a block's top; rect.y = its top */
+    CCR_PRIM_TAB      /* puzzle tab hanging under a block; rect.y = the block's bottom */
 } ccr_prim_kind;
 
 typedef struct ccr_prim {
@@ -41,6 +40,7 @@ typedef struct ccr_prim {
     uint32_t  text;        /* TEXT only: offset into ccr_blocks.text */
     float     font;        /* TEXT only: size at zoom 1.0 */
     ccr_node_id node;      /* which AST node this came from */
+    bool      notch;       /* BLOCK: the puzzle notch is cut out of its top */
 } ccr_prim;
 
 typedef enum ccr_snap_kind {

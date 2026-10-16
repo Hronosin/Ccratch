@@ -1,6 +1,7 @@
 #include "ccr_blocks.h"
 #include "ccr_theme.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -622,12 +623,6 @@ static void add_tab(layout *L, float x, float bottom, ccr_color fill, ccr_color 
         .rect = { x + TAB_X, bottom, TAB_W, TAB_H }, .fill = fill, .edge = edge };
 }
 
-static void add_dent(layout *L, float x, float top, ccr_color edge, ccr_node_id node)
-{
-    push_prim(L, (ccr_prim){ .kind = CCR_PRIM_DENT, .node = node,
-        .rect = { x + TAB_X, top, TAB_W, TAB_H }, .fill = ccr_th(CCR_C_BG), .edge = edge });
-}
-
 static bool ends_flow(ccr_node_kind k)
 {
     return k == CCR_NODE_RETURN || k == CCR_NODE_BREAK || k == CCR_NODE_CONTINUE ||
@@ -646,7 +641,7 @@ static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w
     if (!L->oom && first < L->out->prim_count) {
         const ccr_prim top = L->out->prims[first];
         if (top.node == id && top.kind == CCR_PRIM_BLOCK && top.rect.x == x && top.rect.y == y) {
-            add_dent(L, x, y, top.edge, id);
+            L->out->prims[first].notch = true;   /* a real hole: what is under shows */
             if (!ends_flow(N(L, id)->kind) && N(L, id)->kind != CCR_NODE_LABEL)
                 add_tab(L, x, y + h, top.fill, top.edge, id);
         }
@@ -1073,8 +1068,7 @@ ccr_node_id ccr_blocks_hit(const ccr_blocks *b, ccr_vec2 local)
         return CCR_NONE;
     /* drawn last = on top */
     for (uint32_t i = b->prim_count; i-- > 0;)
-        if (b->prims[i].kind != CCR_PRIM_TEXT && b->prims[i].kind != CCR_PRIM_DENT &&
-            contains(b->prims[i].rect, local))
+        if (b->prims[i].kind != CCR_PRIM_TEXT && contains(b->prims[i].rect, local))
             return b->prims[i].node;
     return CCR_NONE;
 }
@@ -1083,7 +1077,7 @@ bool ccr_blocks_find(const ccr_blocks *b, ccr_node_id node, ccr_rect *out)
 {
     for (uint32_t i = 0; i < b->prim_count; ++i) {
         if (b->prims[i].node == node && b->prims[i].kind != CCR_PRIM_TEXT &&
-            b->prims[i].kind != CCR_PRIM_DENT && b->prims[i].kind != CCR_PRIM_TAB) {
+            b->prims[i].kind != CCR_PRIM_TAB) {
             *out = b->prims[i].rect;
             return true;
         }
@@ -1106,13 +1100,48 @@ static ccr_color fade(ccr_color c, float alpha)
     return (c & 0xFFFFFF00u) | (a & 0xFFu);
 }
 
+/*
+ * A block with the puzzle notch cut out of its top, as a real hole: the
+ * rounded block is drawn three times, each time clipped to one part around
+ * the notch (on whole pixels, so the parts neither overlap nor leave a
+ * gap), then the notch's walls in the outline colour. With `outline`
+ * false, one flat colour (shadows).
+ */
+static void draw_notched(ccr_rect r, float roundness, float z, float e, ccr_color edge, ccr_color fill,
+                         bool outline)
+{
+    const float x0 = floorf(r.x), x3 = ceilf(r.x + r.w), y0 = floorf(r.y), y2 = ceilf(r.y + r.h);
+    const float x1 = roundf(r.x + TAB_X * z), x2 = roundf(r.x + (TAB_X + TAB_W) * z);
+    const float y1 = roundf(r.y + TAB_H * z);
+    const ccr_rect parts[3] = {
+        { x0, y0, x1 - x0, y2 - y0 },   /* left of the notch */
+        { x2, y0, x3 - x2, y2 - y0 },   /* right of it */
+        { x1, y1, x2 - x1, y2 - y1 },   /* under it */
+    };
+    const ccr_rect inner = { r.x + e, r.y + e, r.w - e * 2.0f, r.h - e * 2.0f };
+    for (int k = 0; k < 3; ++k) {
+        if (parts[k].w <= 0.0f || parts[k].h <= 0.0f)
+            continue;
+        ccr_gui_clip_begin(parts[k]);
+        ccr_gui_rect_rounded(r, roundness, outline ? edge : fill);
+        if (outline && inner.w > 0.0f && inner.h > 0.0f)
+            ccr_gui_rect_rounded(inner, roundness, fill);
+        ccr_gui_clip_end();
+    }
+    if (outline && y1 > y0) {   /* the notch's walls and floor */
+        ccr_gui_rect((ccr_rect){ x1 - e, y0 + e, e, y1 - y0 }, edge);
+        ccr_gui_rect((ccr_rect){ x2, y0 + e, e, y1 - y0 }, edge);
+        ccr_gui_rect((ccr_rect){ x1, y1, x2 - x1, e }, edge);
+    }
+}
+
 void ccr_blocks_draw_shadow(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport,
                             ccr_vec2 offset, ccr_color color)
 {
     const float z = cv->zoom;
     for (uint32_t i = 0; i < b->prim_count; ++i) {
         const ccr_prim *p = &b->prims[i];
-        if (p->kind == CCR_PRIM_TEXT || p->kind == CCR_PRIM_DENT)
+        if (p->kind == CCR_PRIM_TEXT)
             continue;
         ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ p->rect.x + offset.x, p->rect.y + offset.y });
         ccr_rect r = { tl.x, tl.y, p->rect.w * z, p->rect.h * z };
@@ -1120,6 +1149,8 @@ void ccr_blocks_draw_shadow(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect 
             continue;
         if (p->kind == CCR_PRIM_HEX)
             ccr_gui_hex(r, color);
+        else if (p->notch)
+            draw_notched(r, p->roundness, z, 0.0f, color, color, false);
         else
             ccr_gui_rect_rounded(r, p->roundness, color);
     }
@@ -1145,6 +1176,10 @@ void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewpor
 
         switch (p->kind) {
         case CCR_PRIM_BLOCK: {
+            if (p->notch) {
+                draw_notched(r, p->roundness, z, edge, fade(p->edge, alpha), fade(p->fill, alpha), true);
+                break;
+            }
             ccr_rect inner = { r.x + edge, r.y + edge, r.w - edge * 2.0f, r.h - edge * 2.0f };
             ccr_gui_rect_rounded(r, p->roundness, fade(p->edge, alpha));
             if (inner.w > 0.0f && inner.h > 0.0f)
@@ -1168,17 +1203,6 @@ void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewpor
                                  fade(p->fill, alpha));
             ccr_gui_rect((ccr_rect){ r.x + edge, r.y - edge * 2.0f - 1.0f, r.w - edge * 2.0f,
                                      edge * 3.0f + 1.0f }, fade(p->fill, alpha));
-            break;
-        }
-        case CCR_PRIM_DENT: {
-            /* the notch: canvas colour, outlined along its sides and bottom
-             * in the block's edge colour, open at the top */
-            ccr_gui_rect_rounded((ccr_rect){ r.x - edge, r.y - edge, r.w + edge * 2.0f, r.h + edge * 2.0f },
-                                 0.7f, fade(p->edge, alpha));
-            ccr_gui_rect_rounded((ccr_rect){ r.x, r.y - edge, r.w, r.h + edge }, 0.7f,
-                                 fade(p->fill, alpha));
-            ccr_gui_rect((ccr_rect){ r.x, r.y - edge - 1.0f, r.w, edge * 2.0f + 1.0f },
-                         fade(p->fill, alpha));
             break;
         }
         case CCR_PRIM_TEXT:
