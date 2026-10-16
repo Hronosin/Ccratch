@@ -52,6 +52,22 @@
     X(FILES_CANNOT,     "files.cannot",          0, "Could not create %s")               \
     X(INCLUDE_NOT_FOUND, "include.not_found",    0, "%s is neither next to this file nor in the project") \
     X(INCLUDE_SYSTEM,   "include.system",        0, "%s is a system header, not opening it") \
+    X(LIBS_TITLE,       "libs.title",            0, "Libraries")                         \
+    X(LIBS_HEADING,     "libs.heading",          0, "A library, as blocks")              \
+    X(LIBS_EXPLAIN,     "libs.explain",          0,                                      \
+      "Its header is read for the public functions (and its .so or .a, if found, for what it really exports). They become a block pack, the file includes the header, the blocks show in the palette.") \
+    X(LIBS_IN_FILE,     "libs.in_file",          0, "This file includes them, no blocks yet") \
+    X(LIBS_HAVE,        "libs.have",             0, "Blocks made, the file does not include them") \
+    X(LIBS_NOTHING,     "libs.nothing",          0, "nothing here")                      \
+    X(LIBS_MAKE,        "libs.make",             0, "make blocks")                       \
+    X(LIBS_INCLUDE,     "libs.include",          0, "include")                           \
+    X(LIBS_ASK,         "libs.ask",              0, "Any header: SDL2/SDL.h, zlib.h, a path... Enter") \
+    X(LIBS_CLOSE,       "libs.close",            0, "Close")                             \
+    X(LIBS_NOT_FOUND,   "libs.not_found",        0, "No %s next to the file, in the project or in the system") \
+    X(LIBS_FAILED,      "libs.failed",           0, "Blocks for %s: %s")                 \
+    X(LIBS_MADE,        "libs.made",             1,                                      \
+      "%s: %u block, in %s|%s: %u blocks, in %s")                                        \
+    X(LIBS_INCLUDED,    "libs.included",         0, "#include %s added")                 \
     X(CAT_CONTROL,      "palette.control",       0, "Control")                           \
     X(CAT_OPERATORS,    "palette.operators",     0, "Operators")                         \
     X(CAT_VARIABLES,    "palette.variables",     0, "Variables")                         \

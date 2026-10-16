@@ -7,6 +7,7 @@
 #ifndef CCR_PARSE_H
 #define CCR_PARSE_H
 
+#include "ccr_api.h"
 #include "ccr_ast.h"
 
 /*
@@ -33,5 +34,12 @@ const char *ccr_parse_resource_dir(const char **how);
 
 /* "clang version 22.1.8 ..." of the libclang actually loaded. */
 void ccr_parse_clang_version(char *out, unsigned int cap);
+
+/*
+ * The public functions and enums a library's header offers (see ccr_api):
+ * declarations in `header` and in the headers under its folder, skipping
+ * function bodies. False if clang could not read it at all.
+ */
+bool ccr_parse_api(const char *header, const char *const *args, int arg_count, ccr_api *out);
 
 #endif /* CCR_PARSE_H */

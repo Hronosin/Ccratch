@@ -116,8 +116,19 @@ add_test(NAME yaml COMMAND test_yaml)
 
 add_executable(test_lib test_lib.c)
 target_link_libraries(test_lib PRIVATE ccratch_core)
+# the toy library's binaries, for the ABI check
+add_library(toyabi SHARED data/toyabi.c)
+add_library(toyabi_static STATIC data/toyabi.c)
+foreach(t toyabi toyabi_static)
+    set_target_properties(${t} PROPERTIES OUTPUT_NAME toy
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/abi
+        ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/abi)
+endforeach()
 add_test(NAME block_packs COMMAND test_lib ${CMAKE_CURRENT_SOURCE_DIR}/data/broken_pack.yaml
-                                  ${CMAKE_CURRENT_SOURCE_DIR}/data/toy.h)
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/data/toy.h
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/data/annotated.h
+                                  $<TARGET_FILE:toyabi> $<TARGET_FILE:toyabi_static>)
+add_dependencies(test_lib toyabi toyabi_static)
 set_tests_properties(block_packs PROPERTIES
     ENVIRONMENT "CCRATCH_BLOCKS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/blocks")
 # the packs that ship read clean

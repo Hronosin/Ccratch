@@ -25,6 +25,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 14: goto arrows you can travel along, operators you can swap, several files open at once.
 - Step 15: whole files from blocks: functions, structs, headers with guards, new files and folders.
 - Step 16: folding, and libraries as blocks from YAML packs (raylib to start with).
+- Step 17: any library made into blocks from inside Ccratch: its headers read for the API, its .so/.a for the ABI.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -172,8 +173,48 @@ it always was.
 
 ![raylib's own example as blocks: open a window, aim for 60 frames a second, circle at x](docs/library.png)
 
-A raylib pack with what a first game needs ships with Ccratch. For any
-other library, start from a draft and make it read well:
+A raylib pack with what a first game needs ships with Ccratch. Any other
+library becomes blocks from inside Ccratch: **Libraries** in the top bar.
+It lists the headers the file includes that have no blocks yet, the
+packs it could include, and takes any header by name or path
+(`SDL2/SDL.h`, `zlib.h`, `zlib`, `../vendor/foo.h`). Then:
+
+1. **The API.** clang reads the header, and the headers next to it that
+   it pulls in, for the public functions: their parameters and types,
+   `bool` returns (pointy blocks), `...` (one slot for the rest), and the
+   enums, written down for the slots that take them. Names starting with
+   `_` are not public; a header right in `/usr/include` keeps to itself,
+   not the libc around it.
+2. **The ABI.** If the library's binary is found (`libNAME.so` or
+   `libNAME.a`, in the project or the system's lib folders), only what
+   it really exports stays: a declaration the binary does not have would
+   not link. `static inline` helpers in the header need no binary and stay.
+   The pack remembers what to link with (`link: z`).
+3. **The pack** is written as YAML with texts made from the names
+   (`deflateSetDictionary(strm, dictionary, dictLength)` reads "deflate
+   set dictionary {strm} dictionary {dictionary} dict length
+   {dictLength}"): into `PROJECT/.ccratch/blocks/` for the project's own
+   library, `~/.local/share/ccratch/blocks/` for the system's. A pack that
+   is there already is kept, edits and all.
+4. **The file includes it** (`#include <zlib.h>` for system headers, the
+   path from the project for its own), one undo step, and the blocks show
+   in the palette. Calls already in the code turn into the new blocks.
+   A library block dropped into a file that lacks its header brings the
+   `#include` along.
+
+![zlib made into blocks from Libraries: 81 functions, zlibVersion() already reads "zlib version"](docs/libraries.png)
+
+A library can also choose its blocks itself, the way Qt's moc reads
+`signals:` from a header. Once any function has `@block` in its doc
+comment, only those become blocks, with those words:
+
+```c
+/// @block beep {times} times
+/// @block.ru пискнуть {times} раз
+void beeper_beep(int times);
+```
+
+The same from the command line, and the draft is a start to edit:
 
 ```
 ccratch --make-blocks path/to/lib.h -- -Ipath/to > blocks/lib.yaml
@@ -181,11 +222,9 @@ ccratch --check-blocks blocks/lib.yaml
 ccratch --list-blocks
 ```
 
-The draft has every function the header declares, with texts made from
-their names (`DrawTextEx` reads "draw text ex {font} {text}..."). YAML
-because packs are written by hand: comments, no quotes around every word,
-no commas to forget. Ccratch reads the part of YAML packs need itself,
-no library pulled in for it.
+YAML because packs are written by hand: comments, no quotes around every
+word, no commas to forget. Ccratch reads the part of YAML packs need
+itself, no library pulled in for it.
 
 ## Expressions
 
@@ -457,6 +496,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_palette the palette: categories, real blocks, scrolling
   ccr_files   the project tree, and the files panel
   ccr_lib     block packs: libraries as blocks
+  ccr_api     a library's public functions: headers (API) and .so/.a (ELF ABI)
   ccr_yaml    the bit of YAML block packs are written in
   ccr_pie     the pie menu: picks an action by direction, knows no editor
   ccr_lang    every text the window shows, and the language packs

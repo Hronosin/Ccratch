@@ -2,6 +2,7 @@
 #include "ccr_codegen.h"
 #include "ccr_theme.h"
 #include "ccr_lang.h"
+#include "ccr_lib.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@ static const ccr_node *N(const ccr_editor *ed, ccr_node_id id) { return &ed->ast
 
 static void begin_change(ccr_editor *ed);
 static void find_snap(ccr_editor *ed);
+static void drop_into_snap(ccr_editor *ed);
 static void poof_node(ccr_editor *ed, ccr_node_id node);
 static void poof_script(ccr_editor *ed, uint32_t si);
 static void remove_new_decl(ccr_editor *ed, ccr_node_id d);
@@ -1118,7 +1120,7 @@ static void drop_into_slot(ccr_editor *ed)
 }
 
 /* Moves the dragged loose stack into place at the current snap. */
-static void drop_into_snap(ccr_editor *ed)
+static void drop_raw(ccr_editor *ed)
 {
     if (ed->snap.kind == CCR_SNAP_SLOT) {
         drop_into_slot(ed);
@@ -1376,6 +1378,142 @@ static void place_in_file(ccr_editor *ed, uint32_t si)
     ed->ast.nodes[loose].flags |= CCR_FLAG_DEAD;
     remove_script(ed, si);
     push_script(ed, d, pos);
+}
+
+/* -------------------------------------------- a library's #include */
+
+/* Does the file include something `pack` takes as its header? */
+static bool file_includes(const ccr_editor *ed, const ccr_lib_pack *pk)
+{
+    if (ed->ast.node_count == 0)
+        return false;
+    for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+        if (N(ed, c)->kind == CCR_NODE_INCLUDE && !(N(ed, c)->flags & CCR_FLAG_DEAD) &&
+            ccr_lib_pack_matches(pk, ccr_ast_str(&ed->ast, N(ed, c)->name)))
+            return true;
+    return false;
+}
+
+/* Adds `#include <x>` or `#include "x"` to the file (inside a change). */
+static bool add_include(ccr_editor *ed, const char *spelled)
+{
+    char name[256];
+    const bool angled = spelled[0] == '<';
+    snprintf(name, sizeof name, "%s", spelled + (spelled[0] == '<' || spelled[0] == '"'));
+    size_t n = strlen(name);
+    if (n && (name[n - 1] == '>' || name[n - 1] == '"'))
+        name[--n] = '\0';
+    if (!n || ed->ast.node_count == 0 || N(ed, 0)->kind != CCR_NODE_TRANSLATION_UNIT)
+        return false;
+    for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+        if (N(ed, c)->kind == CCR_NODE_INCLUDE && !(N(ed, c)->flags & CCR_FLAG_DEAD) &&
+            strcmp(ccr_ast_str(&ed->ast, N(ed, c)->name), name) == 0)
+            return false;   /* there already */
+
+    ccr_node_id loose = ccr_ast_add(&ed->ast, CCR_NODE_BLOCK, CCR_NONE);
+    if (loose == CCR_NONE)
+        return false;
+    ccr_ast_touch(&ed->ast, loose);
+    ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE | CCR_FLAG_TOPLEVEL;
+    ccr_node_id inc = ccr_template_build(&ed->ast, angled ? CCR_TEMPLATE_INCLUDE_SYS
+                                                          : CCR_TEMPLATE_INCLUDE_LOC, loose);
+    if (inc == CCR_NONE)
+        return false;
+    for (ccr_node_id w = N(ed, inc)->first_child; w != CCR_NONE; w = N(ed, w)->next_sibling)
+        if (N(ed, w)->flags & CCR_FLAG_WORD_NAME)
+            ed->ast.nodes[w].name = ccr_ast_intern(&ed->ast, name);
+    ed->ast.nodes[inc].name = ccr_ast_intern(&ed->ast, name);
+
+    /* on the canvas: above everything, at the left */
+    ccr_vec2 at = { 0.0f, 0.0f };
+    for (uint32_t i = 0; i < ed->script_count; ++i) {
+        const ccr_script *sc = &ed->scripts[i];
+        if (i == 0 || sc->pos.x < at.x) at.x = sc->pos.x;
+        if (i == 0 || sc->pos.y + sc->blocks.bounds.y - 70.0f < at.y)
+            at.y = sc->pos.y + sc->blocks.bounds.y - 70.0f;
+    }
+    if (!push_script(ed, loose, at))
+        return false;
+    place_in_file(ed, ed->script_count - 1);
+
+    /* better: right under the include before it, if nothing is there */
+    ccr_script *me = &ed->scripts[ed->script_count - 1];
+    ccr_node_id prev = CCR_NONE;
+    for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE && c != inc; c = N(ed, c)->next_sibling)
+        if (!(N(ed, c)->flags & CCR_FLAG_DEAD))
+            prev = c;
+    for (uint32_t i = 0; i + 1 < ed->script_count && prev != CCR_NONE; ++i) {
+        const ccr_script *sp = &ed->scripts[i];
+        if (sp->root != prev)
+            continue;
+        const ccr_vec2 p = { sp->pos.x + sp->blocks.bounds.x - me->blocks.bounds.x,
+                             sp->pos.y + sp->blocks.bounds.y + sp->blocks.bounds.h + 16.0f -
+                                 me->blocks.bounds.y };
+        const ccr_rect r = { p.x + me->blocks.bounds.x, p.y + me->blocks.bounds.y - 8.0f,
+                             me->blocks.bounds.w, me->blocks.bounds.h + 16.0f };
+        bool free_spot = true;
+        for (uint32_t k = 0; k + 1 < ed->script_count && free_spot; ++k) {
+            const ccr_script *o = &ed->scripts[k];
+            const ccr_rect q = { o->pos.x + o->blocks.bounds.x, o->pos.y + o->blocks.bounds.y,
+                                 o->blocks.bounds.w, o->blocks.bounds.h };
+            free_spot = r.x + r.w <= q.x || q.x + q.w <= r.x || r.y + r.h <= q.y || q.y + q.h <= r.y;
+        }
+        if (free_spot)
+            me->pos = p;
+        break;
+    }
+    return true;
+}
+
+/* Library calls just dropped into the file: their headers come along. */
+static void include_libraries(ccr_editor *ed, ccr_node_id id)
+{
+    const ccr_node *n = N(ed, id);
+    if (n->kind == CCR_NODE_CALL) {
+        int args = 0;
+        bool word = false;
+        for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling) {
+            word = word || (N(ed, c)->flags & CCR_FLAG_WORD);
+            ++args;
+        }
+        const ccr_lib_block *b = word ? NULL : ccr_lib_find(ccr_ast_str(&ed->ast, n->name), args);
+        const ccr_lib_pack *pk = b ? ccr_lib_pack_at(b->pack) : NULL;
+        if (pk && pk->include[0] && !file_includes(ed, pk))
+            add_include(ed, pk->include);
+    }
+    for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+        include_libraries(ed, c);
+}
+
+static bool in_file(const ccr_editor *ed, ccr_node_id id)
+{
+    const ccr_node_id root = script_root_of(ed, id);
+    return root != CCR_NONE && N(ed, root)->parent != CCR_NONE;   /* a child of the file */
+}
+
+static void drop_into_snap(ccr_editor *ed)
+{
+    /* what is dropped: a reporter, or the statements of a stack */
+    const ccr_node_id loose = ed->scripts[ed->dragged].root;
+    ccr_node_id moved[256];
+    int n = 0;
+    for (ccr_node_id c = N(ed, loose)->first_child; c != CCR_NONE && n < 256; c = N(ed, c)->next_sibling)
+        moved[n++] = c;
+    drop_raw(ed);
+    for (int i = 0; i < n; ++i)
+        if (in_file(ed, moved[i]))
+            include_libraries(ed, moved[i]);
+}
+
+bool ccr_editor_add_include(ccr_editor *ed, const char *spelled)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE)
+        return false;
+    begin_change(ed);
+    const bool added = add_include(ed, spelled);
+    commit_change(ed);
+    return added;
 }
 
 /* A declaration from the palette taken back out of the file. */

@@ -46,6 +46,8 @@ typedef struct ccr_lib_pack {
     char code[32];        /* file name without .yaml */
     char name[64];
     char header[128];     /* "raylib.h"; empty: always shown */
+    char include[140];    /* how a file includes it: "raylib.h" or <SDL2/SDL.h> */
+    char link[64];        /* the library to link, if the pack says */
     int  category;        /* a ccr_theme_cat */
     int  first, count;    /* its blocks */
     char path[1024];
@@ -55,6 +57,12 @@ typedef struct ccr_lib_pack {
  * share/ccratch/blocks next to the program). Again after a language switch:
  * texts come in the interface language. Problems go to `log`. */
 void ccr_lib_load(FILE *log);
+/* The same, with a project's own packs (PROJECT/.ccratch/blocks) first. */
+void ccr_lib_load_project(const char *project, FILE *log);
+/* Where packs for a project's own libraries go. */
+void ccr_lib_project_dir(const char *project, char *out, int cap);
+/* Where packs for the system's libraries go (~/.local/share/ccratch/blocks). */
+bool ccr_lib_user_dir(char *out, int cap);
 void ccr_lib_unload(void);
 
 int                  ccr_lib_pack_count(void);
@@ -74,7 +82,28 @@ bool ccr_lib_pack_matches(const ccr_lib_pack *p, const char *include);
 /* --check-blocks: the problems found, 0 if none. */
 int  ccr_lib_check(const char *path, FILE *out);
 
-/* --make-blocks: a draft pack for the functions declared in `header`. */
-bool ccr_lib_make(const char *header, const char *const *clang_args, int nargs, FILE *out);
+/* --make-blocks: a draft pack for the public functions of the library
+ * behind `header` (see ccr_api), checked against its binary if found in
+ * `project` (may be NULL) or the system. */
+bool ccr_lib_make(const char *header, const char *const *clang_args, int nargs,
+                  const char *project, FILE *out);
+
+/* How a file of `project` includes `header`: <SDL2/SDL.h> for system
+ * headers, "path" from the project (or its include/), else "name.h". */
+void ccr_lib_include_for(const char *header, const char *project, char *out, int cap);
+
+/* Where the header a user typed is: "zlib.h", <SDL2/SDL.h>, "zlib",
+ * a path. Looked for next to file `from`, in the project and its
+ * include/, the -I folders in `clang_args`, then the system's. */
+bool ccr_lib_find_header(const char *spelled, const char *from, const char *project,
+                         const char *const *clang_args, int nargs, char *out, int cap);
+
+/* Makes a pack for `header` into folder `dir` (made if missing), named
+ * after it; an existing pack is left alone (it may have been edited) and
+ * reused. `include` is how files include the header. `path` gets the
+ * pack's file, `count` its blocks. False with `err` if it went wrong. */
+bool ccr_lib_create_pack(const char *header, const char *include, const char *dir,
+                         const char *const *clang_args, int nargs, const char *project,
+                         char *path, int path_cap, int *count, char *err, int err_cap);
 
 #endif /* CCR_LIB_H */

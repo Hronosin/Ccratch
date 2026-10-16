@@ -1382,8 +1382,31 @@ static void test_library_blocks(void)
     if (text) {
         CHECK(strstr(text, "    draw_dot(1, n * 2);\n    if (is_ready()) {\n    }\n"),
               "pack blocks saved as:\n%s", text);
+        /* the first block of the pack brought its header, once */
+        CHECK(strstr(text, "#include <stdio.h>\n#include \"toy.h\"\n") && count(text, "toy.h") == 1,
+              "the pack's header is not included once:\n%s", text);
         free(text);
     }
+
+    /* asked for: an include, where includes go; not twice */
+    CHECK(ccr_editor_add_include(&ed, "<math.h>"), "add_include");
+    CHECK(!ccr_editor_add_include(&ed, "<math.h>"), "add_include twice");
+    text = generate(&ed);
+    CHECK(text && strstr(text, "#include \"toy.h\"\n#include <math.h>\n"), "math.h:\n%s", text ? text : "");
+    free(text);
+
+    /* undone: the include goes with the block that brought it */
+    for (int i = 0; i < 5; ++i)
+        ccr_editor_undo(&ed);
+    text = generate(&ed);
+    CHECK(text && !strstr(text, "toy.h") && !strstr(text, "draw_dot") && !strstr(text, "math.h"),
+          "undo left the library behind:\n%s", text ? text : "");
+    free(text);
+    ccr_editor_redo(&ed);
+    text = generate(&ed);
+    CHECK(text && strstr(text, "#include \"toy.h\"\n") && strstr(text, "draw_dot(1, 2);"),
+          "redo:\n%s", text ? text : "");
+    free(text);
     ccr_editor_free(&ed);
     ccr_lib_unload();
 }

@@ -1,4 +1,6 @@
+#define _DEFAULT_SOURCE   /* access, mkdir */
 #include "ccr_lib.h"
+#include "ccr_api.h"
 #include "ccr_ast.h"
 #include "ccr_config.h"
 #include "ccr_lang.h"
@@ -10,6 +12,8 @@
 #include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static ccr_lib_pack   g_packs[CCR_LIB_MAX_PACKS];
 static int            g_pack_count;
@@ -67,7 +71,7 @@ static int read_block(const char *path, const ccr_yaml_node *m, ccr_lib_block *b
         PROBLEM("%d: a block is a mapping (call: ..., text: ...)", m ? m->line : 0);
         return problems;
     }
-    static const char *const known[] = { "call", "text", "params", "defaults", "returns" };
+    static const char *const known[] = { "call", "text", "params", "defaults", "returns", "types" };
     for (const ccr_yaml_node *k = m->first; k; k = k->next) {
         bool ok = strncmp(k->key, "text.", 5) == 0;
         for (size_t i = 0; i < sizeof known / sizeof known[0] && !ok; ++i)
@@ -184,6 +188,20 @@ static int read_pack(const char *path, bool keep, FILE *log)
     snprintf(pack.code, sizeof pack.code, "%.*s", (int)(strcspn(base, ".")), base);
     snprintf(pack.name, sizeof pack.name, "%s", local(r, "name", pack.code));
     snprintf(pack.header, sizeof pack.header, "%s", ccr_yaml_str(r, "header", ""));
+    const char *inc = ccr_yaml_str(r, "include", NULL);
+    if (inc)
+        snprintf(pack.include, sizeof pack.include, "%s", inc);
+    else if (pack.header[0])
+        snprintf(pack.include, sizeof pack.include, "\"%s\"", pack.header);
+    snprintf(pack.link, sizeof pack.link, "%s", ccr_yaml_str(r, "link", ""));
+    static const char *const known[] = { "name", "header", "include", "link", "color", "blocks", "enums" };
+    for (const ccr_yaml_node *k = r->first; k; k = k->next) {
+        bool ok = strncmp(k->key, "name.", 5) == 0;
+        for (size_t i = 0; i < sizeof known / sizeof known[0] && !ok; ++i)
+            ok = strcmp(k->key, known[i]) == 0;
+        if (!ok)
+            PROBLEM("%d: unknown key '%s'", k->line, k->key);
+    }
     pack.category = ccr_theme_cat_from_key(ccr_yaml_str(r, "color", "library"));
     if (pack.category < 0) {
         PROBLEM("%d: color '%s' is no block category (library, call, control, operator...)",
@@ -235,11 +253,32 @@ void ccr_lib_unload(void)
     g_block_count = g_block_cap = g_pack_count = 0;
 }
 
+void ccr_lib_project_dir(const char *project, char *out, int cap)
+{
+    snprintf(out, (size_t)cap, "%s/.ccratch/blocks", project);
+}
+
+bool ccr_lib_user_dir(char *out, int cap)
+{
+    char base[900];
+    if (!ccr_config_home("XDG_DATA_HOME", ".local/share", base, sizeof base))
+        return false;
+    return snprintf(out, (size_t)cap, "%s/ccratch/blocks", base) < cap;
+}
+
 void ccr_lib_load(FILE *log)
 {
+    ccr_lib_load_project(NULL, log);
+}
+
+void ccr_lib_load_project(const char *project, FILE *log)
+{
     ccr_lib_unload();
-    char dirs[4][1024];
-    int nd = ccr_config_data_dirs("blocks", "CCRATCH_BLOCKS_DIR", dirs, 4);
+    char dirs[5][1024];
+    int nd = 0;
+    if (project && *project)   /* the project's own packs win */
+        ccr_lib_project_dir(project, dirs[nd++], 1024);
+    nd += ccr_config_data_dirs("blocks", "CCRATCH_BLOCKS_DIR", dirs + nd, 4);
     for (int d = 0; d < nd; ++d) {
         DIR *dir = opendir(dirs[d]);
         if (!dir)
@@ -319,105 +358,209 @@ int ccr_lib_check(const char *path, FILE *out)
 
 /* ------------------------------------------------------------ drafts */
 
-/* DrawTextEx -> "draw text ex"; SDL_CreateWindow -> "SDL create window" */
-static void humanize(const char *name, char *out, size_t cap)
+/* "raylib.h" -> "raylib"; "SDL.h" -> "SDL" */
+static void stem_of(const char *header, char *out, size_t cap)
 {
-    size_t n = 0;
-    for (const char *c = name; *c && n + 2 < cap; ++c) {
-        if (*c == '_') {
-            if (n && out[n - 1] != ' ')
-                out[n++] = ' ';
-            continue;
-        }
-        const bool upper = isupper((unsigned char)*c);
-        const bool after_lower = c > name && (islower((unsigned char)c[-1]) || isdigit((unsigned char)c[-1]));
-        const bool before_lower = upper && c > name && isupper((unsigned char)c[-1]) && islower((unsigned char)c[1]);
-        if ((upper && after_lower) || before_lower)
-            if (n && out[n - 1] != ' ')
-                out[n++] = ' ';
-        out[n++] = *c;
-    }
-    out[n] = '\0';
-    /* words in lower case, except ones that are all capitals (SDL, GL) */
-    for (char *w = out; *w;) {
-        char *e = w;
-        bool caps = true;
-        int len = 0;
-        while (*e && *e != ' ') {
-            caps = caps && !islower((unsigned char)*e);
-            ++e;
-            ++len;
-        }
-        if (!caps || len == 1)
-            for (char *c = w; c < e; ++c)
-                *c = (char)tolower((unsigned char)*c);
-        w = *e ? e + 1 : e;
-    }
-}
-
-bool ccr_lib_make(const char *header, const char *const *clang_args, int nargs, FILE *out)
-{
-    ccr_ast ast;
-    if (!ccr_ast_init(&ast))
-        return false;
-    if (!ccr_parse_file(header, clang_args, nargs, &ast)) {
-        ccr_ast_free(&ast);
-        return false;
-    }
     const char *base = strrchr(header, '/');
     base = base ? base + 1 : header;
-    char name[128];
-    snprintf(name, sizeof name, "%.*s", (int)strcspn(base, "."), base);
-    fprintf(out, "# Blocks for %s, a first draft by ccratch --make-blocks.\n"
-                 "# Make the texts read well ({name} is a slot), add defaults, drop what\n"
-                 "# nobody needs; text.ru: and friends translate a text.\n"
-                 "name: %s\nheader: %s\ncolor: library\nblocks:\n", base, name, base);
-    int made = 0;
-    for (ccr_node_id c = ast.node_count ? ast.nodes[0].first_child : CCR_NONE; c != CCR_NONE;
-         c = ast.nodes[c].next_sibling) {
-        const ccr_node *f = &ast.nodes[c];
-        if (f->kind != CCR_NODE_FUNCTION || (f->flags & CCR_FLAG_DEFINITION))
-            continue;
-        const char *fname = ccr_ast_str(&ast, f->name);
-        if (!is_ident(fname))
-            continue;
-        char words[256], text[512] = "", params[512] = "";
-        humanize(fname, words, sizeof words);
-        size_t tl = (size_t)snprintf(text, sizeof text, "%s", words), pl = 0;
-        int k = 0;
-        for (ccr_node_id p = f->first_child; p != CCR_NONE; p = ast.nodes[p].next_sibling) {
-            if (ast.nodes[p].kind != CCR_NODE_PARAM)
-                continue;
-            char pn[40];
-            const char *given = ccr_ast_str(&ast, ast.nodes[p].name);
-            if (is_ident(given) && strlen(given) < 32)
-                snprintf(pn, sizeof pn, "%s", given);
-            else
-                snprintf(pn, sizeof pn, "arg%d", k + 1);
-            if (tl < sizeof text)
-                tl += (size_t)snprintf(text + tl, sizeof text - tl, " {%s}", pn);
-            if (pl < sizeof params)
-                pl += (size_t)snprintf(params + pl, sizeof params - pl, "%s%s", k ? ", " : "", pn);
-            ++k;
+    snprintf(out, cap, "%.*s", (int)strcspn(base, "."), base);
+}
+
+/* The library behind it: its binary, checked if found. */
+static void check_abi(ccr_api *api, const char *stem, const char *project, char *link, size_t cap)
+{
+    char bin[1024];
+    link[0] = '\0';
+    /* raylib.h: libraylib; zlib.h: libz; libpng.h: libpng */
+    char names[3][128];
+    int n = 0;
+    snprintf(names[n++], sizeof names[0], "%s", stem);
+    const size_t len = strlen(stem);
+    if (len > 3 && strcmp(stem + len - 3, "lib") == 0)
+        snprintf(names[n++], sizeof names[0], "%.*s", (int)(len - 3), stem);
+    if (len > 3 && strncmp(stem, "lib", 3) == 0)
+        snprintf(names[n++], sizeof names[0], "%s", stem + 3);
+    for (int i = 0; i < n; ++i)
+        if (ccr_api_find_binary(names[i], project, bin, (int)sizeof bin) &&
+            ccr_api_check_binary(api, bin) > 0) {
+            snprintf(link, cap, "%s", names[i]);
+            return;
         }
-        if (strstr(ccr_ast_str(&ast, f->type), "...")) {   /* printf-like: the rest as text */
-            if (tl < sizeof text)
-                tl += (size_t)snprintf(text + tl, sizeof text - tl, " {more}");
-            if (pl < sizeof params)
-                pl += (size_t)snprintf(params + pl, sizeof params - pl, "%smore", k ? ", " : "");
+}
+
+/* `rest` if `path` is inside folder `dir`, else NULL */
+static const char *under(const char *path, const char *dir)
+{
+    const size_t n = strlen(dir);
+    if (!n || strncmp(path, dir, n) != 0)
+        return NULL;
+    if (dir[n - 1] == '/')
+        return path + n;
+    return path[n] == '/' ? path + n + 1 : NULL;
+}
+
+void ccr_lib_include_for(const char *header, const char *project, char *out, int cap)
+{
+    char real[4096], proj[4096];
+    if (!realpath(header, real))
+        snprintf(real, sizeof real, "%s", header);
+    static const char *const sys[] = { "/usr/local/include", "/usr/include" };
+    for (size_t i = 0; i < sizeof sys / sizeof sys[0]; ++i) {
+        const char *rest = under(real, sys[i]);
+        if (rest && *rest) {
+            snprintf(out, (size_t)cap, "<%s>", rest);
+            return;
         }
-        const char *ret = ccr_ast_str(&ast, f->aux);
-        if (strcmp(ret, "_Bool") == 0)
-            ret = "bool";
-        fprintf(out, "  - call: %s\n    text: \"%s\"\n", fname, text);
-        if (pl)
-            fprintf(out, "    params: [%s]\n", params);
-        if (*ret && strcmp(ret, "void") != 0)
-            fprintf(out, "    returns: \"%s\"\n", ret);
-        ++made;
     }
-    if (!made)
-        fprintf(out, "  []   # no function declarations found\n");
-    ccr_ast_free(&ast);
+    if (project && *project && realpath(project, proj)) {
+        char inc[4200];
+        snprintf(inc, sizeof inc, "%s/include", proj);
+        const char *rest = under(real, inc);   /* -I PROJECT/include */
+        if (!rest)
+            rest = under(real, proj);          /* -I PROJECT */
+        if (rest && *rest) {
+            snprintf(out, (size_t)cap, "\"%s\"", rest);
+            return;
+        }
+    }
+    const char *base = strrchr(real, '/');
+    snprintf(out, (size_t)cap, "\"%s\"", base ? base + 1 : real);
+}
+
+static bool is_file(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/* `dir`/`name` (or `name` alone if `dir` is NULL), tidied up, if it is a file */
+static bool try_in(const char *dir, const char *name, char *out, int cap)
+{
+    char p[4200], real[4096];
+    if (snprintf(p, sizeof p, "%s%s%s", dir ? dir : "", dir ? "/" : "", name) >= (int)sizeof p ||
+        !is_file(p) || !realpath(p, real))
+        return false;
+    const size_t n = strlen(real);
+    if (n >= (size_t)cap)
+        return false;
+    memcpy(out, real, n + 1);
     return true;
+}
+
+bool ccr_lib_find_header(const char *spelled, const char *from, const char *project,
+                         const char *const *clang_args, int nargs, char *out, int cap)
+{
+    char name[1024];
+    while (*spelled == ' ' || *spelled == '\t')
+        ++spelled;
+    snprintf(name, sizeof name, "%s", spelled + (*spelled == '<' || *spelled == '"'));
+    size_t n = strlen(name);
+    while (n && (name[n - 1] == ' ' || name[n - 1] == '>' || name[n - 1] == '"'))
+        name[--n] = '\0';
+    if (!n)
+        return false;
+    const char *base = strrchr(name, '/');
+    if (!strchr(base ? base : name, '.') && n + 2 < sizeof name)
+        memcpy(name + n, ".h", 3);   /* "zlib": zlib.h */
+
+    if (name[0] == '/')
+        return try_in(NULL, name, out, cap);
+    if (name[0] == '~' && name[1] == '/')
+        return getenv("HOME") && try_in(getenv("HOME"), name + 2, out, cap);
+
+    char dir[4096];
+    if (from && *from) {   /* next to the file */
+        snprintf(dir, sizeof dir, "%s", from);
+        char *slash = strrchr(dir, '/');
+        if (slash) *slash = '\0'; else snprintf(dir, sizeof dir, ".");
+        if (try_in(dir, name, out, cap))
+            return true;
+    }
+    if (project && *project) {
+        if (try_in(project, name, out, cap))
+            return true;
+        snprintf(dir, sizeof dir, "%s/include", project);
+        if (try_in(dir, name, out, cap))
+            return true;
+    }
+    for (int i = 0; i < nargs; ++i) {   /* -Idir, -I dir, -isystem dir */
+        const char *a = clang_args[i];
+        const char *d = strncmp(a, "-I", 2) == 0 && a[2] ? a + 2
+                      : (strcmp(a, "-I") == 0 || strcmp(a, "-isystem") == 0) && i + 1 < nargs
+                        ? clang_args[++i] : NULL;
+        if (d && try_in(d, name, out, cap))
+            return true;
+    }
+    static const char *const sys[] = {
+        "/usr/local/include", "/usr/include", "/usr/include/x86_64-linux-gnu",
+        "/usr/include/aarch64-linux-gnu", "/opt/homebrew/include",
+    };
+    for (size_t i = 0; i < sizeof sys / sizeof sys[0]; ++i)
+        if (try_in(sys[i], name, out, cap))
+            return true;
+    return try_in(NULL, name, out, cap);   /* from where Ccratch was started */
+}
+
+bool ccr_lib_make(const char *header, const char *const *clang_args, int nargs,
+                  const char *project, FILE *out)
+{
+    ccr_api api;
+    char err[256];
+    if (!ccr_api_scan(header, clang_args, nargs, &api, err, (int)sizeof err))
+        return false;
+    char stem[128], link[128], include[160];
+    stem_of(header, stem, sizeof stem);
+    check_abi(&api, stem, project, link, sizeof link);
+    ccr_lib_include_for(header, project, include, (int)sizeof include);
+    ccr_api_write_pack(&api, stem, include, link, out);
+    ccr_api_free(&api);
+    return true;
+}
+
+static bool make_dirs(const char *dir)
+{
+    char p[1024];
+    snprintf(p, sizeof p, "%s", dir);
+    for (char *c = p + 1; *c; ++c)
+        if (*c == '/') {
+            *c = '\0';
+            mkdir(p, 0755);
+            *c = '/';
+        }
+    return mkdir(p, 0755) == 0 || access(p, F_OK) == 0;
+}
+
+bool ccr_lib_create_pack(const char *header, const char *include, const char *dir,
+                         const char *const *clang_args, int nargs, const char *project,
+                         char *path, int path_cap, int *count, char *err, int err_cap)
+{
+    char stem[128];
+    stem_of(header, stem, sizeof stem);
+    *count = 0;
+    if (!make_dirs(dir)) {
+        snprintf(err, (size_t)err_cap, "cannot make %s", dir);
+        return false;
+    }
+    if (snprintf(path, (size_t)path_cap, "%s/%s.yaml", dir, stem) >= path_cap) {
+        snprintf(err, (size_t)err_cap, "path too long");
+        return false;
+    }
+    if (access(path, F_OK) == 0)
+        return true;   /* already made, maybe edited since: kept */
+
+    ccr_api api;
+    if (!ccr_api_scan(header, clang_args, nargs, &api, err, err_cap))
+        return false;
+    char link[128];
+    check_abi(&api, stem, project, link, sizeof link);
+    FILE *f = fopen(path, "wx");
+    if (!f) {
+        snprintf(err, (size_t)err_cap, "cannot write %s", path);
+        ccr_api_free(&api);
+        return false;
+    }
+    ccr_api_write_pack(&api, stem, include, link, f);
+    *count = api.func_count;
+    ccr_api_free(&api);
+    return fclose(f) == 0;
 }

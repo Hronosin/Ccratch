@@ -109,3 +109,19 @@ jump.elsewhere = метка %s: не в этой функции (лежит на
 theme.shrine = Храм
 topbar.theme = Тема
 status.theme = Тема: %s
+
+# libraries as blocks
+libs.title = Библиотеки
+libs.heading = Библиотека — в блоки
+libs.explain = Из её заголовка берутся публичные функции (а если найдётся .so или .a — только то, что она правда экспортирует). Из них получается набор блоков, файл подключает заголовок, блоки появляются в палитре.
+libs.in_file = Файл их подключает, блоков пока нет
+libs.have = Блоки есть, файл их не подключает
+libs.nothing = пусто
+libs.make = сделать блоки
+libs.include = подключить
+libs.ask = Любой заголовок: SDL2/SDL.h, zlib.h, путь... Enter
+libs.close = Закрыть
+libs.not_found = %s нет ни рядом с файлом, ни в проекте, ни в системе
+libs.failed = Блоки для %s: %s
+libs.made = %s: %u блок, в %s|%s: %u блока, в %s|%s: %u блоков, в %s
+libs.included = #include %s добавлен

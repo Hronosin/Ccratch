@@ -149,6 +149,11 @@ uint32_t ccr_editor_loose_count(const ccr_editor *ed);
  * Call while the mouse button is down; normal updates carry on the drag.
  */
 bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse);
+/* Adds `#include <x>` / `#include "x"` to the file, where includes go
+ * (one undo step); false if it is there already. Library blocks dropped
+ * into the file bring their pack's include by themselves. */
+bool ccr_editor_add_include(ccr_editor *ed, const char *spelled);
+
 /* A declaration from the palette that is now part of the file (it can
  * be deleted again; the file's own ones cannot, yet). */
 bool ccr_editor_is_new_decl(const ccr_editor *ed, ccr_node_id id);

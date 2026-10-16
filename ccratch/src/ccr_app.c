@@ -421,6 +421,25 @@ static bool glide_step(ccr_canvas *cv, float dt)
     return true;
 }
 
+/* What clang gets for a file of the project around `path`: the command
+ * line's flags, then the project's root and its include/ (so its own
+ * headers are found without -I). `args` holds CLANG_ARGS_MAX. */
+#define CLANG_ARGS_MAX 66
+static int clang_args_for(const char *path, const ccr_options *opt, const char **args)
+{
+    int nargs = 0;
+    for (int i = 0; i < opt->clang_arg_count && nargs < CLANG_ARGS_MAX - 2; ++i)
+        args[nargs++] = opt->clang_args[i];
+    static char inc_root[CCR_FILES_PATH + 3], inc_dir[CCR_FILES_PATH + 11];
+    char project[CCR_FILES_PATH];
+    ccr_files_project_of(path, project, (int)sizeof project);
+    snprintf(inc_root, sizeof inc_root, "-I%s", project);
+    snprintf(inc_dir, sizeof inc_dir, "-I%s/include", project);
+    args[nargs++] = inc_root;
+    args[nargs++] = inc_dir;
+    return nargs;
+}
+
 static bool document_open(ccr_document *doc, const char *path, const ccr_options *opt)
 {
     /* static: big (4 KB path), and only one is ever being opened */
@@ -432,20 +451,8 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     if (!ccr_ast_init(&ast))
         return false;
 
-    /* the project's own headers are found without -I: its root and its
-     * include/ are searched, after whatever was given on the command line */
-    enum { MAX_ARGS = 64 };
-    const char *args[MAX_ARGS + 2];
-    int nargs = 0;
-    for (int i = 0; i < opt->clang_arg_count && nargs < MAX_ARGS; ++i)
-        args[nargs++] = opt->clang_args[i];
-    static char inc_root[CCR_FILES_PATH + 3], inc_dir[CCR_FILES_PATH + 11];
-    char project[CCR_FILES_PATH];
-    ccr_files_project_of(path, project, (int)sizeof project);
-    snprintf(inc_root, sizeof inc_root, "-I%s", project);
-    snprintf(inc_dir, sizeof inc_dir, "-I%s/include", project);
-    args[nargs++] = inc_root;
-    args[nargs++] = inc_dir;
+    const char *args[CLANG_ARGS_MAX];
+    const int nargs = clang_args_for(path, opt, args);
 
     if (!ccr_parse_file(path, args, nargs, &ast)) {
         ccr_ast_free(&ast);
@@ -504,14 +511,26 @@ static float           g_files_t;   /* 0 hidden .. 1 out */
 
 static bool same_file(const char *a, const char *b) { return ccr_files_same(a, b); }
 
-/* A file from outside the project starts a new project, in its folder. */
-static void project_follow(const char *path)
+/* Block packs again (the project's own first), and everything that shows
+ * them laid out again: a pack came, went, or speaks another language. */
+static void libs_reload(ccr_document *doc)
+{
+    ccr_lib_load_project(g_files.root[0] ? g_files.root : NULL, stderr);
+    relayout_everything(doc);
+    for (int k = 0; k < g_stash_n; ++k)
+        ccr_editor_relayout_all(&g_stash[k].doc->ed);
+}
+
+/* A file from outside the project starts a new project, in its folder:
+ * true then (its packs are not loaded yet). */
+static bool project_follow(const char *path)
 {
     if (g_files.root[0] && ccr_files_inside(g_files.root, path))
-        return;
+        return false;
     char dir[CCR_FILES_PATH];
     ccr_files_project_of(path, dir, (int)sizeof dir);
     ccr_files_scan(&g_files, dir, path);
+    return true;
 }
 
 /* Shows `path`: brought back if it is open already, opened if not. The
@@ -568,7 +587,8 @@ static bool switch_to(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, cons
         }
         return false;
     }
-    project_follow(path);
+    if (project_follow(path))
+        libs_reload(doc);
     fit_view(cv, doc, viewport, 1.0f);
     return true;
 }
@@ -1039,10 +1059,7 @@ static void next_language(ccr_document *doc)
             ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
             doc->has_errors = false;
             /* C keywords stay, but pack blocks speak this language now */
-            ccr_lib_load(stderr);
-            relayout_everything(doc);
-            for (int k = 0; k < g_stash_n; ++k)
-                ccr_editor_relayout_all(&g_stash[k].doc->ed);
+            libs_reload(doc);
             return;
         }
     }
@@ -1071,6 +1088,292 @@ static void next_theme(ccr_document *doc)
     }
 }
 
+static bool point_in(ccr_vec2 p, ccr_rect r)
+{
+    return p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h;
+}
+
+/* ------------------------------------------- libraries, made into blocks */
+
+/* A row of the dialog: a header the file includes that has no blocks yet,
+ * or a pack the file does not include. */
+typedef struct lib_row {
+    char spelled[160];   /* <zlib.h>, "toy.h" */
+    int  pack;           /* -1: no pack yet */
+} lib_row;
+
+#define LIB_ROWS 24
+
+static struct {
+    bool    open;
+    char    name[256];   /* typed: any header */
+    lib_row rows[LIB_ROWS];
+    int     count, first_pack;   /* rows[first_pack..] are packs */
+    char    note[600];
+    bool    note_bad;
+} g_libs;
+
+static bool doc_includes_pack(const ccr_document *doc, const ccr_lib_pack *pk)
+{
+    if (!doc->loaded || !doc->ed.ast.node_count)
+        return false;
+    for (ccr_node_id c = doc->ed.ast.nodes[0].first_child; c != CCR_NONE;
+         c = doc->ed.ast.nodes[c].next_sibling) {
+        const ccr_node *k = &doc->ed.ast.nodes[c];
+        if (k->kind == CCR_NODE_INCLUDE && !(k->flags & CCR_FLAG_DEAD) &&
+            ccr_lib_pack_matches(pk, ccr_ast_str(&doc->ed.ast, k->name)))
+            return true;
+    }
+    return false;
+}
+
+static void libs_rows(const ccr_document *doc)
+{
+    g_libs.count = 0;
+    if (doc->loaded && doc->ed.ast.node_count)
+        for (ccr_node_id c = doc->ed.ast.nodes[0].first_child; c != CCR_NONE && g_libs.count < LIB_ROWS / 2;
+             c = doc->ed.ast.nodes[c].next_sibling) {
+            const ccr_node *k = &doc->ed.ast.nodes[c];
+            if (k->kind != CCR_NODE_INCLUDE || (k->flags & CCR_FLAG_DEAD))
+                continue;
+            const char *name = ccr_ast_str(&doc->ed.ast, k->name);
+            bool has = false;
+            for (int i = 0; i < ccr_lib_pack_count() && !has; ++i)
+                has = ccr_lib_pack_at(i)->header[0] && ccr_lib_pack_matches(ccr_lib_pack_at(i), name);
+            if (has || !*name)
+                continue;
+            lib_row *row = &g_libs.rows[g_libs.count++];
+            const bool angled = (k->flags & CCR_FLAG_ANGLED) != 0;
+            snprintf(row->spelled, sizeof row->spelled, "%c%.150s%c", angled ? '<' : '"', name,
+                     angled ? '>' : '"');
+            row->pack = -1;
+        }
+    g_libs.first_pack = g_libs.count;
+    for (int i = 0; i < ccr_lib_pack_count() && g_libs.count < LIB_ROWS; ++i) {
+        const ccr_lib_pack *pk = ccr_lib_pack_at(i);
+        if (!pk->header[0] || !pk->include[0] || doc_includes_pack(doc, pk))
+            continue;
+        lib_row *row = &g_libs.rows[g_libs.count++];
+        snprintf(row->spelled, sizeof row->spelled, "%s", pk->include);
+        row->pack = i;
+    }
+}
+
+static void libs_open(const ccr_document *doc)
+{
+    g_libs.open = true;
+    g_libs.name[0] = '\0';
+    g_libs.note[0] = '\0';
+    ccr_gui_textbox_reset();
+    libs_rows(doc);
+}
+
+static void libs_note(ccr_document *doc, bool bad, const char *text)
+{
+    snprintf(g_libs.note, sizeof g_libs.note, "%s", text);
+    g_libs.note_bad = bad;
+    snprintf(doc->status, sizeof doc->status, "%s", text);
+    doc->has_errors = bad;
+}
+
+/* "~/..." for the home folder, "./..." inside the project */
+static void short_path(const char *path, char *out, size_t cap)
+{
+    const char *home = getenv("HOME");
+    const size_t pl = strlen(g_files.root), hl = home ? strlen(home) : 0;
+    if (pl && strncmp(path, g_files.root, pl) == 0 && path[pl] == '/')
+        snprintf(out, cap, ".%s", path + pl);
+    else if (hl && strncmp(path, home, hl) == 0 && path[hl] == '/')
+        snprintf(out, cap, "~%s", path + hl);
+    else
+        snprintf(out, cap, "%s", path);
+}
+
+/* The file includes pack `i`'s header (one undo step). */
+static void libs_include(ccr_document *doc, int i)
+{
+    const ccr_lib_pack *pk = ccr_lib_pack_at(i);
+    if (!pk || !doc->loaded)
+        return;
+    if (ccr_editor_add_include(&doc->ed, pk->include)) {
+        char msg[300];
+        ccr_trf(msg, sizeof msg, CCR_T_LIBS_INCLUDED, pk->include);
+        libs_note(doc, false, msg);
+    }
+    libs_rows(doc);
+}
+
+/* Any header, as typed or as the file includes it: read (the API, and the
+ * ABI if its binary is found), made into a pack, loaded, included. */
+static void libs_make(ccr_document *doc, const ccr_options *opt, const char *spelled)
+{
+    const char *project = g_files.root[0] ? g_files.root : NULL;
+    const char *from = doc->loaded ? doc->path : NULL;
+    const char *args[CLANG_ARGS_MAX];
+    const int nargs = clang_args_for(from ? from : (project ? project : "."), opt, args);
+    char header[CCR_FILES_PATH], msg[sizeof g_libs.note];
+    bool found = ccr_lib_find_header(spelled, from, project, args, nargs, header, (int)sizeof header);
+    if (!found && from && spelled[0] != '<') {   /* somewhere in the project */
+        char name[256];
+        snprintf(name, sizeof name, "%s", spelled + (spelled[0] == '"'));
+        name[strcspn(name, "\"")] = '\0';
+        found = ccr_files_find_include(&g_files, from, name, header, (int)sizeof header);
+    }
+    if (!found) {
+        ccr_trf(msg, sizeof msg, CCR_T_LIBS_NOT_FOUND, spelled);
+        libs_note(doc, true, msg);
+        return;
+    }
+
+    /* how files include it: as this one does, if it does */
+    char include[160];
+    if (spelled[0] == '<' || spelled[0] == '"')
+        snprintf(include, sizeof include, "%.150s", spelled);
+    else
+        ccr_lib_include_for(header, project, include, (int)sizeof include);
+    /* the project's own library: its pack goes with the project */
+    char dir[CCR_FILES_PATH + 32];
+    if (project && ccr_files_inside(project, header))
+        ccr_lib_project_dir(project, dir, (int)sizeof dir);
+    else if (!ccr_lib_user_dir(dir, (int)sizeof dir) && project)
+        ccr_lib_project_dir(project, dir, (int)sizeof dir);
+
+    char path[CCR_FILES_PATH + 300], err[300];
+    int count = 0;
+    const char *hb = strrchr(header, '/') ? strrchr(header, '/') + 1 : header;
+    if (!ccr_lib_create_pack(header, include, dir, args, nargs, project, path, (int)sizeof path,
+                             &count, err, (int)sizeof err)) {
+        ccr_trf(msg, sizeof msg, CCR_T_LIBS_FAILED, hb, err);
+        libs_note(doc, true, msg);
+        return;
+    }
+    libs_reload(doc);
+    int at = -1;
+    for (int i = 0; i < ccr_lib_pack_count(); ++i)
+        if (ccr_files_same(ccr_lib_pack_at(i)->path, path))
+            at = i;
+    char where[CCR_FILES_PATH + 300];
+    short_path(path, where, sizeof where);
+    const ccr_lib_pack *pk = ccr_lib_pack_at(at);
+    if (!pk) {   /* made, but too many packs to load it */
+        ccr_trf(msg, sizeof msg, CCR_T_LIBS_FAILED, hb, where);
+        libs_note(doc, true, msg);
+        return;
+    }
+    ccr_trnf(msg, sizeof msg, CCR_T_LIBS_MADE, (unsigned long)pk->count, pk->name,
+             (unsigned)pk->count, where);
+    libs_note(doc, false, msg);
+    if (doc->loaded && !doc_includes_pack(doc, pk))
+        ccr_editor_add_include(&doc->ed, pk->include);
+    libs_rows(doc);
+    g_libs.name[0] = '\0';
+}
+
+#define LIBS_W 640.0f
+
+static void libs_frame(int width, int height, ccr_document *doc, const ccr_options *opt)
+{
+    if (!g_libs.open)
+        return;
+    const ccr_vec2 m = ccr_gui_mouse();
+    ccr_gui_rect((ccr_rect){ 0, TOPBAR_H, (float)width, (float)height - TOPBAR_H }, ccr_th(CCR_C_BACKDROP));
+    const float pw = (float)width - 40.0f < LIBS_W ? (float)width - 40.0f : LIBS_W;
+    const float pad = 24.0f, tw = pw - pad * 2.0f;
+    const float explain_h = wrap_text(ccr_tr(CCR_T_LIBS_EXPLAIN), 0, 0, tw, 15.0f, 0, false);
+    const int packs = g_libs.count - g_libs.first_pack, files = g_libs.first_pack;
+    const float row_h = 34.0f;
+    float ph = pad + 34.0f + explain_h + 14.0f + 2.0f * (26.0f + 6.0f) +
+               row_h * (float)((files ? files : 1) + (packs ? packs : 1)) + 16.0f + 46.0f + 30.0f + 50.0f;
+    if (ph > (float)height - TOPBAR_H - 20.0f)
+        ph = (float)height - TOPBAR_H - 20.0f;
+    const ccr_rect panel = { ((float)width - pw) * 0.5f, TOPBAR_H + 14.0f, pw, ph };
+    ccr_gui_rect_rounded((ccr_rect){ panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4 }, 0.04f,
+                         ccr_th_cat(CCR_CAT_LIBRARY, CCR_FILL));
+    ccr_gui_rect_rounded(panel, 0.04f, ccr_th(CCR_C_PANEL) | 0xFFu);
+
+    float x = panel.x + pad, y = panel.y + pad;
+    ccr_gui_circle((ccr_vec2){ x + 9.0f, y + 12.0f }, 9.0f, ccr_th_cat(CCR_CAT_LIBRARY, CCR_FILL));
+    ccr_gui_text(ccr_tr(CCR_T_LIBS_HEADING), x + 28.0f, y, 24.0f, ccr_th(CCR_C_PANEL_TEXT));
+    y += 34.0f;
+    y += wrap_text(ccr_tr(CCR_T_LIBS_EXPLAIN), x, y, tw, 15.0f, ccr_th(CCR_C_PANEL_HINT), true) + 14.0f;
+
+    int make = -1, include = -1;
+    const float bottom = panel.y + panel.h - 46.0f - 30.0f - 50.0f;
+    for (int part = 0; part < 2; ++part) {
+        if (y + 26.0f > bottom)
+            break;
+        ccr_gui_text(ccr_tr(part ? CCR_T_LIBS_HAVE : CCR_T_LIBS_IN_FILE), x, y, 16.0f,
+                     ccr_th(CCR_C_PANEL_TEXT));
+        y += 26.0f;
+        const int from = part ? g_libs.first_pack : 0, to = part ? g_libs.count : g_libs.first_pack;
+        if (from == to) {
+            ccr_gui_text(ccr_tr(CCR_T_LIBS_NOTHING), x + 14.0f, y + 6.0f, 15.0f, ccr_th(CCR_C_DIM_TEXT));
+            y += row_h;
+        }
+        for (int i = from; i < to && y + row_h <= bottom; ++i, y += row_h) {
+            const lib_row *row = &g_libs.rows[i];
+            const ccr_rect rr = { x, y, tw, row_h - 4.0f };
+            if (point_in(m, rr))
+                ccr_gui_rect_rounded(rr, 0.3f, ccr_th(CCR_C_HOT));
+            ccr_gui_rect_rounded((ccr_rect){ x + 6.0f, y + 9.0f, 12.0f, 12.0f }, 0.4f,
+                                 part ? ccr_th_cat(CCR_CAT_LIBRARY, CCR_FILL) : ccr_th_cat(CCR_CAT_PREPROC, CCR_FILL));
+            char label[300];
+            if (part)
+                snprintf(label, sizeof label, "%.60s   %.150s", ccr_lib_pack_at(row->pack)->name, row->spelled);
+            else
+                snprintf(label, sizeof label, "#include %.150s", row->spelled);
+            ccr_gui_text(label, x + 26.0f, y + 6.0f, 17.0f, ccr_th(CCR_C_PANEL_TEXT));
+            const char *bl = ccr_tr(part ? CCR_T_LIBS_INCLUDE : CCR_T_LIBS_MAKE);
+            const float bw = ccr_gui_text_width(bl, 15.0f) + 22.0f;
+            if (ccr_gui_button((ccr_rect){ x + tw - bw - 4.0f, y + 2.0f, bw, row_h - 8.0f }, bl,
+                               button_style(!part)) && doc->loaded) {
+                if (part) include = row->pack;
+                else make = i;
+            }
+        }
+        y += 6.0f;
+    }
+
+    /* any header at all */
+    const float fy = panel.y + panel.h - 46.0f - 30.0f - 44.0f;
+    ccr_gui_text(ccr_tr(CCR_T_LIBS_ASK), x, fy, 15.0f, ccr_th(CCR_C_PANEL_HINT));
+    bool typed = false;
+    ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+    if (ccr_gui_textbox((ccr_rect){ x, fy + 22.0f, tw, 36.0f }, g_libs.name, (int)sizeof g_libs.name, 19.0f))
+        typed = g_libs.name[0] != '\0';
+    const char *cl = ccr_tr(CCR_T_LIBS_CLOSE);
+    const float cw = ccr_gui_text_width(cl, 16.0f) + 40.0f;
+    if (g_libs.note[0]) {   /* what just happened, next to Close */
+        const float nw = tw - cw - 16.0f;
+        float size = 15.0f;
+        while (size > 11.0f && ccr_gui_text_width(g_libs.note, size) > nw)
+            size -= 0.5f;
+        ccr_gui_clip_begin((ccr_rect){ x, panel.y + panel.h - 50.0f, nw, 40.0f });
+        ccr_gui_text(g_libs.note, x, panel.y + panel.h - 30.0f - size * 0.5f, size,
+                     g_libs.note_bad ? ccr_th(CCR_C_ERROR) : ccr_th(CCR_C_OK));
+        ccr_gui_clip_end();
+    }
+    bool close = ccr_gui_button((ccr_rect){ panel.x + panel.w - pad - cw, panel.y + panel.h - 46.0f, cw, 32.0f },
+                                cl, button_style(false)) ||
+                 ccr_gui_key_pressed(CCR_KEY_ESCAPE) ||
+                 (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(m, panel) && m.y > TOPBAR_H);
+
+    /* the work, after the drawing: reading a header takes a moment */
+    if (make >= 0) {
+        char spelled[160];
+        snprintf(spelled, sizeof spelled, "%s", g_libs.rows[make].spelled);
+        libs_make(doc, opt, spelled);
+    } else if (include >= 0) {
+        libs_include(doc, include);
+    } else if (typed) {
+        char spelled[256];
+        snprintf(spelled, sizeof spelled, "%s", g_libs.name);
+        libs_make(doc, opt, spelled);
+    }
+    if (close)
+        g_libs.open = false;
+}
+
 static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
 {
     const bool modal = ev->open;
@@ -1090,7 +1393,7 @@ static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
     for (char *c = code; *c; ++c)
         if (*c >= 'a' && *c <= 'z')
             *c = (char)(*c - 'a' + 'A');
-    const ccr_button_style *bs = button_style(false);
+    const ccr_button_style plain = *button_style(false), *bs = &plain;   /* the style is static */
     const float tw = ccr_gui_text_width(ccr_tr(CCR_T_THEME_BUTTON), 16.0f) + 24.0f;
     if (ccr_gui_button((ccr_rect){ (float)width - 166.0f, 7.0f, 48.0f, 26.0f }, code, bs) && !modal)
         next_language(doc);
@@ -1101,6 +1404,12 @@ static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
     if (ccr_gui_button((ccr_rect){ (float)width - 222.0f - tw - fw, 7.0f, fw, 26.0f },
                        ccr_tr(CCR_T_FILES_TITLE), g_files_open ? button_style(true) : bs) && !modal)
         files_toggle(doc);
+    const float lw = ccr_gui_text_width(ccr_tr(CCR_T_LIBS_TITLE), 16.0f) + 24.0f;
+    if (ccr_gui_button((ccr_rect){ (float)width - 230.0f - tw - fw - lw, 7.0f, lw, 26.0f },
+                       ccr_tr(CCR_T_LIBS_TITLE), g_libs.open ? button_style(true) : bs) && !modal) {
+        if (g_libs.open) g_libs.open = false;
+        else libs_open(doc);
+    }
     if (ccr_gui_button((ccr_rect){ (float)width - 214.0f - tw, 7.0f, 32.0f, 26.0f }, "?", bs) &&
         !modal) {
         ev->open = true;   /* the agreement again, to read it at leisure */
@@ -1140,11 +1449,6 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
 }
 
 /* ------------------------------------------------------------ palette */
-
-static bool point_in(ccr_vec2 p, ccr_rect r)
-{
-    return p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h;
-}
 
 static ccr_rect palette_area(int height)
 {
@@ -1337,7 +1641,9 @@ int ccr_run(int argc, char **argv)
     if (opt.dump_ast)
         return run_dump_ast(&opt);
     if (opt.make_blocks) {
-        if (ccr_lib_make(opt.make_blocks, opt.clang_args, opt.clang_arg_count, stdout))
+        char project[CCR_FILES_PATH];
+        ccr_files_project_of(opt.make_blocks, project, (int)sizeof project);
+        if (ccr_lib_make(opt.make_blocks, opt.clang_args, opt.clang_arg_count, project, stdout))
             return 0;
         fprintf(stderr, "ccratch: clang could not read '%s'\n", opt.make_blocks);
         return 1;
@@ -1409,6 +1715,7 @@ int ccr_run(int argc, char **argv)
         if (!doc.loaded)
             te.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
+        const bool modal = eula.open || g_libs.open;   /* a dialog has the mouse */
 
         if (ccr_gui_file_dropped(dropped, sizeof dropped) &&
             switch_to(&doc, &canvas, viewport, dropped, &opt)) {
@@ -1428,13 +1735,13 @@ int ccr_run(int argc, char **argv)
         const bool inside = point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h)));
         const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
         palette_follow(&doc);
-        const bool can_act = doc.loaded && te.node == CCR_NONE && !eula.open &&
+        const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
                              g_fpanel.naming == CCR_NAMING_NONE;   /* typing a new file's name */
 
         /* the files panel slides in from the right, over the canvas */
-        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_P) && !eula.open)
+        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_P) && !modal)
             files_toggle(&doc);
-        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_TAB) && !eula.open && te.node == CCR_NONE &&
+        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_TAB) && !modal && te.node == CCR_NONE &&
             doc.ed.drag == CCR_DRAG_IDLE && !pie.open && !opm.open)
             next_file(&doc, &canvas);
         {
@@ -1447,7 +1754,7 @@ int ccr_run(int argc, char **argv)
         }
         const ccr_rect files_r = files_area(w, h);
         const bool over_files = g_files_t > 0.0f && point_in(m, files_r);
-        if (g_files_open && !eula.open && !pie.open && !opm.open && te.node == CCR_NONE &&
+        if (g_files_open && !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
             (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             ccr_open_file of[MAX_OPEN + 1];
             const int nof = open_files(&doc, of);
@@ -1460,7 +1767,7 @@ int ccr_run(int argc, char **argv)
             else if (ev == CCR_FILES_CLOSE)
                 close_file(&doc, &canvas, path);
         }
-        if (!pie.open && !eula.open)
+        if (!pie.open && !modal)
             ccr_palette_update(&g_palette, palette_area(h), m, ccr_gui_wheel(),
                                over_palette && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), dt);
 
@@ -1535,7 +1842,7 @@ int ccr_run(int argc, char **argv)
             fit_view_smooth(&canvas, &doc, viewport);
 
         const bool gliding = glide_step(&canvas, dt);
-        if (!pie.open && !was_open && !eula.open) {
+        if (!pie.open && !was_open && !modal) {
             const ccr_canvas before = canvas;
             ccr_canvas_update(&canvas, viewport);
             /* the user panned or zoomed: they have the wheel now */
@@ -1613,7 +1920,7 @@ int ccr_run(int argc, char **argv)
             ccr_open_file of[MAX_OPEN + 1];
             const int nof = open_files(&doc, of);
             ccr_files_panel_draw(&g_fpanel, &g_files, files_area(w, h), of, nof);
-            if (g_files_open && te.node == CCR_NONE && !eula.open && !pie.open && !opm.open) {
+            if (g_files_open && te.node == CCR_NONE && !modal && !pie.open && !opm.open) {
                 char made[CCR_FILES_PATH];
                 if (ccr_files_panel_tools(&g_fpanel, &g_files, files_area(w, h), button_style(false),
                                           made, (int)sizeof made) == CCR_FILES_OPEN &&
@@ -1628,6 +1935,8 @@ int ccr_run(int argc, char **argv)
         ccr_pie_draw(&pie);
         if (doc.loaded)
             op_menu_draw(&opm, &doc.ed, m, w, h);
+        if (!eula.open)
+            libs_frame(w, h, &doc, &opt);
         eula_frame(&eula, w, h, &doc);
 
         ++frame;

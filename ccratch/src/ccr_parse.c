@@ -885,3 +885,186 @@ bool ccr_parse_file(const char *path, const char *const *args, int arg_count, cc
     clang_disposeIndex(index);
     return root != CCR_NONE;
 }
+
+/* ------------------------------------------------------- library API */
+
+typedef struct api_ctx {
+    ccr_api *api;
+    char     dir[PATH_MAX];   /* the library's own headers live under here */
+    size_t   dir_len;
+    /* anonymous enums, named by a typedef that comes after them */
+    unsigned pending_hash;
+    int      pending_enum;
+    bool     main_only;
+} api_ctx;
+
+static void copy_str(char *dst, size_t cap, CXString s)
+{
+    const char *c = clang_getCString(s);
+    snprintf(dst, cap, "%s", c ? c : "");
+    clang_disposeString(s);
+}
+
+static void type_name(char *dst, size_t cap, CXType t)
+{
+    copy_str(dst, cap, clang_getTypeSpelling(t));
+    if (strcmp(dst, "_Bool") == 0)
+        snprintf(dst, cap, "bool");
+}
+
+/* Declared in one of the library's own headers? */
+static bool in_library(const api_ctx *ctx, CXCursor c)
+{
+    CXFile file;
+    clang_getSpellingLocation(clang_getCursorLocation(c), &file, NULL, NULL, NULL);
+    if (!file)
+        return false;
+    char path[PATH_MAX], real[PATH_MAX];
+    copy_str(path, sizeof path, clang_getFileName(file));
+    if (!realpath(path, real))
+        return false;
+    if (ctx->main_only)   /* a header right in /usr/include: its neighbours are libc */
+        return strcmp(real, ctx->api->header) == 0;
+    return strncmp(real, ctx->dir, ctx->dir_len) == 0 && real[ctx->dir_len] == '/';
+}
+
+static enum CXChildVisitResult api_enum_value(CXCursor c, CXCursor parent, CXClientData data)
+{
+    (void)parent;
+    if (clang_getCursorKind(c) == CXCursor_EnumConstantDecl) {
+        char name[128];
+        copy_str(name, sizeof name, clang_getCursorSpelling(c));
+        ccr_api_enum_value((ccr_api_enum *)data, name);
+    }
+    return CXChildVisit_Continue;
+}
+
+/* Bodies are skipped (faster), so clang does not call these definitions:
+ * a `{` in the declaration's text says it has one. */
+static bool has_body(CXCursor c)
+{
+    if (clang_isCursorDefinition(c) || clang_Cursor_isFunctionInlined(c))
+        return true;
+    CXTranslationUnit tu = clang_Cursor_getTranslationUnit(c);
+    CXToken *toks = NULL;
+    unsigned n = 0;
+    clang_tokenize(tu, clang_getCursorExtent(c), &toks, &n);
+    bool body = false;
+    for (unsigned i = 0; i < n && !body; ++i)
+        if (clang_getTokenKind(toks[i]) == CXToken_Punctuation) {
+            CXString sp = clang_getTokenSpelling(tu, toks[i]);
+            body = strcmp(clang_getCString(sp), "{") == 0;
+            clang_disposeString(sp);
+        }
+    clang_disposeTokens(tu, toks, n);
+    return body;
+}
+
+static enum CXChildVisitResult api_visit(CXCursor c, CXCursor parent, CXClientData data)
+{
+    (void)parent;
+    api_ctx *ctx = data;
+    const enum CXCursorKind kind = clang_getCursorKind(c);
+    if (kind == CXCursor_LinkageSpec)   /* extern "C" { ... } */
+        return CXChildVisit_Recurse;
+    if (!in_library(ctx, c))
+        return CXChildVisit_Continue;
+
+    if (kind == CXCursor_FunctionDecl) {
+        char name[128];
+        copy_str(name, sizeof name, clang_getCursorSpelling(c));
+        const bool body = has_body(c);
+        const bool is_static = clang_Cursor_getStorageClass(c) == CX_SC_Static;
+        if (!name[0] || name[0] == '_' || (is_static && !body))
+            return CXChildVisit_Continue;
+        ccr_api_func *f = ccr_api_add_func(ctx->api, name);
+        if (!f)
+            return CXChildVisit_Break;
+        const CXType t = clang_getCursorType(c);
+        type_name(f->ret, sizeof f->ret, clang_getResultType(t));
+        const int n = clang_Cursor_getNumArguments(c);
+        f->nparams = 0;
+        for (int i = 0; i < n && i < CCR_API_MAX_PARAMS; ++i) {
+            CXCursor a = clang_Cursor_getArgument(c, (unsigned)i);
+            ccr_api_param *p = &f->params[f->nparams++];
+            copy_str(p->name, sizeof p->name, clang_getCursorSpelling(a));
+            type_name(p->type, sizeof p->type, clang_getCursorType(a));
+        }
+        f->variadic = clang_isFunctionTypeVariadic(t) != 0;
+        f->inline_def = f->inline_def || body;
+        if (!f->doc[0])
+            copy_str(f->doc, sizeof f->doc, clang_Cursor_getRawCommentText(c));
+        return CXChildVisit_Continue;
+    }
+    if (kind == CXCursor_EnumDecl && clang_isCursorDefinition(c)) {
+        char name[128];
+        copy_str(name, sizeof name, clang_getCursorSpelling(c));
+        const bool anonymous = !name[0] || strchr(name, '(') || clang_Cursor_isAnonymous(c);
+        ccr_api_enum *e = ccr_api_add_enum(ctx->api, anonymous ? "" : name);
+        if (!e)
+            return CXChildVisit_Break;
+        clang_visitChildren(c, api_enum_value, e);
+        ctx->pending_hash = clang_hashCursor(c);
+        ctx->pending_enum = ctx->api->enum_count - 1;
+        return CXChildVisit_Continue;
+    }
+    if (kind == CXCursor_TypedefDecl && ctx->pending_enum >= 0) {
+        /* typedef enum { ... } Name; */
+        CXType under = clang_getTypedefDeclUnderlyingType(c);
+        CXCursor decl = clang_getTypeDeclaration(clang_Type_getNamedType(under).kind != CXType_Invalid
+                                                 ? clang_Type_getNamedType(under) : under);
+        if (clang_hashCursor(decl) == ctx->pending_hash) {
+            ccr_api_enum *e = &ctx->api->enums[ctx->pending_enum];
+            if (!e->name[0])
+                copy_str(e->name, sizeof e->name, clang_getCursorSpelling(c));
+        }
+    }
+    return CXChildVisit_Continue;
+}
+
+bool ccr_parse_api(const char *header, const char *const *args, int arg_count, ccr_api *out)
+{
+    const char *base[CCR_API_MAX_PARAMS * 4 + 8];
+    int n = 0;
+    base[n++] = "-x";
+    base[n++] = "c";
+    base[n++] = "-std=c11";
+    base[n++] = "-fparse-all-comments";
+    for (int i = 0; i < arg_count && n < (int)(sizeof base / sizeof base[0]) - 2; ++i)
+        base[n++] = args[i];
+    const char *resource = ccr_parse_resource_dir(NULL);
+    if (resource) {
+        base[n++] = "-resource-dir";
+        base[n++] = resource;
+    }
+
+    CXIndex index = clang_createIndex(0, 0);
+    if (!index)
+        return false;
+    CXTranslationUnit tu = NULL;
+    enum CXErrorCode err = clang_parseTranslationUnit2(
+        index, header, base, n, NULL, 0,
+        CXTranslationUnit_SkipFunctionBodies | CXTranslationUnit_KeepGoing, &tu);
+    if (err != CXError_Success || !tu) {
+        clang_disposeIndex(index);
+        return false;
+    }
+
+    api_ctx ctx = { .api = out, .pending_enum = -1 };
+    char real[PATH_MAX];
+    if (!realpath(header, real))
+        snprintf(real, sizeof real, "%s", header);
+    snprintf(out->header, sizeof out->header, "%s", real);
+    char *slash = strrchr(real, '/');
+    if (slash)
+        *slash = '\0';
+    snprintf(ctx.dir, sizeof ctx.dir, "%s", real);
+    ctx.dir_len = strlen(ctx.dir);
+    ctx.main_only = strcmp(ctx.dir, "/usr/include") == 0 || strcmp(ctx.dir, "/usr/local/include") == 0;
+    snprintf(out->dir, sizeof out->dir, "%s", ctx.dir);
+
+    clang_visitChildren(clang_getTranslationUnitCursor(tu), api_visit, &ctx);
+    clang_disposeTranslationUnit(tu);
+    clang_disposeIndex(index);
+    return true;
+}

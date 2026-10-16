@@ -26,6 +26,7 @@ add_custom_command(
 # The code, compiled once. libccratch.so is made from it, and so are the
 # tests, which need the internals the .so keeps hidden.
 add_library(ccratch_core OBJECT
+    src/ccr_api.c
     src/ccr_app.c
     src/ccr_ast.c
     src/ccr_blocks.c
