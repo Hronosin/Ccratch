@@ -1133,6 +1133,49 @@ static void test_expression_not_movable(void)
     ccr_editor_free(&ed);
 }
 
+/* A click on an operator swaps it for another of its kind; the new one
+ * is printed around the operands' own text, with parentheses if needed. */
+static void test_swap_operator(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id gt = expr_node(&ed, "n > 3", 0);
+    CHECK(ccr_editor_set_op(&ed, gt, ">="), "> to >= refused");
+    CHECK(!ccr_editor_set_op(&ed, gt, "+"), "a comparison became a sum");
+
+    /* return a + b + pr.x + pr.y  is  ((a + b) + pr.x) + pr.y */
+    ccr_node_id inner = expr_node(&ed, "a + b", 0);
+    CHECK(ccr_editor_set_op(&ed, inner, "*"), "+ to * refused");
+    ccr_node_id outer = expr_node(&ed, "a + b + pr.x + pr.y", 0);
+    CHECK(ccr_editor_set_op(&ed, outer, "*"), "outer + to * refused");
+
+    ccr_node_id inc = stmt(&ed, "n++");
+    CHECK(ccr_editor_set_op(&ed, inc, "--"), "++ to -- refused");
+
+    /* the * of TWICE(x) lives in the macro: not offered */
+    for (ccr_node_id i = 0; i < ed.ast.node_count; ++i)
+        if (N(&ed, i)->kind == CCR_NODE_BINARY_OP &&
+            strcmp(ccr_ast_str(&ed.ast, N(&ed, i)->op), "*") == 0 && !(N(&ed, i)->flags & CCR_FLAG_NEW))
+            CHECK(!ccr_codegen_can_reprint(&ed.ast, i), "an operator inside a macro is offered");
+
+    char err[256];
+    char *text = save_to(&ed, "swap_op.c", err, sizeof err);
+    CHECK(text != NULL, "save failed: %s", err);
+    if (text) {
+        CHECK(strstr(text, "if (n >= 3)\n"), "n >= 3 not saved");
+        CHECK(strstr(text, "return (a * b + pr.x) * pr.y;"), "parentheses wrong:\n%s", text);
+        CHECK(strstr(text, "        n--;\n"), "n-- not saved");
+        free(text);
+        check_compiles("swap_op.c");
+    }
+    while (ccr_editor_undo(&ed))
+        ;
+    char *back = generate(&ed);
+    CHECK(back && strcmp(back, ed.ast.source) == 0, "undoing the swaps did not restore the file");
+    free(back);
+    ccr_editor_free(&ed);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -1158,6 +1201,7 @@ int main(int argc, char **argv)
     test_every_template();
     test_new_blocks();
     test_all_templates_spawn();
+    test_swap_operator();
     test_trash();
     test_delete();
     test_duplicate();

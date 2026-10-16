@@ -1,5 +1,7 @@
 #include "ccr_template.h"
 
+#include <string.h>
+
 static const char *const g_labels[CCR_TEMPLATE_COUNT] = {
 #define X(id, cat, label) label,
     CCR_TEMPLATES(X)
@@ -82,6 +84,32 @@ static ccr_node_id call(ccr_ast *ast, ccr_node_id parent, const char *name, cons
     word(ast, n, CCR_FLAG_WORD_NAME, name);
     ccr_template_text(ast, n, args);
     return n;
+}
+
+const char *const *ccr_op_choices(const char *op, bool unary, int *count)
+{
+    static const char *const arith[]  = { "+", "-", "*", "/", "%" };
+    static const char *const test[]   = { "==", "!=", "<", ">", "<=", ">=", "&&", "||" };
+    static const char *const bits[]   = { "&", "|", "^", "<<", ">>" };
+    static const char *const assign[] = { "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
+                                          "<<=", ">>=" };
+    static const char *const prefix[] = { "!", "~", "-", "+" };
+    static const char *const step[]   = { "++", "--" };
+    static const struct { const char *const *v; int n; bool unary; } groups[] = {
+        { arith, 5, false }, { test, 8, false }, { bits, 5, false }, { assign, 11, false },
+        { prefix, 4, true }, { step, 2, true },
+    };
+    for (size_t g = 0; g < sizeof groups / sizeof groups[0]; ++g) {
+        if (groups[g].unary != unary)
+            continue;
+        for (int i = 0; i < groups[g].n; ++i)
+            if (strcmp(groups[g].v[i], op) == 0) {
+                *count = groups[g].n;
+                return groups[g].v;
+            }
+    }
+    *count = 0;
+    return NULL;
 }
 
 bool ccr_template_is_reporter(ccr_template t)

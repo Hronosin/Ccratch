@@ -182,6 +182,7 @@ typedef struct ccr_node_links {
     uint32_t    flags;
     ccr_str     name;   /* text typed into a palette block's slot */
     ccr_str     type;   /* and a new declaration's type */
+    ccr_str     op;     /* an operator picked from the dropdown */
     uint32_t    place_b, place_e;
 } ccr_node_links;
 

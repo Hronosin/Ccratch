@@ -95,6 +95,10 @@ typedef struct ccr_editor {
 
     /* a text slot was clicked: the app opens a text box for it */
     ccr_node_id    edit_request;
+    ccr_node_id    press_op;       /* pressed on an operator that can change */
+    ccr_node_id    op_request;     /* clicked one: the app shows the choices */
+    ccr_node_id    hover_op;       /* an operator under the mouse */
+    ccr_rect       hover_op_rect;  /* world */
 
     /* a duplicate stuck to the mouse: dropped on the next click */
     bool           carrying;
@@ -106,6 +110,8 @@ typedef struct ccr_editor {
     bool           animate;
     ccr_vec2       settle_from, settle_to;
     float          settle_t;
+    ccr_node_id    hover_arrow;    /* the goto whose arrow is under the mouse */
+    ccr_node_id    hover_far;      /* and the end a click there goes to */
     ccr_node_id    landed_first, landed_last;   /* just snapped in: a ripple */
     float          landed_t;
     ccr_particle   particles[CCR_MAX_PARTICLES];
@@ -146,6 +152,14 @@ bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text);
 
 /* The text slot to edit after a click, or CCR_NONE. Clears the request. */
 ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed);
+
+/* An operator was clicked (a + b, x += 1, !ok...): which node, or
+ * CCR_NONE. Its choices are ccr_op_choices(). */
+ccr_node_id ccr_editor_take_op_request(ccr_editor *ed);
+
+/* Swaps the operator of `node` (one undo step); saving prints it anew,
+ * with parentheses if the new one binds differently. */
+bool ccr_editor_set_op(ccr_editor *ed, ccr_node_id node, const char *op);
 
 /* What is under the mouse, and what can be done to it (for the pie menu). */
 typedef struct ccr_context {
@@ -196,6 +210,17 @@ void ccr_editor_tick(ccr_editor *ed, float dt);
 /* A stack still gliding into place is put there now. Every change
  * (undo, delete, ...) does this first; call it before saving. */
 void ccr_editor_settle(ccr_editor *ed);
+
+/* The goto arrow within `tolerance` (world units) of `world`, or CCR_NONE.
+ * `far_end` gets the end a click there takes you to: the one further from
+ * the click, along the arrow (near the goto: its label; near the label:
+ * the goto), so a click by mistake is undone by clicking again. */
+ccr_node_id ccr_editor_arrow_at(const ccr_editor *ed, ccr_vec2 world, float tolerance,
+                                ccr_node_id *far_end);
+
+/* A ring round `node` once `delay` seconds have passed (after the view
+ * has glided to it). Needs animations on. */
+void ccr_editor_flash(ccr_editor *ed, ccr_node_id node, float delay);
 
 bool ccr_editor_undo(ccr_editor *ed);
 bool ccr_editor_redo(ccr_editor *ed);

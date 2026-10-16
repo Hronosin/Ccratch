@@ -67,6 +67,29 @@ int main(int argc, char **argv)
               "goto %s does not find its label", gotos[i]);
     }
 
+    /* clicking the arrow: near the goto it goes to the label, near the
+     * label back to the goto; nowhere near it, nothing */
+    {
+        ccr_node_id go = find(&ed, CCR_NODE_GOTO, "close_file");
+        ccr_node_id lab = find(&ed, CCR_NODE_LABEL, "close_file");
+        ccr_rect g, l;
+        ccr_editor_node_rect(&ed, go, &g);
+        ccr_editor_node_rect(&ed, lab, &l);
+        ccr_node_id far = CCR_NONE;
+        /* just right of the goto, on its arrow */
+        ccr_vec2 near_go = { g.x + g.w + 4.0f, g.y + g.h * 0.5f };
+        CHECK(ccr_editor_arrow_at(&ed, near_go, 6.0f, &far) == go, "the arrow by the goto was missed");
+        CHECK(far == lab, "a click by the goto does not go to the label");
+        ccr_vec2 near_label = { l.x + l.w + 14.0f, l.y + l.h * 0.5f };
+        CHECK(ccr_editor_arrow_at(&ed, near_label, 6.0f, &far) == go, "the arrow by the label was missed");
+        CHECK(far == go, "a click by the label does not come back to the goto");
+        CHECK(ccr_editor_arrow_at(&ed, (ccr_vec2){ -5000.0f, -5000.0f }, 6.0f, &far) == CCR_NONE,
+              "an arrow found in empty space");
+        /* hovering it lights it up, so it is clear a click does something */
+        frame(&ed, near_go, false, false, false);
+        CHECK(ed.hover_arrow == go && ed.hover_far == lab, "hovering the arrow is not noticed");
+    }
+
     /* `out:` dragged onto the canvas: goto out breaks, the others do not */
     ccr_rect r;
     ccr_node_id out = find(&ed, CCR_NODE_LABEL, "out");

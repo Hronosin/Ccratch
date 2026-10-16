@@ -33,4 +33,9 @@ bool ccr_codegen(const ccr_ast *ast, char **out, size_t *out_len, char *err, siz
  */
 bool ccr_codegen_can_move(const ccr_ast *ast, ccr_node_id id);
 
+/* Can the operator of `id` (a BinaryOp or UnaryOp) be changed? Then it
+ * is printed anew around its operands' own text, so it must not come from
+ * a macro, and everything up to its function must be safe to rewrite. */
+bool ccr_codegen_can_reprint(const ccr_ast *ast, ccr_node_id id);
+
 #endif /* CCR_CODEGEN_H */

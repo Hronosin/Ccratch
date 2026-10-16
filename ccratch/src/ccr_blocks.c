@@ -1174,6 +1174,25 @@ ccr_node_id ccr_blocks_hit(const ccr_blocks *b, ccr_vec2 local)
     return CCR_NONE;
 }
 
+bool ccr_blocks_hit_text(const ccr_blocks *b, ccr_vec2 local, ccr_node_id *node,
+                         const char **text, ccr_rect *rect)
+{
+    if (!contains(b->bounds, local))
+        return false;
+    for (uint32_t i = b->prim_count; i-- > 0;) {
+        const ccr_prim *p = &b->prims[i];
+        /* a little room around the word: operators are small */
+        const ccr_rect r = { p->rect.x - 4.0f, p->rect.y - 3.0f, p->rect.w + 8.0f, p->rect.h + 6.0f };
+        if (p->kind == CCR_PRIM_TEXT && contains(r, local)) {
+            *node = p->node;
+            *text = b->text + p->text;
+            *rect = p->rect;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool ccr_blocks_find(const ccr_blocks *b, ccr_node_id node, ccr_rect *out)
 {
     for (uint32_t i = 0; i < b->prim_count; ++i) {

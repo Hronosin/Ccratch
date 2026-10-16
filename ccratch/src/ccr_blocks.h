@@ -99,6 +99,11 @@ void ccr_blocks_free(ccr_blocks *b);
 /* Topmost node under a script-local point, or CCR_NONE. */
 ccr_node_id ccr_blocks_hit(const ccr_blocks *b, ccr_vec2 local);
 
+/* The word under a script-local point, if any: which node's line it is
+ * part of, the text, and where. */
+bool ccr_blocks_hit_text(const ccr_blocks *b, ccr_vec2 local, ccr_node_id *node,
+                         const char **text, ccr_rect *rect);
+
 /* Rectangle of the first primitive drawn for `node`, if any. */
 bool ccr_blocks_find(const ccr_blocks *b, ccr_node_id node, ccr_rect *out);
 

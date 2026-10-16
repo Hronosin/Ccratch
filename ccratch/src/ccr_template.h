@@ -106,6 +106,10 @@ bool        ccr_template_is_reporter(ccr_template t);
  * reporter's root). Returns the node made, or CCR_NONE if out of memory. */
 ccr_node_id ccr_template_build(ccr_ast *ast, ccr_template t, ccr_node_id parent);
 
+/* The operators `op` can be swapped for, itself included (+ for - * / %,
+ * == for != < > && ||...); NULL if it is not one to swap (&x, *p). */
+const char *const *ccr_op_choices(const char *op, bool unary, int *count);
+
 /* A new node flagged CCR_FLAG_NEW (Blocks also DIRTY, with a 4-space
  * indent: printed with relative indents). */
 ccr_node_id ccr_template_node(ccr_ast *ast, ccr_node_kind kind, ccr_node_id parent);

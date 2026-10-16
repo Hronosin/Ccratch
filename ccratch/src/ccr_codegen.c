@@ -436,7 +436,10 @@ static void emit_operand(gen *g, ccr_node_id id, unsigned depth)
              c = N(g, c)->next_sibling)
             if (!(N(g, c)->flags & CCR_FLAG_WORD))
                 ++index;
-    const bool placed = (n->flags & (CCR_FLAG_NEW | CCR_FLAG_MOVED)) != 0;
+    /* where it was parsed, the text around it had whatever parentheses it
+     * needed; somewhere new, or with its parent printed anew, it may not */
+    const bool placed = (n->flags & (CCR_FLAG_NEW | CCR_FLAG_MOVED)) != 0 ||
+                        (n->parent != CCR_NONE && (N(g, n->parent)->flags & CCR_FLAG_NEW));
     bool wrap = placed && expr_prec(g, id) < operand_need(g, n->parent, index);
     if (wrap && n->parent != CCR_NONE && !(N(g, n->parent)->flags & CCR_FLAG_NEW) &&
         n->place_e > n->place_b && n->place_e <= g->ast->source_len) {
@@ -853,6 +856,27 @@ static bool spliceable(const ccr_ast *ast, ccr_node_id id)
  * to carry, and everything from its parent up to its function must be
  * safe to rewrite.
  */
+static bool chain_ok(const ccr_ast *ast, ccr_node_id first);
+
+bool ccr_codegen_can_reprint(const ccr_ast *ast, ccr_node_id id)
+{
+    const ccr_node *n = AN(ast, id);
+    if (n->kind != CCR_NODE_BINARY_OP && n->kind != CCR_NODE_UNARY_OP)
+        return false;
+    if (n->flags & CCR_FLAG_NEW)
+        return true;   /* printed anyway */
+    /* its own text, its operands in it one after another (no macro) */
+    if (n->src_e <= n->src_b || n->place_e <= n->place_b || !spliceable(ast, id))
+        return false;
+    uint32_t kids = 0;
+    for (ccr_node_id c = n->first_child; c != CCR_NONE; c = AN(ast, c)->next_sibling, ++kids)
+        if (!(AN(ast, c)->flags & (CCR_FLAG_NEW | CCR_FLAG_MOVED)) && AN(ast, c)->src_e <= AN(ast, c)->src_b)
+            return false;
+    if (kids != (n->kind == CCR_NODE_BINARY_OP ? 2u : 1u))
+        return false;
+    return chain_ok(ast, n->parent);
+}
+
 bool ccr_codegen_can_move(const ccr_ast *ast, ccr_node_id id)
 {
     const ccr_node *n = AN(ast, id);
@@ -863,11 +887,18 @@ bool ccr_codegen_can_move(const ccr_ast *ast, ccr_node_id id)
     if (n->kind == CCR_NODE_TEXT ? !*ccr_ast_str(ast, n->name)
                                  : (!(n->flags & CCR_FLAG_NEW) && n->src_e <= n->src_b))
         return false;   /* an empty slot: nothing to take */
-    /* everything around it is spliced on the way down to it, up to its
-     * function (blocks included: a block a macro made has statements that
-     * overlap); the file itself and loose roots are not */
+    return chain_ok(ast, n->parent);
+}
+
+/*
+ * Everything from `first` up to its function is spliced on the way down
+ * (blocks included: a block a macro made has statements that overlap);
+ * the file itself and loose roots are not.
+ */
+static bool chain_ok(const ccr_ast *ast, ccr_node_id first)
+{
     ccr_node_id top = CCR_NONE;
-    for (ccr_node_id a = n->parent; a != CCR_NONE && AN(ast, a)->parent != CCR_NONE;
+    for (ccr_node_id a = first; a != CCR_NONE && AN(ast, a)->parent != CCR_NONE;
          a = AN(ast, a)->parent) {
         if (!spliceable(ast, a))
             return false;

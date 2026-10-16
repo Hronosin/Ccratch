@@ -14,6 +14,7 @@
 #define LOOSE_ALPHA     0.55f
 #define SETTLE_TIME     0.13f   /* seconds a dropped stack takes to glide in */
 #define RIPPLE_TIME     0.35f   /* and how long the ring round it lasts */
+#define ARROW_GRIP      7.0f    /* pixels from a goto arrow that still hit it */
 #define HISTORY_MAX    500
 
 static const ccr_node *N(const ccr_editor *ed, ccr_node_id id) { return &ed->ast.nodes[id]; }
@@ -226,7 +227,8 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     memset(ast, 0, sizeof *ast);   /* ownership moved */
     ed->dragged = UINT32_MAX;
     ed->edit_request = CCR_NONE;
-    ed->hover = CCR_NONE;
+    ed->hover = ed->hover_arrow = ed->hover_far = CCR_NONE;
+    ed->press_op = ed->op_request = ed->hover_op = CCR_NONE;
     ed->landed_first = ed->landed_last = CCR_NONE;
     ed->rng = 0x9E3779B9u;
     if (ed->ast.node_count == 0)
@@ -644,6 +646,69 @@ bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text)
     }
     forget_sizes(ed, slot);
     uint32_t i = script_index_of_root(ed, script_root_of(ed, slot));
+    if (i != UINT32_MAX)
+        relayout(ed, i);
+    commit_change(ed);
+    return true;
+}
+
+/* An operator under a world point that can be swapped for another. */
+static ccr_node_id op_under(const ccr_editor *ed, ccr_vec2 world, ccr_rect *rect)
+{
+    uint32_t si;
+    if (pick(ed, world, &si) == CCR_NONE)
+        return CCR_NONE;
+    const ccr_script *s = &ed->scripts[si];
+    ccr_node_id node;
+    const char *text;
+    ccr_rect r;
+    if (!ccr_blocks_hit_text(&s->blocks, (ccr_vec2){ world.x - s->pos.x, world.y - s->pos.y },
+                             &node, &text, &r))
+        return CCR_NONE;
+    const ccr_node *n = N(ed, node);
+    if ((n->kind != CCR_NODE_BINARY_OP && n->kind != CCR_NODE_UNARY_OP) ||
+        strcmp(text, ccr_ast_str(&ed->ast, n->op)) != 0)
+        return CCR_NONE;
+    int count;
+    if (!ccr_op_choices(text, n->kind == CCR_NODE_UNARY_OP, &count) ||
+        !ccr_codegen_can_reprint(&ed->ast, node))
+        return CCR_NONE;
+    if (rect)
+        *rect = (ccr_rect){ r.x + s->pos.x, r.y + s->pos.y, r.w, r.h };
+    return node;
+}
+
+ccr_node_id ccr_editor_take_op_request(ccr_editor *ed)
+{
+    ccr_node_id id = ed->op_request;
+    ed->op_request = CCR_NONE;
+    return id;
+}
+
+bool ccr_editor_set_op(ccr_editor *ed, ccr_node_id node, const char *op)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE || node >= ed->ast.node_count ||
+        !ccr_codegen_can_reprint(&ed->ast, node))
+        return false;
+    const ccr_node *n = N(ed, node);
+    int count;
+    const char *const *choices = ccr_op_choices(ccr_ast_str(&ed->ast, n->op),
+                                                n->kind == CCR_NODE_UNARY_OP, &count);
+    bool allowed = false;
+    for (int i = 0; choices && i < count; ++i)
+        allowed = allowed || strcmp(choices[i], op) == 0;
+    if (!allowed)
+        return false;
+    if (strcmp(ccr_ast_str(&ed->ast, n->op), op) == 0)
+        return true;   /* the same one: not an undo step */
+
+    begin_change(ed);
+    ccr_ast_touch(&ed->ast, node);
+    ed->ast.nodes[node].op = ccr_ast_intern(&ed->ast, op);
+    ed->ast.nodes[node].flags |= CCR_FLAG_NEW;   /* printed anew, around its operands */
+    forget_sizes(ed, node);
+    uint32_t i = script_index_of_root(ed, script_root_of(ed, node));
     if (i != UINT32_MAX)
         relayout(ed, i);
     commit_change(ed);
@@ -1130,9 +1195,16 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
         ccr_editor_settle(ed);   /* grabbing something else: in it goes, now */
     }
 
+    ed->hover_arrow = ed->hover_far = ed->hover_op = CCR_NONE;
     if (ed->drag != CCR_DRAG_MOVING) {
         uint32_t si;
         ed->hover = pick(ed, in->mouse, &si);
+        if (ed->hover != CCR_NONE)
+            ed->hover_op = op_under(ed, in->mouse, &ed->hover_op_rect);
+        if (ed->hover == CCR_NONE)   /* blocks first; between them, arrows */
+            ed->hover_arrow = ccr_editor_arrow_at(ed, in->mouse,
+                                                  ARROW_GRIP / (in->zoom > 0.0f ? in->zoom : 1.0f),
+                                                  &ed->hover_far);
     } else {
         ed->hover = CCR_NONE;
     }
@@ -1142,6 +1214,7 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
         if (in->pressed) {
             uint32_t si;
             ed->press_node = pick(ed, in->mouse, &si);
+            ed->press_op = op_under(ed, in->mouse, NULL);
             if (ed->press_node != CCR_NONE) {
                 ed->press_at = in->mouse;
                 ed->drag = CCR_DRAG_PRESSED;
@@ -1152,7 +1225,9 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
     case CCR_DRAG_PRESSED: {
         if (!in->down) {
             ed->drag = CCR_DRAG_IDLE;   /* a click, not a drag */
-            if (ed->press_node != CCR_NONE && N(ed, ed->press_node)->kind == CCR_NODE_TEXT)
+            if (ed->press_op != CCR_NONE)
+                ed->op_request = ed->press_op;
+            else if (ed->press_node != CCR_NONE && N(ed, ed->press_node)->kind == CCR_NODE_TEXT)
                 ed->edit_request = ed->press_node;
             break;
         }
@@ -1275,77 +1350,173 @@ static void march(const ccr_vec2 *p, int n, float spacing, float phase, float ra
 
 /*
  * goto arrows: out of the right side of the goto, along a lane right of
- * the whole function, into the right side of its label. Faint until the
- * mouse is on one end; red and dashed when the label is not where the
- * goto can reach it, and a red mark when there is no label at all.
+ * the whole function, into the right side of its label. Laid out in world
+ * units, for drawing and for clicking alike.
+ */
+typedef struct jump_arrow {
+    ccr_node_id    go, label;
+    ccr_jump_state st;
+    bool           path;      /* false: no label to point at (a red mark instead) */
+    ccr_vec2       p[4];      /* world: goto, lane, lane, label */
+} jump_arrow;
+
+enum { MAX_ARROWS = 256 };
+
+/* The arrows of script `si`; shorter jumps get the lanes nearer the
+ * blocks, so arrows nest like brackets instead of crossing. */
+static uint32_t script_arrows(const ccr_editor *ed, uint32_t si, jump_arrow *out)
+{
+    const ccr_script *s = &ed->scripts[si];
+    struct { ccr_node_id go, label; ccr_jump_state st; float span; } v[MAX_ARROWS];
+    uint32_t na = 0;
+    for (uint32_t k = 0; k < s->blocks.jump_count && na < MAX_ARROWS; ++k) {
+        const ccr_node_id go = s->blocks.jumps[k];
+        if (N(ed, go)->kind != CCR_NODE_GOTO || !*ccr_ast_str(&ed->ast, N(ed, go)->name))
+            continue;
+        ccr_rect f, t;
+        ccr_node_id label;
+        ccr_jump_state st = ccr_editor_jump(ed, go, &label);
+        float span = 1e9f;
+        if (ccr_editor_node_rect(ed, go, &f) && label != CCR_NONE &&
+            ccr_editor_node_rect(ed, label, &t))
+            span = fabsf(t.y - f.y);
+        uint32_t j = na++;
+        while (j > 0 && v[j - 1].span > span) {
+            v[j] = v[j - 1];
+            --j;
+        }
+        v[j].go = go;
+        v[j].label = label;
+        v[j].st = st;
+        v[j].span = span;
+    }
+
+    uint32_t n = 0, lane = 0;
+    for (uint32_t k = 0; k < na; ++k) {
+        ccr_rect from;
+        if (!ccr_editor_node_rect(ed, v[k].go, &from))
+            continue;
+        jump_arrow *a = &out[n];
+        a->go = v[k].go;
+        a->label = v[k].label;
+        a->st = v[k].st;
+        a->path = false;
+        a->p[0] = (ccr_vec2){ from.x + from.w, from.y + from.h * 0.5f };
+        if (a->st != CCR_JUMP_MISSING) {
+            ccr_rect to;
+            const uint32_t ls = script_index_of_root(ed, script_root_of(ed, a->label));
+            if (!ccr_editor_node_rect(ed, a->label, &to) || ls == UINT32_MAX)
+                continue;
+            /* the lane: right of both scripts, one lane per arrow */
+            float right = s->pos.x + s->blocks.bounds.x + s->blocks.bounds.w;
+            const ccr_script *o = &ed->scripts[ls];
+            float oright = o->pos.x + o->blocks.bounds.x + o->blocks.bounds.w;
+            if (oright > right)
+                right = oright;
+            const float lx = right + 18.0f + 12.0f * (float)(lane++ % 8);
+            const float by = to.y + to.h * 0.5f;
+            a->p[1] = (ccr_vec2){ lx, a->p[0].y };
+            a->p[2] = (ccr_vec2){ lx, by };
+            a->p[3] = (ccr_vec2){ to.x + to.w + 9.0f, by };
+            a->path = true;
+        }
+        ++n;
+    }
+    return n;
+}
+
+/* How far `m` is from the arrow's path, and where along it (0 at the
+ * goto, 1 at the label). */
+static float arrow_distance(const jump_arrow *a, ccr_vec2 m, float *along)
+{
+    float total = 0.0f, best = 1e30f, best_at = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        const ccr_vec2 p = a->p[i], q = a->p[i + 1];
+        const float dx = q.x - p.x, dy = q.y - p.y, len2 = dx * dx + dy * dy;
+        float t = len2 > 0.0f ? ((m.x - p.x) * dx + (m.y - p.y) * dy) / len2 : 0.0f;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        const float cx = p.x + dx * t - m.x, cy = p.y + dy * t - m.y;
+        const float d = sqrtf(cx * cx + cy * cy), len = sqrtf(len2);
+        if (d < best) {
+            best = d;
+            best_at = total + len * t;
+        }
+        total += len;
+    }
+    *along = total > 0.0f ? best_at / total : 0.0f;
+    return best;
+}
+
+ccr_node_id ccr_editor_arrow_at(const ccr_editor *ed, ccr_vec2 world, float tolerance,
+                                ccr_node_id *far_end)
+{
+    static jump_arrow arrows[MAX_ARROWS];
+    ccr_node_id found = CCR_NONE;
+    float best = tolerance;
+    for (uint32_t si = 0; si < ed->script_count; ++si) {
+        const uint32_t n = script_arrows(ed, si, arrows);
+        for (uint32_t k = 0; k < n; ++k) {
+            if (!arrows[k].path)
+                continue;
+            float along;
+            const float d = arrow_distance(&arrows[k], world, &along);
+            if (d <= best) {
+                best = d;
+                found = arrows[k].go;
+                /* the end that is further from where it was clicked: a
+                 * click near the goto follows the jump, a click near the
+                 * label comes back */
+                if (far_end)
+                    *far_end = along < 0.5f ? arrows[k].label : arrows[k].go;
+            }
+        }
+    }
+    return found;
+}
+
+void ccr_editor_flash(ccr_editor *ed, ccr_node_id node, float delay)
+{
+    if (node >= ed->ast.node_count)
+        return;
+    ed->landed_first = ed->landed_last = node;
+    ed->landed_t = -delay;   /* the ring waits until the view gets there */
+}
+
+/*
+ * Faint until the mouse is on one end or on the arrow itself; red and
+ * dashed when the label is not where the goto can reach it, and a red mark
+ * when there is no label at all.
  */
 static void draw_jumps(const ccr_editor *ed, const ccr_canvas *cv)
 {
+    static jump_arrow arrows[MAX_ARROWS];
     const float z = cv->zoom;
     const float thick = 2.5f * (z < 0.6f ? 0.6f : z);
     for (uint32_t si = 0; si < ed->script_count; ++si) {
         const ccr_script *s = &ed->scripts[si];
-
-        /* shorter jumps get the lanes nearer the blocks, so arrows nest
-         * like brackets instead of crossing */
-        enum { MAX_ARROWS = 256 };
-        struct { ccr_node_id go, label; ccr_jump_state st; float span; } arrows[MAX_ARROWS];
-        uint32_t na = 0;
-        for (uint32_t k = 0; k < s->blocks.jump_count && na < MAX_ARROWS; ++k) {
-            const ccr_node_id go = s->blocks.jumps[k];
-            if (N(ed, go)->kind != CCR_NODE_GOTO || !*ccr_ast_str(&ed->ast, N(ed, go)->name))
-                continue;
-            ccr_rect f, t;
-            ccr_node_id label;
-            ccr_jump_state st = ccr_editor_jump(ed, go, &label);
-            float span = 1e9f;
-            if (ccr_editor_node_rect(ed, go, &f) && label != CCR_NONE &&
-                ccr_editor_node_rect(ed, label, &t))
-                span = fabsf(t.y - f.y);
-            uint32_t j = na++;
-            while (j > 0 && arrows[j - 1].span > span) {
-                arrows[j] = arrows[j - 1];
-                --j;
-            }
-            arrows[j].go = go;
-            arrows[j].label = label;
-            arrows[j].st = st;
-            arrows[j].span = span;
-        }
-
-        uint32_t lane = 0;
-        for (uint32_t k = 0; k < na; ++k) {
-            const ccr_node_id go = arrows[k].go;
-            ccr_rect from;
-            if (!ccr_editor_node_rect(ed, go, &from))
-                continue;
-            const ccr_node_id label = arrows[k].label;
-            const ccr_jump_state st = arrows[k].st;
-            const bool hot = ed->hover != CCR_NONE && (ed->hover == go || ed->hover == label);
-            const ccr_vec2 a = ccr_canvas_to_screen(cv, (ccr_vec2){ from.x + from.w, from.y + from.h * 0.5f });
+        const uint32_t n = script_arrows(ed, si, arrows);
+        for (uint32_t k = 0; k < n; ++k) {
+            const jump_arrow *ar = &arrows[k];
+            const ccr_node_id go = ar->go, label = ar->label;
+            const ccr_jump_state st = ar->st;
+            const bool hot = ed->hover_arrow == go ||
+                             (ed->hover != CCR_NONE && (ed->hover == go || ed->hover == label));
+            const ccr_vec2 a = ccr_canvas_to_screen(cv, ar->p[0]);
 
             if (st == CCR_JUMP_MISSING) {
+                ccr_rect from;
+                ccr_editor_node_rect(ed, go, &from);
                 ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ from.x, from.y });
                 ccr_rect r = { tl.x - 3, tl.y - 3, from.w * z + 6, from.h * z + 6 };
                 ccr_gui_rect_rounded(r, 0.3f, alpha_of(ccr_th(CCR_C_ERROR), 0xC0u));
                 ccr_gui_circle((ccr_vec2){ a.x + 14.0f * z, a.y }, 9.0f * z, ccr_th(CCR_C_ERROR));
                 ccr_gui_text("!", a.x + 11.5f * z, a.y - 8.0f * z, 16.0f * z, 0xFFFFFFFFu);
-            } else {
-                ccr_rect to;
-                const uint32_t ls = script_index_of_root(ed, script_root_of(ed, label));
-                if (!ccr_editor_node_rect(ed, label, &to) || ls == UINT32_MAX)
-                    continue;
-                /* the lane: right of both scripts, one lane per arrow */
-                float right = s->pos.x + s->blocks.bounds.x + s->blocks.bounds.w;
-                const ccr_script *o = &ed->scripts[ls];
-                float oright = o->pos.x + o->blocks.bounds.x + o->blocks.bounds.w;
-                if (oright > right)
-                    right = oright;
-                const float lx = right + 18.0f + 12.0f * (float)(lane++ % 8);
-                const ccr_vec2 b = ccr_canvas_to_screen(cv, (ccr_vec2){ to.x + to.w, to.y + to.h * 0.5f });
-                const ccr_vec2 l1 = ccr_canvas_to_screen(cv, (ccr_vec2){ lx, from.y + from.h * 0.5f });
-                const ccr_vec2 l2 = ccr_canvas_to_screen(cv, (ccr_vec2){ lx, to.y + to.h * 0.5f });
-                const ccr_vec2 pts[4] = { a, l1, l2, { b.x + 9.0f * z, b.y } };
+            } else if (ar->path) {
+                ccr_vec2 pts[4];
+                for (int i = 0; i < 4; ++i)
+                    pts[i] = ccr_canvas_to_screen(cv, ar->p[i]);
+                const ccr_vec2 b = { pts[3].x - 9.0f * z, pts[3].y };
                 const bool broken = st != CCR_JUMP_OK;
                 const bool loose = is_loose_root(ed, s->root);
                 const ccr_color line = ccr_th_cat(CCR_CAT_CONTROL, CCR_EDGE);
@@ -1357,6 +1528,11 @@ static void draw_jumps(const ccr_editor *ed, const ccr_canvas *cv)
                     const float spacing = 16.0f * (z < 0.6f ? 0.6f : z);
                     const float phase = fmodf((float)ccr_gui_time() * 3.0f * spacing, spacing);
                     march(pts, 4, spacing, phase, thick * 1.3f, c);   /* beads */
+                }
+                if (ed->hover_arrow == go) {
+                    /* a click goes to the other end: show which one */
+                    const ccr_vec2 tip = ed->hover_far == go ? a : pts[3];
+                    ccr_gui_circle(tip, thick * 3.2f, alpha_of(ccr_th(CCR_C_GLOW), 0x70u));
                 }
                 ccr_gui_circle(a, thick * 1.4f, c);
                 ccr_gui_triangle((ccr_vec2){ b.x + 1.0f, b.y },
@@ -1437,8 +1613,19 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
     }
     draw_jumps(ed, cv);
 
+    /* an operator under the mouse: a click there offers the others */
+    if (ed->hover_op != CCR_NONE && ed->drag == CCR_DRAG_IDLE) {
+        const ccr_rect r = ed->hover_op_rect;
+        const ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x - 4.0f, r.y - 2.0f });
+        const ccr_rect box = { tl.x, tl.y, (r.w + 8.0f) * cv->zoom, (r.h + 4.0f) * cv->zoom };
+        ccr_gui_rect_rounded(box, 0.5f, alpha_of(0xFFFFFFFFu, 0x55u));
+        ccr_gui_rect_rounded((ccr_rect){ box.x, box.y + box.h - 2.0f, box.w, 2.0f }, 1.0f,
+                             alpha_of(ccr_th(CCR_C_GLOW), 0xD0u));
+    }
+
     /* a ripple round what just snapped in */
-    if (ed->animate && ed->landed_first != CCR_NONE && ed->landed_t < RIPPLE_TIME) {
+    if (ed->animate && ed->landed_first != CCR_NONE && ed->landed_t >= 0.0f &&
+        ed->landed_t < RIPPLE_TIME) {
         ccr_rect a, b;
         if (ccr_editor_node_rect(ed, ed->landed_first, &a) &&
             ccr_editor_node_rect(ed, ed->landed_last, &b)) {

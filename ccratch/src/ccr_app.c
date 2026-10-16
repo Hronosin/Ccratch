@@ -358,6 +358,26 @@ static void fit_view_smooth(ccr_canvas *cv, const ccr_document *doc, ccr_rect vi
     g_glide.t = 0.0f;
 }
 
+/* Glides the view so `node` is in the middle of it, and rings it. */
+static void glide_to_node(ccr_canvas *cv, ccr_document *doc, ccr_rect viewport, ccr_node_id node)
+{
+    ccr_rect r;
+    if (!doc->loaded || !ccr_editor_node_rect(&doc->ed, node, &r))
+        return;
+    ccr_canvas to = *cv;
+    to.offset.x = viewport.x + viewport.w * 0.5f - (r.x + r.w * 0.5f) * cv->zoom;
+    to.offset.y = viewport.y + viewport.h * 0.5f - (r.y + r.h * 0.5f) * cv->zoom;
+    if (!g_animate) {
+        *cv = to;
+        return;
+    }
+    g_glide.active = true;
+    g_glide.from = *cv;
+    g_glide.to = to;
+    g_glide.t = 0.0f;
+    ccr_editor_flash(&doc->ed, node, GLIDE_TIME);
+}
+
 /* Moves the glide on; true while it is still going. */
 static bool glide_step(ccr_canvas *cv, float dt)
 {
@@ -870,6 +890,93 @@ static ccr_rect palette_area(int height)
     return (ccr_rect){ 0, TOPBAR_H, PALETTE_W, (float)height - TOPBAR_H - STATUSBAR_H };
 }
 
+/* ------------------------------------------------- the operator menu */
+
+/* A click on an operator offers the others of its kind: + for - * / %... */
+typedef struct op_menu {
+    bool               open;
+    ccr_node_id        node;
+    ccr_vec2           at;        /* screen: top middle */
+    const char *const *choices;
+    int                count;
+    double             opened_at;
+} op_menu;
+
+#define OP_CELL_W  52.0f
+#define OP_CELL_H  36.0f
+#define OP_COLS    4
+
+static ccr_rect op_cell(const op_menu *om, int i, int screen_w, int screen_h)
+{
+    const int cols = om->count < OP_COLS ? om->count : OP_COLS;
+    const int rows = (om->count + OP_COLS - 1) / OP_COLS;
+    const float w = (float)cols * OP_CELL_W + 12.0f, h = (float)rows * OP_CELL_H + 12.0f;
+    float x = om->at.x - w * 0.5f, y = om->at.y;
+    if (x < 4.0f) x = 4.0f;
+    if (x + w > (float)screen_w - 4.0f) x = (float)screen_w - 4.0f - w;
+    if (y + h > (float)screen_h - 4.0f) y = om->at.y - h - 40.0f;   /* no room under: above */
+    if (i < 0)
+        return (ccr_rect){ x, y, w, h };   /* the whole panel */
+    return (ccr_rect){ x + 6.0f + (float)(i % OP_COLS) * OP_CELL_W,
+                       y + 6.0f + (float)(i / OP_COLS) * OP_CELL_H, OP_CELL_W - 4.0f, OP_CELL_H - 4.0f };
+}
+
+static void op_menu_open(op_menu *om, const ccr_editor *ed, ccr_node_id node, ccr_vec2 mouse)
+{
+    const ccr_node *n = &ed->ast.nodes[node];
+    om->choices = ccr_op_choices(ccr_ast_str(&ed->ast, n->op), n->kind == CCR_NODE_UNARY_OP,
+                                 &om->count);
+    om->open = om->choices != NULL;
+    om->node = node;
+    om->at = (ccr_vec2){ mouse.x, mouse.y + 18.0f };
+    om->opened_at = ccr_gui_time();
+}
+
+/* Returns the operator picked this frame, or NULL; any click closes it. */
+static const char *op_menu_update(op_menu *om, ccr_vec2 m, int w, int h)
+{
+    if (!om->open)
+        return NULL;
+    if (ccr_gui_key_pressed(CCR_KEY_ESCAPE) || ccr_gui_mouse_pressed(CCR_MOUSE_RIGHT)) {
+        om->open = false;
+        return NULL;
+    }
+    if (!ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+        return NULL;
+    om->open = false;
+    for (int i = 0; i < om->count; ++i)
+        if (point_in(m, op_cell(om, i, w, h)))
+            return om->choices[i];
+    return NULL;
+}
+
+static void op_menu_draw(const op_menu *om, const ccr_editor *ed, ccr_vec2 m, int w, int h)
+{
+    if (!om->open)
+        return;
+    float k = g_animate ? (float)(ccr_gui_time() - om->opened_at) / 0.12f : 1.0f;
+    if (k > 1.0f) k = 1.0f;
+    const ccr_rect panel = op_cell(om, -1, w, h);
+    const float drop = (1.0f - k) * -8.0f;   /* slides down a little as it opens */
+    const unsigned a = (unsigned)(255.0f * k);
+    const ccr_color edge = (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | a;
+    ccr_gui_rect_rounded((ccr_rect){ panel.x - 1, panel.y - 1 + drop, panel.w + 2, panel.h + 2 }, 0.2f, edge);
+    ccr_gui_rect_rounded((ccr_rect){ panel.x, panel.y + drop, panel.w, panel.h }, 0.2f,
+                         (ccr_th(CCR_C_PANEL) & 0xFFFFFF00u) | (a * (ccr_th(CCR_C_PANEL) & 0xFFu) / 255u));
+    const char *cur = ccr_ast_str(&ed->ast, ed->ast.nodes[om->node].op);
+    for (int i = 0; i < om->count; ++i) {
+        ccr_rect c = op_cell(om, i, w, h);
+        c.y += drop;
+        const bool now = strcmp(om->choices[i], cur) == 0, hot = point_in(m, c);
+        if (now || hot)
+            ccr_gui_rect_rounded(c, 0.3f, ((now ? ccr_th(CCR_C_HOT) : ccr_th(CCR_C_BUTTON_HOVER))
+                                           & 0xFFFFFF00u) | a);
+        const float tw = ccr_gui_text_width(om->choices[i], 20.0f);
+        ccr_gui_text(om->choices[i], c.x + (c.w - tw) * 0.5f, c.y + (c.h - 20.0f) * 0.5f, 20.0f,
+                     ((now ? 0xFFFFFFFFu : ccr_th(CCR_C_PANEL_TEXT)) & 0xFFFFFF00u) | a);
+    }
+}
+
 /* ------------------------------------------------- actions (pie, keys) */
 
 /* A text field being typed into. */
@@ -1007,6 +1114,7 @@ int ccr_run(int argc, char **argv)
 
     /* the pie menu, and the right click that may open it */
     ccr_pie pie = { 0 };
+    op_menu opm = { 0 };
     ccr_context pie_ctx = { 0 };
     ccr_vec2 rmb_from = { 0 };
     bool rmb_armed = false;
@@ -1026,12 +1134,13 @@ int ccr_run(int argc, char **argv)
                                (float)h - TOPBAR_H - STATUSBAR_H };
         if (!doc.loaded)
             te.node = CCR_NONE;
-        const bool was_open = pie.open;
+        const bool was_open = pie.open || opm.open;
 
         if (ccr_gui_file_dropped(dropped, sizeof dropped) && document_open(&doc, dropped, &opt)) {
             fit_view(&canvas, &doc, viewport, 1.0f);
             te.node = CCR_NONE;
             ccr_pie_close(&pie);
+            opm.open = false;
         }
         if (ccr_gui_key_pressed(CCR_KEY_F5) && doc.loaded && !pie.open) {
             char again[PATH_MAX_LEN];
@@ -1056,6 +1165,15 @@ int ccr_run(int argc, char **argv)
             ccr_action a = ccr_pie_update(&pie, m, ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), cancel);
             if (a != CCR_ACTION_NONE)
                 run_action(a, &pie_ctx, world, &doc, &opt, &canvas, viewport, &te);
+        }
+
+        /* the operator menu, the same way */
+        if (opm.open) {
+            const char *op = op_menu_update(&opm, m, w, h);
+            if (!can_act)
+                opm.open = false;
+            else if (op)
+                ccr_editor_set_op(&doc.ed, opm.node, op);
         }
 
         /* a right click that did not drag opens it; a drag pans */
@@ -1139,9 +1257,16 @@ int ccr_run(int argc, char **argv)
             };
             ccr_editor_update(&doc.ed, &in);
 
+            /* a click on a goto arrow: off to its other end */
+            if (lmb && inside && doc.ed.drag == CCR_DRAG_IDLE && doc.ed.hover_arrow != CCR_NONE)
+                glide_to_node(&canvas, &doc, viewport, doc.ed.hover_far);
+
             ccr_node_id req = ccr_editor_take_edit_request(&doc.ed);
             if (req != CCR_NONE)
                 start_editing(&te, &doc.ed, req);
+            ccr_node_id opq = ccr_editor_take_op_request(&doc.ed);
+            if (opq != CCR_NONE)
+                op_menu_open(&opm, &doc.ed, opq, m);
         } else if (doc.loaded) {
             ccr_editor_tick(&doc.ed, dt);   /* menu open: things still move */
         }
@@ -1177,6 +1302,8 @@ int ccr_run(int argc, char **argv)
         draw_topbar(w, &doc, &eula);
         draw_statusbar(w, h, &canvas, &doc);
         ccr_pie_draw(&pie);
+        if (doc.loaded)
+            op_menu_draw(&opm, &doc.ed, m, w, h);
         eula_frame(&eula, w, h, &doc);
 
         ++frame;

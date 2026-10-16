@@ -100,7 +100,7 @@ ccr_node_links ccr_ast_links(const ccr_ast *ast, ccr_node_id id)
 {
     const ccr_node *n = &ast->nodes[id];
     return (ccr_node_links){ id, n->parent, n->first_child, n->last_child,
-                             n->next_sibling, n->flags, n->name, n->type,
+                             n->next_sibling, n->flags, n->name, n->type, n->op,
                              n->place_b, n->place_e };
 }
 
@@ -114,6 +114,7 @@ void ccr_ast_set_links(ccr_ast *ast, const ccr_node_links *l)
     n->flags = l->flags;
     n->name = l->name;
     n->type = l->type;
+    n->op = l->op;
     n->place_b = l->place_b;
     n->place_e = l->place_e;
 }
