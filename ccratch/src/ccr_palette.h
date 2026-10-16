@@ -12,6 +12,7 @@
 
 #include "ccr_ast.h"
 #include "ccr_blocks.h"
+#include "ccr_lib.h"
 #include "ccr_template.h"
 
 #define CCR_PALETTE_STRIP_W 80.0f    /* the category strip */
@@ -26,13 +27,27 @@ typedef struct ccr_palette_item {
     float        y;          /* top, in the flyout's (unscaled) units */
 } ccr_palette_item;
 
+#define CCR_PALETTE_MAX_CATS (CCR_TCAT_COUNT + CCR_LIB_MAX_PACKS)
+#define CCR_PALETTE_MAX_INCLUDES 64
+
+/* A section of the palette: built in, or a block pack's. */
+typedef struct ccr_palette_cat {
+    char  name[64];
+    int   color;              /* a ccr_theme_cat */
+    float heading_y;
+} ccr_palette_cat;
+
 typedef struct ccr_palette {
     ccr_ast           ast;
     ccr_layout_cache  cache;
-    ccr_palette_item  items[CCR_TEMPLATE_COUNT];
-    uint32_t          item_count;
-    float             heading_y[CCR_TCAT_COUNT];
+    ccr_palette_item *items;
+    uint32_t          item_count, item_cap;
+    ccr_palette_cat   cats[CCR_PALETTE_MAX_CATS];
+    int               cat_count;
     float             content_h;
+    /* what the open file includes: which packs show */
+    char              includes[CCR_PALETTE_MAX_INCLUDES][128];
+    int               include_count;
     float             scroll, scroll_to;   /* unscaled units from the top */
     int               hot;                 /* item under the mouse, or -1 */
     bool              ready;
@@ -43,6 +58,9 @@ bool ccr_palette_init(ccr_palette *p);
 void ccr_palette_free(ccr_palette *p);
 /* After a theme or language switch: colours and widths change. */
 bool ccr_palette_relayout(ccr_palette *p);
+/* The headers the file on screen includes: packs for them show (packs
+ * that name no header always do). Lays out again if that changes. */
+bool ccr_palette_set_includes(ccr_palette *p, const char *const *includes, int count);
 
 /* Wheel scrolling, category clicks, the glide. `area` is the whole palette
  * (strip and flyout), screen coordinates. */

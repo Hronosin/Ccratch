@@ -1,0 +1,8 @@
+name: broken
+blocks:
+  - call: 9lives
+  - call: fine
+    text: uses {nothing}
+    params: [a]
+    defaults: {b: 1}
+    colour: red

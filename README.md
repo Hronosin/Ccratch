@@ -24,6 +24,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 13: the palette grows up: six categories, operators, variables, pointers, switch, casts.
 - Step 14: goto arrows you can travel along, operators you can swap, several files open at once.
 - Step 15: whole files from blocks: functions, structs, headers with guards, new files and folders.
+- Step 16: folding, and libraries as blocks from YAML packs (raylib to start with).
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -130,6 +131,61 @@ new operator binds differently. `a + b + pr.x + pr.y` with the first `+`
 made `*` and the last one too saves as `(a * b + pr.x) * pr.y`, the same
 tree you see. Operators that come out of a macro are not offered. Each
 swap is one undo step.
+
+### Folding
+
+Double click an `if`, a loop, a `switch`, a function or a struct (or use
+the pie's south-west slice over it) and it folds to one line with a count
+of what it hides: `if (n > 3) { 4 }`, `int load(const char *path) { 14 }`.
+Double click again to unfold. Folding is how you look at the code, not
+a change to it: it never reaches the file and is no undo step. A `goto`
+arrow into a folded block points at the fold, and travelling along it
+unfolds what is in the way.
+
+## Libraries as blocks
+
+A block pack turns a library's functions into blocks that read like
+Scratch. It is a YAML file in `blocks/` (or `~/.local/share/ccratch/blocks/`,
+or `$CCRATCH_BLOCKS_DIR`):
+
+```yaml
+name: raylib
+header: raylib.h            # the pack shows when a file includes it
+color: library              # a theme category: library, call, control...
+blocks:
+  - call: InitWindow
+    text: open a window {width} x {height} called {title}
+    text.ru: открыть окно {width} x {height} с названием {title}
+    params: [width, height, title]
+    defaults: {width: 800, height: 450, title: '"Hello, raylib!"'}
+  - call: WindowShouldClose
+    text: the window wants to close
+    returns: bool           # not void: a reporter; bool: a pointy one
+```
+
+`{name}` in the text is that parameter's slot; `text.ru` and friends are
+the text in other interface languages. When the file includes the
+header, the pack gets its own section in the palette. And code that is
+already there reads the same way: a call with a pack's name and number
+of arguments is drawn as its block. Saving writes it as the plain C call
+it always was.
+
+![raylib's own example as blocks: open a window, aim for 60 frames a second, circle at x](docs/library.png)
+
+A raylib pack with what a first game needs ships with Ccratch. For any
+other library, start from a draft and make it read well:
+
+```
+ccratch --make-blocks path/to/lib.h -- -Ipath/to > blocks/lib.yaml
+ccratch --check-blocks blocks/lib.yaml
+ccratch --list-blocks
+```
+
+The draft has every function the header declares, with texts made from
+their names (`DrawTextEx` reads "draw text ex {font} {text}..."). YAML
+because packs are written by hand: comments, no quotes around every word,
+no commas to forget. Ccratch reads the part of YAML packs need itself,
+no library pulled in for it.
 
 ## Expressions
 
@@ -400,6 +456,8 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_template what the palette offers, as syntax trees (no window)
   ccr_palette the palette: categories, real blocks, scrolling
   ccr_files   the project tree, and the files panel
+  ccr_lib     block packs: libraries as blocks
+  ccr_yaml    the bit of YAML block packs are written in
   ccr_pie     the pie menu: picks an action by direction, knows no editor
   ccr_lang    every text the window shows, and the language packs
   ccr_theme   every colour, and the theme files
@@ -409,6 +467,7 @@ include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so; hello/ is the template
 examples/   C files to feed the parser
 lang/       language packs (ru.lang...); English is built in
+blocks/     block packs (raylib.yaml...)
 themes/     themes (serious.theme...); Shrine is built in
 assets/     icon and font, built into libccratch
 tools/      make_font.py: how assets/fonts was made from upstream Nunito
@@ -484,6 +543,9 @@ ccratch --list-langs                     language packs found, and where
 ccratch --lang-template                  English text as a pack to translate
 ccratch --check-lang uk.lang             check a pack before sharing it
 ccratch file.c --no-animations           blocks just jump into place
+ccratch --make-blocks lib.h              a draft block pack for a library
+ccratch --check-blocks pack.yaml         check a block pack
+ccratch --list-blocks                    block packs found, and where
 ```
 
 `--dump-ast` exits with 0 if the file is clean, 1 if it has errors,
@@ -505,6 +567,7 @@ ccratch file.c --no-animations           blocks just jump into place
 - Click an operator: swap it for another
 - Ctrl+P: the files panel; Ctrl+Tab: the next open file
 - Click an `#include "..."`: open that header
+- Double click an `if`, a loop, a function, a struct: fold or unfold it
 - Home: back to the start of the file at 100%
 - F5: reload the file from disk (throws away unsaved moves; the title shows
   `*` while there are any)

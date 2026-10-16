@@ -66,7 +66,8 @@
     X(PREPROC,  "preproc",  0x9966FFFFu, 0x774DCBFFu, 0xFFFFFFFFu)       \
     X(POINTER,  "pointer",  0xE6544DFFu, 0xB8372FFFu, 0xFFFFFFFFu)       \
     X(LITERAL,  "literal",  0xFFFFFFFFu, 0xC8CCD6FFu, 0x575E75FFu)       \
-    X(DRAGON,   "dragon",   0x8A8F9CFFu, 0x5F6470FFu, 0xFFFFFFFFu)
+    X(DRAGON,   "dragon",   0x8A8F9CFFu, 0x5F6470FFu, 0xFFFFFFFFu)       \
+    X(LIBRARY,  "library",  0x0FBD8CFFu, 0x0B8E69FFu, 0xFFFFFFFFu)  /* block packs */
 
 typedef enum ccr_theme_color {
 #define X(id, key, def) CCR_C_##id,
@@ -83,6 +84,9 @@ typedef enum ccr_theme_cat {
 } ccr_theme_cat;
 
 typedef enum ccr_cat_role { CCR_FILL, CCR_EDGE, CCR_TEXT } ccr_cat_role;
+
+/* A block category by its key ("control", "library"...), or -1. */
+int ccr_theme_cat_from_key(const char *key);
 
 /* A colour of the theme in use. */
 ccr_color ccr_th(ccr_theme_color c);

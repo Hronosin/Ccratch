@@ -110,6 +110,23 @@ add_test(NAME lang_template
                  ${CCR_BIN} ${CMAKE_CURRENT_BINARY_DIR}/en.lang)
 
 # goto arrows find their labels, and notice when one leaves.
+add_executable(test_yaml test_yaml.c)
+target_link_libraries(test_yaml PRIVATE ccratch_core)
+add_test(NAME yaml COMMAND test_yaml)
+
+add_executable(test_lib test_lib.c)
+target_link_libraries(test_lib PRIVATE ccratch_core)
+add_test(NAME block_packs COMMAND test_lib ${CMAKE_CURRENT_SOURCE_DIR}/data/broken_pack.yaml
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/data/toy.h)
+set_tests_properties(block_packs PROPERTIES
+    ENVIRONMENT "CCRATCH_BLOCKS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/blocks")
+# the packs that ship read clean
+file(GLOB CCR_SHIPPED_PACKS ${PROJECT_SOURCE_DIR}/blocks/*.yaml)
+foreach(pack ${CCR_SHIPPED_PACKS})
+    get_filename_component(name ${pack} NAME_WE)
+    add_test(NAME pack_${name} COMMAND ${CCR_BIN} --check-blocks ${pack})
+endforeach()
+
 add_executable(test_files test_files.c)
 target_link_libraries(test_files PRIVATE ccratch_core)
 add_test(NAME project_files COMMAND test_files)
@@ -160,6 +177,8 @@ if(XVFB_RUN)
              COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
                      $<TARGET_FILE:test_save> ${CMAKE_CURRENT_SOURCE_DIR}/data/save.c
                      ${CMAKE_CURRENT_BINARY_DIR}/saved)
+    set_tests_properties(editor_save PROPERTIES
+        ENVIRONMENT "CCRATCH_BLOCKS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/blocks")
 endif()
 
 # Unchanged files come back byte for byte.

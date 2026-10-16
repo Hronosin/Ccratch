@@ -1,4 +1,5 @@
 #include "ccr_blocks.h"
+#include "ccr_lib.h"
 #include "ccr_theme.h"
 
 #include <math.h>
@@ -27,7 +28,7 @@
 
 typedef enum category {
     CAT_CONTROL, CAT_OPERATOR, CAT_VARIABLE, CAT_CALL, CAT_EVENT,
-    CAT_TYPE, CAT_PREPROC, CAT_POINTER, CAT_LITERAL, CAT_DRAGON,
+    CAT_TYPE, CAT_PREPROC, CAT_POINTER, CAT_LITERAL, CAT_DRAGON, CAT_LIBRARY,
     CAT_COUNT
 } category;
 
@@ -226,6 +227,22 @@ static bool op_is_bool(const char *op)
     return false;
 }
 
+/* The block pack block a call is drawn as, or NULL: same name, same
+ * number of arguments. */
+static const ccr_lib_block *lib_of(const layout *L, ccr_node_id id)
+{
+    const ccr_node *n = N(L, id);
+    if (n->kind != CCR_NODE_CALL)
+        return NULL;
+    int args = 0;
+    for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling) {
+        if (N(L, c)->flags & CCR_FLAG_WORD)
+            return NULL;   /* f(...) from the palette, name typed in: plain */
+        ++args;
+    }
+    return ccr_lib_find(S(L, n->name), args);
+}
+
 static void expr_look(const layout *L, ccr_node_id id, shape *sh, category *cat)
 {
     const ccr_node *n = N(L, id);
@@ -244,7 +261,17 @@ static void expr_look(const layout *L, ccr_node_id id, shape *sh, category *cat)
     case CCR_NODE_STRING_LIT:
     case CCR_NODE_INIT_LIST:
     case CCR_NODE_COMPOUND_LIT: *cat = CAT_LITERAL; break;
-    case CCR_NODE_CALL:      *cat = CAT_CALL; break;
+    case CCR_NODE_CALL: {
+        const ccr_lib_block *lb = lib_of(L, id);
+        *cat = CAT_CALL;
+        if (lb) {   /* a library's block: its pack's colour; true or false is pointy */
+            const ccr_lib_pack *pk = ccr_lib_pack_at(lb->pack);
+            *cat = pk ? (category)pk->category : CAT_LIBRARY;
+            if (strcmp(lb->returns, "bool") == 0 || strcmp(lb->returns, "_Bool") == 0)
+                *sh = SHAPE_HEX;
+        }
+        break;
+    }
     case CCR_NODE_BINARY_OP:
         *cat = op_is_assign(op) ? CAT_VARIABLE : CAT_OPERATOR;
         if (op_is_bool(op))
@@ -361,6 +388,40 @@ static void expr_items(const layout *L, ccr_node_id id, items *it)
 
     if ((n->flags & CCR_FLAG_NEW) && word_items(L, id, it))
         return;
+    const ccr_lib_block *lb = lib_of(L, id);
+    if (lb) {
+        /* "open a window {width} x {height}": words, and the arguments
+         * in the slots their names stand in */
+        const char *t = lb->text;
+        while (*t) {
+            if (*t == '{') {
+                const char *e = strchr(t, '}');
+                if (!e)
+                    break;
+                int k = 0;
+                while (k < lb->nparams && !(strlen(lb->params[k]) == (size_t)(e - t - 1) &&
+                                            strncmp(lb->params[k], t + 1, (size_t)(e - t - 1)) == 0))
+                    ++k;
+                ccr_node_id a = n->first_child;
+                for (int j = 0; j < k && a != CCR_NONE; ++j)
+                    a = N(L, a)->next_sibling;
+                it_expr(it, a);
+                t = e + 1;
+                continue;
+            }
+            const char *e = strchr(t, '{');
+            size_t len = e ? (size_t)(e - t) : strlen(t);
+            while (len > 0 && t[len - 1] == ' ')
+                --len;
+            const char *b = t;
+            while (*b == ' ' && b < t + len)
+                ++b;
+            if (b < t + len)
+                it_fmt(it, "%.*s", (int)(t + len - b), b);
+            t = e ? e : t + strlen(t);
+        }
+        return;
+    }
 
     switch (n->kind) {
     case CCR_NODE_TEXT:

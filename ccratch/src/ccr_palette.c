@@ -4,6 +4,7 @@
 #include "ccr_lang.h"
 #include "ccr_theme.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #define PAD_X        14.0f   /* flyout units (scaled by CCR_PALETTE_ZOOM) */
@@ -69,7 +70,7 @@ static float max_scroll(const ccr_palette *p, ccr_rect area)
 {
     /* far enough that the last category's heading can reach the top */
     float m = p->content_h - area.h / CCR_PALETTE_ZOOM;
-    const float last = p->heading_y[CCR_TCAT_COUNT - 1] - PAD_TOP;
+    const float last = p->cat_count ? p->cats[p->cat_count - 1].heading_y - PAD_TOP : 0.0f;
     if (m < last)
         m = last;
     return m > 0.0f ? m : 0.0f;
@@ -81,52 +82,109 @@ static void free_items(ccr_palette *p)
 {
     for (uint32_t i = 0; i < p->item_count; ++i)
         ccr_blocks_free(&p->items[i].blocks);
-    p->item_count = 0;
+    free(p->items);
+    p->items = NULL;
+    p->item_count = p->item_cap = 0;
     ccr_layout_cache_free(&p->cache);
     ccr_ast_free(&p->ast);
+}
+
+/* Lays out template `t` under the last section's heading, at *y. */
+static bool add_item(ccr_palette *p, ccr_template t, float *y)
+{
+    if (p->item_count == p->item_cap) {
+        uint32_t cap = p->item_cap ? p->item_cap * 2 : 128;
+        ccr_palette_item *v = realloc(p->items, cap * sizeof *v);
+        if (!v)
+            return false;
+        p->items = v;
+        p->item_cap = cap;
+    }
+    ccr_node_id root = ccr_ast_add(&p->ast, CCR_NODE_BLOCK, CCR_NONE);
+    if (root == CCR_NONE)
+        return false;
+    p->ast.nodes[root].flags |= CCR_FLAG_LOOSE;
+    if (ccr_template_is_reporter(t))
+        p->ast.nodes[root].flags |= CCR_FLAG_REPORTER;
+    if (ccr_template_is_toplevel(t))
+        p->ast.nodes[root].flags |= CCR_FLAG_TOPLEVEL;
+    ccr_node_id made = ccr_template_build(&p->ast, t, root);
+    if (made == CCR_NONE)
+        return false;
+    if (t == CCR_TEMPLATE_CODE)   /* an empty white bar says nothing: name it */
+        p->ast.nodes[made].name = ccr_ast_intern(&p->ast, ccr_tr(CCR_T_TEMPLATE_CODE));
+
+    ccr_palette_item *it = &p->items[p->item_count];
+    memset(it, 0, sizeof *it);
+    it->t = t;
+    it->root = root;
+    it->y = *y;
+    if (!ccr_layout_cache_reserve(&p->cache, p->ast.node_count) ||
+        !ccr_blocks_build_script(&it->blocks, &p->ast, root, &p->cache))
+        return false;
+    ++p->item_count;
+    /* the block's top may be above 0 (a notch), its bottom below bounds
+     * (a tab): bounds covers both */
+    *y += it->blocks.bounds.y + it->blocks.bounds.h + GAP;
+    return true;
+}
+
+static bool pack_shown(const ccr_palette *p, const ccr_lib_pack *pk)
+{
+    if (!pk->header[0])
+        return true;
+    for (int i = 0; i < p->include_count; ++i)
+        if (ccr_lib_pack_matches(pk, p->includes[i]))
+            return true;
+    return false;
+}
+
+static void heading(ccr_palette *p, const char *name, int color, float *y)
+{
+    if (p->cat_count == CCR_PALETTE_MAX_CATS)
+        return;
+    ccr_palette_cat *c = &p->cats[p->cat_count++];
+    snprintf(c->name, sizeof c->name, "%s", name);
+    c->color = color;
+    c->heading_y = *y;
+    *y += HEADING_H;
 }
 
 bool ccr_palette_init(ccr_palette *p)
 {
     const float scroll = p->ready ? p->scroll : 0.0f;
+    /* the includes survive: they say which packs show */
+    char (*keep)[128] = malloc(sizeof p->includes);
+    const int keep_n = p->include_count;
+    if (keep)
+        memcpy(keep, p->includes, sizeof p->includes);
     memset(p, 0, sizeof *p);
+    if (keep) {
+        memcpy(p->includes, keep, sizeof p->includes);
+        p->include_count = keep_n;
+        free(keep);
+    }
     p->hot = -1;
     if (!ccr_ast_init(&p->ast))
         return false;
 
     float y = PAD_TOP;
     for (int c = 0; c < CCR_TCAT_COUNT; ++c) {
-        p->heading_y[c] = y;
-        y += HEADING_H;
-        for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t) {
-            if (ccr_template_category((ccr_template)t) != (ccr_tcat)c)
-                continue;
-            ccr_node_id root = ccr_ast_add(&p->ast, CCR_NODE_BLOCK, CCR_NONE);
-            if (root == CCR_NONE)
+        heading(p, ccr_tr(g_cat_names[c]), g_cat_colors[c], &y);
+        for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t)
+            if (ccr_template_category((ccr_template)t) == (ccr_tcat)c && !add_item(p, (ccr_template)t, &y))
                 goto oom;
-            p->ast.nodes[root].flags |= CCR_FLAG_LOOSE;
-            if (ccr_template_is_reporter((ccr_template)t))
-                p->ast.nodes[root].flags |= CCR_FLAG_REPORTER;
-            if (ccr_template_is_toplevel((ccr_template)t))
-                p->ast.nodes[root].flags |= CCR_FLAG_TOPLEVEL;
-            ccr_node_id made = ccr_template_build(&p->ast, (ccr_template)t, root);
-            if (made == CCR_NONE)
+        y += CAT_GAP;
+    }
+    /* then a section per block pack the file can use */
+    for (int k = 0; k < ccr_lib_pack_count(); ++k) {
+        const ccr_lib_pack *pk = ccr_lib_pack_at(k);
+        if (!pack_shown(p, pk) || pk->count == 0 || p->cat_count == CCR_PALETTE_MAX_CATS)
+            continue;
+        heading(p, pk->name, pk->category, &y);
+        for (int b = 0; b < pk->count; ++b)
+            if (!add_item(p, CCR_TEMPLATE_LIB(pk->first + b), &y))
                 goto oom;
-            if (t == CCR_TEMPLATE_CODE)   /* an empty white bar says nothing: name it */
-                p->ast.nodes[made].name = ccr_ast_intern(&p->ast, ccr_tr(CCR_T_TEMPLATE_CODE));
-
-            ccr_palette_item *it = &p->items[p->item_count];
-            it->t = (ccr_template)t;
-            it->root = root;
-            it->y = y;
-            if (!ccr_layout_cache_reserve(&p->cache, p->ast.node_count) ||
-                !ccr_blocks_build_script(&it->blocks, &p->ast, root, &p->cache))
-                goto oom;
-            ++p->item_count;
-            /* the block's top may be above 0 (a notch), its bottom below
-             * bounds (a tab): bounds covers both */
-            y += it->blocks.bounds.y + it->blocks.bounds.h + GAP;
-        }
         y += CAT_GAP;
     }
     p->content_h = y;
@@ -136,6 +194,22 @@ bool ccr_palette_init(ccr_palette *p)
 oom:
     free_items(p);
     return false;
+}
+
+bool ccr_palette_set_includes(ccr_palette *p, const char *const *includes, int count)
+{
+    if (count > CCR_PALETTE_MAX_INCLUDES)
+        count = CCR_PALETTE_MAX_INCLUDES;
+    /* would the shown packs change? */
+    bool before[CCR_LIB_MAX_PACKS], changed = false;
+    for (int k = 0; k < ccr_lib_pack_count() && k < CCR_LIB_MAX_PACKS; ++k)
+        before[k] = pack_shown(p, ccr_lib_pack_at(k));
+    p->include_count = count;
+    for (int i = 0; i < count; ++i)
+        snprintf(p->includes[i], sizeof p->includes[i], "%s", includes[i]);
+    for (int k = 0; k < ccr_lib_pack_count() && k < CCR_LIB_MAX_PACKS; ++k)
+        changed = changed || before[k] != pack_shown(p, ccr_lib_pack_at(k));
+    return !changed || !p->ready || ccr_palette_relayout(p);
 }
 
 void ccr_palette_free(ccr_palette *p)
@@ -161,15 +235,19 @@ bool ccr_palette_relayout(ccr_palette *p)
 static int current_cat(const ccr_palette *p)
 {
     int c = 0;
-    for (int i = 0; i < CCR_TCAT_COUNT; ++i)
-        if (p->heading_y[i] <= p->scroll + PAD_TOP + 1.0f)
+    for (int i = 0; i < p->cat_count; ++i)
+        if (p->cats[i].heading_y <= p->scroll + PAD_TOP + 1.0f)
             c = i;
     return c;
 }
 
-static ccr_rect strip_row(ccr_rect strip, int c)
+/* Rows get shorter when there are many sections (packs). */
+static ccr_rect strip_row(const ccr_palette *p, ccr_rect strip, int c)
 {
-    return (ccr_rect){ strip.x, strip.y + 6.0f + (float)c * STRIP_ROW_H, strip.w, STRIP_ROW_H };
+    float h = STRIP_ROW_H;
+    if (p->cat_count > 0 && (strip.h - 12.0f) / (float)p->cat_count < h)
+        h = (strip.h - 12.0f) / (float)p->cat_count;
+    return (ccr_rect){ strip.x, strip.y + 6.0f + (float)c * h, strip.w, h };
 }
 
 static bool inside(ccr_vec2 m, ccr_rect r)
@@ -186,9 +264,9 @@ void ccr_palette_update(ccr_palette *p, ccr_rect area, ccr_vec2 mouse, float whe
     if (inside(mouse, area) && wheel != 0.0f)
         p->scroll_to -= wheel * 70.0f;
     if (click && inside(mouse, strip))
-        for (int c = 0; c < CCR_TCAT_COUNT; ++c)
-            if (inside(mouse, strip_row(strip, c)))
-                p->scroll_to = p->heading_y[c] - PAD_TOP;
+        for (int c = 0; c < p->cat_count; ++c)
+            if (inside(mouse, strip_row(p, strip, c)))
+                p->scroll_to = p->cats[c].heading_y - PAD_TOP;
     const float top = max_scroll(p, area);
     if (p->scroll_to < 0.0f) p->scroll_to = 0.0f;
     if (p->scroll_to > top)  p->scroll_to = top;
@@ -239,30 +317,30 @@ void ccr_palette_draw(const ccr_palette *p, ccr_rect area, bool trash)
 
     /* the strip: a dot per category, its name under it */
     const int now = current_cat(p);
-    for (int c = 0; c < CCR_TCAT_COUNT; ++c) {
-        const ccr_rect row = strip_row(strip, c);
+    for (int c = 0; c < p->cat_count; ++c) {
+        const ccr_rect row = strip_row(p, strip, c);
         if (c == now)
             ccr_gui_rect((ccr_rect){ row.x + 4.0f, row.y + 2.0f, row.w - 4.0f, row.h - 4.0f },
                          fly_color());   /* a tab into the list */
-        const ccr_theme_cat tc = g_cat_colors[c];
-        const ccr_vec2 dot = { row.x + row.w * 0.5f, row.y + 8.0f + DOT_R };
-        ccr_gui_circle(dot, DOT_R + 1.5f, ccr_th_cat(tc, CCR_EDGE));
-        ccr_gui_circle(dot, DOT_R, ccr_th_cat(tc, CCR_FILL));
-        const char *name = ccr_tr(g_cat_names[c]);
+        const ccr_theme_cat tc = (ccr_theme_cat)p->cats[c].color;
+        const float r = row.h < STRIP_ROW_H ? DOT_R * row.h / STRIP_ROW_H : DOT_R;
+        const ccr_vec2 dot = { row.x + row.w * 0.5f, row.y + 8.0f * row.h / STRIP_ROW_H + r };
+        ccr_gui_circle(dot, r + 1.5f, ccr_th_cat(tc, CCR_EDGE));
+        ccr_gui_circle(dot, r, ccr_th_cat(tc, CCR_FILL));
+        const char *name = p->cats[c].name;
         float size = LABEL_SIZE;
         while (size > 8.0f && ccr_gui_text_width(name, size) > row.w - 6.0f)
             size -= 0.5f;
         ccr_gui_text(name, row.x + (row.w - ccr_gui_text_width(name, size)) * 0.5f,
-                     dot.y + DOT_R + 5.0f, size, ccr_th(CCR_C_PALETTE_TEXT));
+                     dot.y + r + 4.0f, size, ccr_th(CCR_C_PALETTE_TEXT));
     }
 
     /* the flyout: headings and real blocks */
     ccr_gui_clip_begin(fly);
     const ccr_canvas cv = fly_canvas(p, fly);
-    for (int c = 0; c < CCR_TCAT_COUNT; ++c) {
-        const ccr_vec2 at = ccr_canvas_to_screen(&cv, (ccr_vec2){ PAD_X, p->heading_y[c] });
-        ccr_gui_text(ccr_tr(g_cat_names[c]), at.x, at.y + 8.0f, HEADING_SIZE,
-                     ccr_th(CCR_C_PALETTE_TEXT));
+    for (int c = 0; c < p->cat_count; ++c) {
+        const ccr_vec2 at = ccr_canvas_to_screen(&cv, (ccr_vec2){ PAD_X, p->cats[c].heading_y });
+        ccr_gui_text(p->cats[c].name, at.x, at.y + 8.0f, HEADING_SIZE, ccr_th(CCR_C_PALETTE_TEXT));
     }
     for (uint32_t i = 0; i < p->item_count; ++i) {
         const ccr_palette_item *it = &p->items[i];

@@ -671,10 +671,11 @@ static void print_new(gen *g, ccr_node_id id, unsigned depth)
         puts_(g, name);
         puts_(g, "(");
         bool first = true;
+        const bool one = arg(g, id, 1) == CCR_NONE;
         for (uint32_t i = 0; arg(g, id, i) != CCR_NONE; ++i) {
             ccr_node_id a = arg(g, id, i);
-            if (N(g, a)->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, a)->name))
-                continue;   /* an empty argument slot: f() */
+            if (one && N(g, a)->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, a)->name))
+                continue;   /* f( ) with nothing typed: f(); with more slots, each must be filled */
             if (!first)
                 puts_(g, ", ");
             first = false;

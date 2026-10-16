@@ -10,6 +10,7 @@
 #include "ccr_codegen.h"
 #include "ccr_editor.h"
 #include "ccr_gui.h"
+#include "ccr_lib.h"
 #include "ccr_parse.h"
 
 #include <stdio.h>
@@ -1344,6 +1345,49 @@ static void test_fold(void)
     ccr_editor_free(&ed);
 }
 
+/* Block packs: a library call from the palette is the plain C call when
+ * saved; a call in the file with a pack's name and arity is drawn as the
+ * pack's block. */
+static void test_library_blocks(void)
+{
+    ccr_lib_load(stderr);
+    const ccr_lib_block *dot = ccr_lib_find("draw_dot", 2);
+    CHECK(dot != NULL, "the toy pack is not loaded (CCRATCH_BLOCKS_DIR?)");
+    if (!dot)
+        return;
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id made = add_after(&ed, CCR_TEMPLATE_LIB(ccr_lib_index(dot)), stmt(&ed, "do b--;"));
+    CHECK(N(&ed, made)->kind == CCR_NODE_CALL, "a pack block is a call");
+    type(&ed, slot_of(&ed, made, 1), "n * 2");
+
+    /* drawn with the pack's words, not as draw_dot(...) */
+    const ccr_blocks *bl = &ed.scripts[script_of(&ed, N(&ed, N(&ed, made)->parent)->parent)].blocks;
+    bool words = false, raw = false;
+    for (uint32_t i = 0; i < bl->prim_count; ++i)
+        if (bl->prims[i].kind == CCR_PRIM_TEXT && bl->prims[i].node == made) {
+            words = words || strcmp(bl->text + bl->prims[i].text, "dot at") == 0;
+            raw = raw || strstr(bl->text + bl->prims[i].text, "draw_dot") != NULL;
+        }
+    CHECK(words && !raw, "the block does not read 'dot at ...'");
+
+    /* a reporter that returns bool is pointy and goes into an if */
+    const ccr_lib_block *rd = ccr_lib_find("is_ready", 0);
+    ccr_node_id iff = add_after(&ed, CCR_TEMPLATE_IF, made);
+    fill(&ed, CCR_TEMPLATE_LIB(ccr_lib_index(rd)), slot_of(&ed, iff, 0));
+
+    char err[256];
+    char *text = save_to(&ed, "library.c", err, sizeof err);
+    CHECK(text != NULL, "save failed: %s", err);
+    if (text) {
+        CHECK(strstr(text, "    draw_dot(1, n * 2);\n    if (is_ready()) {\n    }\n"),
+              "pack blocks saved as:\n%s", text);
+        free(text);
+    }
+    ccr_editor_free(&ed);
+    ccr_lib_unload();
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -1373,6 +1417,7 @@ int main(int argc, char **argv)
     test_new_declarations();
     test_header_guard();
     test_fold();
+    test_library_blocks();
     test_trash();
     test_delete();
     test_duplicate();

@@ -8,6 +8,7 @@
 #include "ccr_lang.h"
 #include "ccr_parse.h"
 #include "ccr_files.h"
+#include "ccr_lib.h"
 #include "ccr_palette.h"
 #include "ccr_pie.h"
 #include "ccr_theme.h"
@@ -66,6 +67,7 @@ typedef struct ccr_options {
     bool        eula;           /* --eula: print the agreement, exit */
     const char *theme;          /* --theme NAME, NULL: the saved one */
     bool        no_animations;  /* --no-animations */
+    const char *make_blocks;    /* --make-blocks HEADER: a draft pack, exit */
     const char *const *clang_args;  /* everything after "--" */
     int         clang_arg_count;
 } ccr_options;
@@ -125,6 +127,10 @@ static void print_usage(const char *argv0)
            "  --list-themes          show the themes found, and where\n"
            "  --check-theme FILE     check a theme file for unknown keys and bad colours\n"
            "  --check-lang FILE      check a language pack for missing or broken text\n"
+           "  --make-blocks HEADER   print a draft block pack for a library's header\n"
+           "                         (save it as blocks/NAME.yaml and make it read well)\n"
+           "  --check-blocks FILE    check a block pack\n"
+           "  --list-blocks          show the block packs found, and where\n"
            "  --no-animations        blocks just jump into place (for good: put\n"
            "                         'animations = off' in ~/.config/ccratch/config)\n"
            "  --smoke-frames N       run N frames and exit (for CI)\n"
@@ -296,6 +302,20 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             return 0;
         } else if (strcmp(a, "--lang-template") == 0) {
             ccr_lang_write_template(stdout);
+            return 0;
+        } else if (strcmp(a, "--make-blocks") == 0 && i + 1 < argc) {
+            opt->make_blocks = argv[++i];
+        } else if (strcmp(a, "--check-blocks") == 0 && i + 1 < argc) {
+            ccr_lang_pick(opt->lang, NULL);
+            return ccr_lib_check(argv[++i], stdout) == 0 ? 0 : 1;
+        } else if (strcmp(a, "--list-blocks") == 0) {
+            ccr_lib_load(stderr);
+            for (int k = 0; k < ccr_lib_pack_count(); ++k) {
+                const ccr_lib_pack *pk = ccr_lib_pack_at(k);
+                printf("%-12s %4d blocks  %-16s %s\n", pk->code, pk->count,
+                       pk->header[0] ? pk->header : "(always)", pk->path);
+            }
+            ccr_lib_unload();
             return 0;
         } else if (strcmp(a, "--check-lang") == 0 && i + 1 < argc) {
             return ccr_lang_check(argv[++i], stdout) == 0 ? 0 : 1;
@@ -612,6 +632,33 @@ static void open_include(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, c
     ccr_trf(doc->status, sizeof doc->status, angled ? CCR_T_INCLUDE_SYSTEM : CCR_T_INCLUDE_NOT_FOUND,
             name);
     doc->has_errors = !angled;
+}
+
+/* The packs in the palette follow what the file on screen includes. */
+static void palette_follow(const ccr_document *doc)
+{
+    static char last_path[sizeof doc->path];
+    static uint32_t last_nodes, last_history;
+    const uint32_t nodes = doc->loaded ? doc->ed.ast.node_count : 0;
+    const uint32_t hist = doc->loaded ? doc->ed.history_len : 0;
+    if (strcmp(last_path, doc->loaded ? doc->path : "") == 0 && nodes == last_nodes &&
+        hist == last_history)
+        return;
+    snprintf(last_path, sizeof last_path, "%s", doc->loaded ? doc->path : "");
+    last_nodes = nodes;
+    last_history = hist;
+
+    const char *inc[CCR_PALETTE_MAX_INCLUDES];
+    int n = 0;
+    if (doc->loaded && doc->ed.ast.node_count)
+        for (ccr_node_id c = doc->ed.ast.nodes[0].first_child; c != CCR_NONE && n < CCR_PALETTE_MAX_INCLUDES;
+             c = doc->ed.ast.nodes[c].next_sibling) {
+            const ccr_node *k = &doc->ed.ast.nodes[c];
+            if (k->kind == CCR_NODE_INCLUDE && !(k->flags & CCR_FLAG_DEAD))
+                inc[n++] = ccr_ast_str(&doc->ed.ast, k->name);
+        }
+    if (g_palette.ready && !ccr_palette_set_includes(&g_palette, inc, n))
+        fprintf(stderr, "ccratch: out of memory laying out the palette\n");
 }
 
 /* What the panel shows as open. */
@@ -991,9 +1038,11 @@ static void next_language(ccr_document *doc)
             ccr_theme_use(theme, NULL);   /* theme names come in this language too */
             ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
             doc->has_errors = false;
-            /* blocks show C, not words; only the palette's names change */
-            if (g_palette.ready && !ccr_palette_relayout(&g_palette))
-                fprintf(stderr, "ccratch: out of memory laying out the palette\n");
+            /* C keywords stay, but pack blocks speak this language now */
+            ccr_lib_load(stderr);
+            relayout_everything(doc);
+            for (int k = 0; k < g_stash_n; ++k)
+                ccr_editor_relayout_all(&g_stash[k].doc->ed);
             return;
         }
     }
@@ -1287,6 +1336,12 @@ int ccr_run(int argc, char **argv)
     }
     if (opt.dump_ast)
         return run_dump_ast(&opt);
+    if (opt.make_blocks) {
+        if (ccr_lib_make(opt.make_blocks, opt.clang_args, opt.clang_arg_count, stdout))
+            return 0;
+        fprintf(stderr, "ccratch: clang could not read '%s'\n", opt.make_blocks);
+        return 1;
+    }
     if (opt.roundtrip)
         return run_roundtrip(&opt);
 
@@ -1296,6 +1351,7 @@ int ccr_run(int argc, char **argv)
     }
     ccr_lang_pick(opt.lang, stderr);
     ccr_theme_pick(opt.theme, stderr);
+    ccr_lib_load(stderr);   /* block packs: libraries as blocks */
     char anim[16];
     g_animate = !opt.no_animations &&
                 !(ccr_config_get("animations", anim, sizeof anim) &&
@@ -1371,6 +1427,7 @@ int ccr_run(int argc, char **argv)
         const ccr_vec2 world = ccr_canvas_to_world(&canvas, m);
         const bool inside = point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h)));
         const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
+        palette_follow(&doc);
         const bool can_act = doc.loaded && te.node == CCR_NONE && !eula.open &&
                              g_fpanel.naming == CCR_NAMING_NONE;   /* typing a new file's name */
 
@@ -1590,6 +1647,8 @@ int ccr_run(int argc, char **argv)
     }
     g_stash_n = 0;
     ccr_files_free(&g_files);
+    ccr_palette_free(&g_palette);
+    ccr_lib_unload();
     ccr_gui_shutdown();
     ccr_lang_reset();
     return 0;

@@ -1,4 +1,5 @@
 #include "ccr_template.h"
+#include "ccr_lib.h"
 
 #include <string.h>
 
@@ -14,14 +15,27 @@ static const ccr_tcat g_cats[CCR_TEMPLATE_COUNT] = {
 #undef X
 };
 
+int ccr_template_total(void)
+{
+    return CCR_TEMPLATE_COUNT + ccr_lib_block_count();
+}
+
+/* The pack block a template stands for, or NULL. */
+static const ccr_lib_block *lib_block(ccr_template t)
+{
+    return (int)t >= CCR_TEMPLATE_COUNT ? ccr_lib_block_at((int)t - CCR_TEMPLATE_COUNT) : NULL;
+}
+
 const char *ccr_template_label(ccr_template t)
 {
+    if (lib_block(t))
+        return lib_block(t)->call;
     return (unsigned)t < CCR_TEMPLATE_COUNT ? g_labels[t] : "?";
 }
 
 ccr_tcat ccr_template_category(ccr_template t)
 {
-    return (unsigned)t < CCR_TEMPLATE_COUNT ? g_cats[t] : CCR_TCAT_CONTROL;
+    return (unsigned)t < CCR_TEMPLATE_COUNT ? g_cats[t] : CCR_TCAT_COUNT;   /* a pack's */
 }
 
 ccr_node_id ccr_template_node(ccr_ast *ast, ccr_node_kind kind, ccr_node_id parent)
@@ -119,6 +133,8 @@ bool ccr_template_is_toplevel(ccr_template t)
 
 bool ccr_template_is_reporter(ccr_template t)
 {
+    if (lib_block(t))
+        return strcmp(lib_block(t)->returns, "void") != 0;
     switch (t) {
     case CCR_TEMPLATE_ADD: case CCR_TEMPLATE_SUB: case CCR_TEMPLATE_MUL:
     case CCR_TEMPLATE_DIV: case CCR_TEMPLATE_MOD:
@@ -141,6 +157,17 @@ bool ccr_template_is_reporter(ccr_template t)
 ccr_node_id ccr_template_build(ccr_ast *ast, ccr_template t, ccr_node_id parent)
 {
     ccr_node_id s = CCR_NONE;
+    const ccr_lib_block *lb = lib_block(t);
+    if (lb) {
+        /* a library call: its name fixed, its arguments slots with defaults */
+        s = ccr_template_node(ast, CCR_NODE_CALL, parent);
+        if (s == CCR_NONE)
+            return CCR_NONE;
+        ast->nodes[s].name = ccr_ast_intern(ast, lb->call);
+        for (int i = 0; i < lb->nparams; ++i)
+            ccr_template_text(ast, s, lb->defaults[i]);
+        return s;
+    }
     switch (t) {
     case CCR_TEMPLATE_CODE:
         s = ccr_template_text(ast, parent, "");

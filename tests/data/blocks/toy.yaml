@@ -1,0 +1,16 @@
+# a pack for the tests
+name: toy
+name.ru: игрушка
+header: toy.h
+blocks:
+  - call: draw_dot
+    text: dot at {x} {y}
+    text.ru: точка в {x} {y}
+    params: [x, y]
+    defaults: {x: 1, y: 2}
+  - call: is_ready
+    text: toy is ready
+    returns: bool
+  - call: scale
+    text: scale by          # {k} left out: it goes at the end
+    params: [k]

@@ -60,6 +60,14 @@ add_custom_target(ccratch_themes ALL
     DEPENDS ${CCR_THEMES}
     COMMENT "Themes")
 
+file(GLOB CCR_BLOCK_PACKS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/blocks/*.yaml)
+set(CCR_BLOCKS_OUT ${CMAKE_BINARY_DIR}/share/ccratch/blocks)
+add_custom_target(ccratch_blocks ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CCR_BLOCKS_OUT}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CCR_BLOCK_PACKS} ${CCR_BLOCKS_OUT}
+    DEPENDS ${CCR_BLOCK_PACKS}
+    COMMENT "Block packs")
+
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)

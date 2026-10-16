@@ -70,6 +70,14 @@ ccr_color ccr_th_cat(ccr_theme_cat cat, ccr_cat_role role)
                                                                  : 0xFF00FFFFu;
 }
 
+int ccr_theme_cat_from_key(const char *key)
+{
+    for (int c = 0; c < CCR_CAT_COUNT; ++c)
+        if (strcmp(key, g_cat_keys[c]) == 0)
+            return c;
+    return -1;
+}
+
 const char *ccr_theme_code(void) { ready(); return g_theme.code; }
 
 const char *ccr_theme_name(void)

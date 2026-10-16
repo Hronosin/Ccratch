@@ -1,0 +1,187 @@
+# raylib as blocks: the parts a first game needs.
+# The whole library, as a draft: ccratch --make-blocks raylib.h
+name: raylib
+header: raylib.h
+color: library
+blocks:
+  # --- the window
+  - call: InitWindow
+    text: open a window {width} x {height} called {title}
+    text.ru: открыть окно {width} x {height} с названием {title}
+    params: [width, height, title]
+    defaults: {width: 800, height: 450, title: '"Hello, raylib!"'}
+  - call: WindowShouldClose
+    text: the window wants to close
+    text.ru: окно просят закрыть
+    returns: bool
+  - call: CloseWindow
+    text: close the window
+    text.ru: закрыть окно
+  - call: SetTargetFPS
+    text: aim for {fps} frames a second
+    text.ru: держать {fps} кадров в секунду
+    params: [fps]
+    defaults: {fps: 60}
+  - call: GetFrameTime
+    text: seconds since the last frame
+    text.ru: секунд с прошлого кадра
+    returns: float
+  - call: GetScreenWidth
+    text: screen width
+    text.ru: ширина экрана
+    returns: int
+  - call: GetScreenHeight
+    text: screen height
+    text.ru: высота экрана
+    returns: int
+
+  # --- drawing
+  - call: BeginDrawing
+    text: start drawing
+    text.ru: начать рисовать
+  - call: EndDrawing
+    text: show what was drawn
+    text.ru: показать нарисованное
+  - call: ClearBackground
+    text: fill the screen with {color}
+    text.ru: залить экран цветом {color}
+    params: [color]
+    defaults: {color: RAYWHITE}
+  - call: DrawText
+    text: write {text} at {x} {y} size {size} in {color}
+    text.ru: написать {text} в {x} {y} размером {size} цветом {color}
+    params: [text, x, y, size, color]
+    defaults: {text: '"Hello!"', x: 190, y: 200, size: 20, color: LIGHTGRAY}
+  - call: DrawFPS
+    text: show the FPS at {x} {y}
+    text.ru: показать FPS в {x} {y}
+    params: [x, y]
+    defaults: {x: 10, y: 10}
+  - call: DrawRectangle
+    text: rectangle at {x} {y} size {width} x {height} in {color}
+    text.ru: прямоугольник в {x} {y} размером {width} x {height} цветом {color}
+    params: [x, y, width, height, color]
+    defaults: {x: 100, y: 100, width: 120, height: 60, color: RED}
+  - call: DrawRectangleLines
+    text: rectangle outline at {x} {y} size {width} x {height} in {color}
+    text.ru: рамка в {x} {y} размером {width} x {height} цветом {color}
+    params: [x, y, width, height, color]
+    defaults: {x: 100, y: 100, width: 120, height: 60, color: DARKGRAY}
+  - call: DrawCircle
+    text: circle at {x} {y} radius {radius} in {color}
+    text.ru: круг в {x} {y} радиусом {radius} цветом {color}
+    params: [x, y, radius, color]
+    defaults: {x: 400, y: 225, radius: 40, color: MAROON}
+  - call: DrawLine
+    text: line from {x1} {y1} to {x2} {y2} in {color}
+    text.ru: линия от {x1} {y1} до {x2} {y2} цветом {color}
+    params: [x1, y1, x2, y2, color]
+    defaults: {x1: 0, y1: 0, x2: 800, y2: 450, color: BLACK}
+  - call: DrawTriangle
+    text: triangle {a} {b} {c} in {color}
+    text.ru: треугольник {a} {b} {c} цветом {color}
+    params: [a, b, c, color]
+    defaults: {color: GOLD}
+  - call: DrawTexture
+    text: draw picture {texture} at {x} {y} tinted {tint}
+    text.ru: нарисовать картинку {texture} в {x} {y} с оттенком {tint}
+    params: [texture, x, y, tint]
+    defaults: {x: 0, y: 0, tint: WHITE}
+
+  # --- pictures and sounds
+  - call: LoadTexture
+    text: picture from {file}
+    text.ru: картинка из {file}
+    params: [file]
+    defaults: {file: '"picture.png"'}
+    returns: Texture2D
+  - call: UnloadTexture
+    text: forget picture {texture}
+    text.ru: выгрузить картинку {texture}
+    params: [texture]
+  - call: InitAudioDevice
+    text: turn the sound on
+    text.ru: включить звук
+  - call: CloseAudioDevice
+    text: turn the sound off
+    text.ru: выключить звук
+  - call: LoadSound
+    text: sound from {file}
+    text.ru: звук из {file}
+    params: [file]
+    defaults: {file: '"sound.wav"'}
+    returns: Sound
+  - call: PlaySound
+    text: play {sound}
+    text.ru: сыграть {sound}
+    params: [sound]
+  - call: UnloadSound
+    text: forget sound {sound}
+    text.ru: выгрузить звук {sound}
+    params: [sound]
+
+  # --- keys and the mouse
+  - call: IsKeyDown
+    text: key {key} is held
+    text.ru: клавиша {key} зажата
+    params: [key]
+    defaults: {key: KEY_RIGHT}
+    returns: bool
+  - call: IsKeyPressed
+    text: key {key} was pressed
+    text.ru: нажали клавишу {key}
+    params: [key]
+    defaults: {key: KEY_SPACE}
+    returns: bool
+  - call: IsMouseButtonPressed
+    text: mouse button {button} was pressed
+    text.ru: нажали кнопку мыши {button}
+    params: [button]
+    defaults: {button: MOUSE_BUTTON_LEFT}
+    returns: bool
+  - call: IsMouseButtonDown
+    text: mouse button {button} is held
+    text.ru: кнопка мыши {button} зажата
+    params: [button]
+    defaults: {button: MOUSE_BUTTON_LEFT}
+    returns: bool
+  - call: GetMouseX
+    text: mouse x
+    text.ru: мышь x
+    returns: int
+  - call: GetMouseY
+    text: mouse y
+    text.ru: мышь y
+    returns: int
+  - call: GetMousePosition
+    text: mouse position
+    text.ru: где мышь
+    returns: Vector2
+
+  # --- odds and ends
+  - call: GetRandomValue
+    text: random from {min} to {max}
+    text.ru: случайное от {min} до {max}
+    params: [min, max]
+    defaults: {min: 1, max: 10}
+    returns: int
+  - call: CheckCollisionRecs
+    text: rectangles {a} and {b} touch
+    text.ru: прямоугольники {a} и {b} касаются
+    params: [a, b]
+    returns: bool
+  - call: CheckCollisionCircles
+    text: circles at {c1} r {r1} and {c2} r {r2} touch
+    text.ru: круги в {c1} r {r1} и {c2} r {r2} касаются
+    params: [c1, r1, c2, r2]
+    returns: bool
+  - call: GetTime
+    text: seconds since the start
+    text.ru: секунд с запуска
+    returns: double
+  - call: TextFormat
+    text: text {format} with {values}
+    text.ru: текст {format} с {values}
+    params: [format, values]
+    defaults: {format: '"Score: %i"', values: score}
+    returns: const char *

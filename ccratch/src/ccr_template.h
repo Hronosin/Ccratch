@@ -106,6 +106,12 @@ typedef enum ccr_template {
     CCR_TEMPLATE_COUNT
 } ccr_template;
 
+/* Blocks from block packs come after the built-in ones: template
+ * CCR_TEMPLATE_LIB(i) is ccr_lib_block_at(i). */
+#define CCR_TEMPLATE_LIB(i) ((ccr_template)(CCR_TEMPLATE_COUNT + (i)))
+/* How many templates there are, packs included. */
+int         ccr_template_total(void);
+
 const char *ccr_template_label(ccr_template t);
 ccr_tcat    ccr_template_category(ccr_template t);
 

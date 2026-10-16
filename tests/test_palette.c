@@ -60,8 +60,8 @@ int main(void)
     /* a click on a category scrolls its heading to the top (a short window) */
     const ccr_rect small = { 0, 40, CCR_PALETTE_W, 500 };
     ccr_palette_update(&p, small, (ccr_vec2){ 40.0f, 40.0f + 6.0f + 3.5f * 60.0f }, 0.0f, true, 0.0f);
-    CHECK(p.scroll > p.heading_y[CCR_TCAT_POINTERS] - 20.0f && p.scroll < p.heading_y[CCR_TCAT_POINTERS],
-          "Pointers: scrolled to %.0f, heading at %.0f", p.scroll, p.heading_y[CCR_TCAT_POINTERS]);
+    CHECK(p.scroll > p.cats[CCR_TCAT_POINTERS].heading_y - 20.0f && p.scroll < p.cats[CCR_TCAT_POINTERS].heading_y,
+          "Pointers: scrolled to %.0f, heading at %.0f", p.scroll, p.cats[CCR_TCAT_POINTERS].heading_y);
     /* the wheel goes back up, not past the top */
     for (int i = 0; i < 200; ++i)
         ccr_palette_update(&p, small, (ccr_vec2){ 200.0f, 200.0f }, 3.0f, false, 0.0f);

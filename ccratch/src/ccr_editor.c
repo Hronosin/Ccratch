@@ -593,7 +593,7 @@ bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse)
 bool ccr_editor_spawn_held(ccr_editor *ed, ccr_template t, ccr_vec2 mouse, ccr_vec2 grab)
 {
     ccr_editor_settle(ed);
-    if (ed->drag != CCR_DRAG_IDLE || (unsigned)t >= CCR_TEMPLATE_COUNT)
+    if (ed->drag != CCR_DRAG_IDLE || (int)t < 0 || (int)t >= ccr_template_total())
         return false;
     begin_change(ed);
 

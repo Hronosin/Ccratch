@@ -65,3 +65,6 @@ literal_text  = #6E3B57
 dragon        = #D9CBD3
 dragon_edge   = #B9A9B3
 dragon_text   = #5B3049
+library       = #B8E8D8
+library_edge  = #86CDB5
+library_text  = #2F5D50
