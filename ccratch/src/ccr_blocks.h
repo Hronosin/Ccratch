@@ -18,10 +18,18 @@
 #include "ccr_canvas.h"
 #include "ccr_gui.h"
 
+/* The puzzle tab under a stack block (world units): how far in from the
+ * block's left edge, how wide, how deep. */
+#define CCR_TAB_X 16.0f
+#define CCR_TAB_W 32.0f
+#define CCR_TAB_H  8.0f
+
 typedef enum ccr_prim_kind {
     CCR_PRIM_BLOCK,   /* rounded rectangle with an outline */
     CCR_PRIM_HEX,     /* boolean reporter */
-    CCR_PRIM_TEXT
+    CCR_PRIM_TEXT,
+    CCR_PRIM_TAB,     /* puzzle tab hanging under a block; rect.y = the block's bottom */
+    CCR_PRIM_DENT     /* puzzle notch cut into a block's top; rect.y = its top */
 } ccr_prim_kind;
 
 typedef struct ccr_prim {

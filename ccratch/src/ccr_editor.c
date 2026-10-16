@@ -1270,10 +1270,22 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
                                  ccr_th(CCR_C_GLOW));
             ccr_gui_rect_rounded((ccr_rect){ p.x, p.y, w, h }, 1.0f, ccr_th(CCR_C_BG));
         } else if (dragging && ed->snap_ok) {
-            ccr_vec2 p = ccr_canvas_to_screen(cv, ed->snap.at);
-            float w = (ed->snap.width > 60.0f ? ed->snap.width : 60.0f) * cv->zoom;
-            float h = 6.0f * (cv->zoom < 1.0f ? 1.0f : cv->zoom);
-            ccr_gui_rect_rounded((ccr_rect){ p.x, p.y - h * 0.5f, w, h }, 1.0f, ccr_th(CCR_C_GLOW));
+            /* where the stack will land: the seam it will make, puzzle tab
+             * included, so it reads as "clicks in here" */
+            const float z = cv->zoom;
+            const ccr_vec2 p = ccr_canvas_to_screen(cv, ed->snap.at);
+            const float w = (ed->snap.width > 60.0f ? ed->snap.width : 60.0f) * z;
+            const float t = 5.0f * (z < 1.0f ? 1.0f : z);
+            const float tx = p.x + CCR_TAB_X * z, tw = CCR_TAB_W * z, th = CCR_TAB_H * z;
+            const ccr_vec2 seam[6] = {
+                { p.x, p.y }, { tx, p.y }, { tx, p.y + th },
+                { tx + tw, p.y + th }, { tx + tw, p.y }, { p.x + w, p.y },
+            };
+            const ccr_color c = ccr_th(CCR_C_GLOW);
+            for (int k = 0; k + 1 < 6; ++k)
+                ccr_gui_line(seam[k], seam[k + 1], t, c);
+            for (int k = 0; k < 6; ++k)   /* round joints and ends */
+                ccr_gui_circle(seam[k], t * 0.5f, c);
         }
         if (dragging) {
             /* lifted off the canvas: a shadow, as one solid colour so the

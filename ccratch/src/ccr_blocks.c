@@ -20,9 +20,9 @@
 #define MOUTH_MIN_H 24.0f
 #define FOOT_H      24.0f   /* bottom bar of a C-block */
 #define HAT_BUMP    22.0f
-#define TAB_X       16.0f   /* the puzzle tab: how far in from the left */
-#define TAB_W       32.0f
-#define TAB_H        8.0f
+#define TAB_X       CCR_TAB_X
+#define TAB_W       CCR_TAB_W
+#define TAB_H       CCR_TAB_H
 
 typedef enum category {
     CAT_CONTROL, CAT_OPERATOR, CAT_VARIABLE, CAT_CALL, CAT_EVENT,
@@ -614,28 +614,18 @@ static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *
  */
 static void add_tab(layout *L, float x, float bottom, ccr_color fill, ccr_color edge, ccr_node_id node)
 {
-    if (!grow((void **)&L->tabs, &L->tab_cap, L->tab_count + 2, sizeof(ccr_prim))) {
+    if (!grow((void **)&L->tabs, &L->tab_cap, L->tab_count + 1, sizeof(ccr_prim))) {
         L->oom = true;
         return;
     }
-    /* the tab, and its top edge painted over so it grows out of the block */
-    L->tabs[L->tab_count++] = (ccr_prim){ .kind = CCR_PRIM_BLOCK, .node = node,
-        .rect = { x + TAB_X, bottom - 1.0f, TAB_W, TAB_H + 1.0f },
-        .fill = fill, .edge = edge, .roundness = 0.6f };
-    L->tabs[L->tab_count++] = (ccr_prim){ .kind = CCR_PRIM_BLOCK, .node = node,
-        .rect = { x + TAB_X + 1.5f, bottom - 2.5f, TAB_W - 3.0f, 3.0f },
-        .fill = fill, .edge = fill, .roundness = 0.0f };
+    L->tabs[L->tab_count++] = (ccr_prim){ .kind = CCR_PRIM_TAB, .node = node,
+        .rect = { x + TAB_X, bottom, TAB_W, TAB_H }, .fill = fill, .edge = edge };
 }
 
 static void add_dent(layout *L, float x, float top, ccr_color edge, ccr_node_id node)
 {
-    const ccr_color bg = ccr_th(CCR_C_BG);
-    push_prim(L, (ccr_prim){ .kind = CCR_PRIM_BLOCK, .node = node,
-        .rect = { x + TAB_X, top - 1.0f, TAB_W, TAB_H + 1.0f },
-        .fill = bg, .edge = edge, .roundness = 0.6f });
-    push_prim(L, (ccr_prim){ .kind = CCR_PRIM_BLOCK, .node = node,
-        .rect = { x + TAB_X + 1.0f, top - 2.5f, TAB_W - 2.0f, 3.5f },
-        .fill = bg, .edge = bg, .roundness = 0.0f });
+    push_prim(L, (ccr_prim){ .kind = CCR_PRIM_DENT, .node = node,
+        .rect = { x + TAB_X, top, TAB_W, TAB_H }, .fill = ccr_th(CCR_C_BG), .edge = edge });
 }
 
 static bool ends_flow(ccr_node_kind k)
@@ -1083,7 +1073,8 @@ ccr_node_id ccr_blocks_hit(const ccr_blocks *b, ccr_vec2 local)
         return CCR_NONE;
     /* drawn last = on top */
     for (uint32_t i = b->prim_count; i-- > 0;)
-        if (b->prims[i].kind != CCR_PRIM_TEXT && contains(b->prims[i].rect, local))
+        if (b->prims[i].kind != CCR_PRIM_TEXT && b->prims[i].kind != CCR_PRIM_DENT &&
+            contains(b->prims[i].rect, local))
             return b->prims[i].node;
     return CCR_NONE;
 }
@@ -1091,7 +1082,8 @@ ccr_node_id ccr_blocks_hit(const ccr_blocks *b, ccr_vec2 local)
 bool ccr_blocks_find(const ccr_blocks *b, ccr_node_id node, ccr_rect *out)
 {
     for (uint32_t i = 0; i < b->prim_count; ++i) {
-        if (b->prims[i].node == node && b->prims[i].kind != CCR_PRIM_TEXT) {
+        if (b->prims[i].node == node && b->prims[i].kind != CCR_PRIM_TEXT &&
+            b->prims[i].kind != CCR_PRIM_DENT && b->prims[i].kind != CCR_PRIM_TAB) {
             *out = b->prims[i].rect;
             return true;
         }
@@ -1120,7 +1112,7 @@ void ccr_blocks_draw_shadow(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect 
     const float z = cv->zoom;
     for (uint32_t i = 0; i < b->prim_count; ++i) {
         const ccr_prim *p = &b->prims[i];
-        if (p->kind == CCR_PRIM_TEXT)
+        if (p->kind == CCR_PRIM_TEXT || p->kind == CCR_PRIM_DENT)
             continue;
         ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ p->rect.x + offset.x, p->rect.y + offset.y });
         ccr_rect r = { tl.x, tl.y, p->rect.w * z, p->rect.h * z };
@@ -1164,6 +1156,29 @@ void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewpor
             ccr_gui_hex(r, fade(p->edge, alpha));
             if (inner.w > 0.0f && inner.h > 0.0f)
                 ccr_gui_hex(inner, fade(p->fill, alpha));
+            break;
+        }
+        case CCR_PRIM_TAB: {
+            /* The outline follows the tab: sides and a rounded bottom. Its
+             * top is open, and filled up past both blocks' edges so the
+             * seam between them does not cut straight across it. */
+            ccr_gui_rect_rounded((ccr_rect){ r.x, r.y - edge, r.w, r.h + edge }, 0.7f,
+                                 fade(p->edge, alpha));
+            ccr_gui_rect_rounded((ccr_rect){ r.x + edge, r.y - edge, r.w - edge * 2.0f, r.h }, 0.7f,
+                                 fade(p->fill, alpha));
+            ccr_gui_rect((ccr_rect){ r.x + edge, r.y - edge * 2.0f - 1.0f, r.w - edge * 2.0f,
+                                     edge * 3.0f + 1.0f }, fade(p->fill, alpha));
+            break;
+        }
+        case CCR_PRIM_DENT: {
+            /* the notch: canvas colour, outlined along its sides and bottom
+             * in the block's edge colour, open at the top */
+            ccr_gui_rect_rounded((ccr_rect){ r.x - edge, r.y - edge, r.w + edge * 2.0f, r.h + edge * 2.0f },
+                                 0.7f, fade(p->edge, alpha));
+            ccr_gui_rect_rounded((ccr_rect){ r.x, r.y - edge, r.w, r.h + edge }, 0.7f,
+                                 fade(p->fill, alpha));
+            ccr_gui_rect((ccr_rect){ r.x, r.y - edge - 1.0f, r.w, edge * 2.0f + 1.0f },
+                         fade(p->fill, alpha));
             break;
         }
         case CCR_PRIM_TEXT:
