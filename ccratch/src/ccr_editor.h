@@ -17,6 +17,7 @@
 #include "ccr_ast.h"
 #include "ccr_blocks.h"
 #include "ccr_canvas.h"
+#include "ccr_template.h"
 
 typedef struct ccr_script {
     ccr_node_id root;      /* top-level declaration or loose Block */
@@ -38,23 +39,6 @@ typedef struct ccr_change {
     uint32_t        nb, na;
     uint32_t        nodes_before;     /* nodes from here on were created by it */
 } ccr_change;
-
-/* What the palette offers. */
-typedef enum ccr_template {
-    CCR_TEMPLATE_CODE,       /* a line of code: call, assignment, declaration */
-    CCR_TEMPLATE_IF,
-    CCR_TEMPLATE_IF_ELSE,
-    CCR_TEMPLATE_WHILE,
-    CCR_TEMPLATE_FOR,
-    CCR_TEMPLATE_DO_WHILE,
-    CCR_TEMPLATE_RETURN,
-    CCR_TEMPLATE_BREAK,
-    CCR_TEMPLATE_CONTINUE,
-    CCR_TEMPLATE_COUNT
-} ccr_template;
-
-/* Palette label, e.g. "if / else". */
-const char *ccr_template_label(ccr_template t);
 
 typedef enum ccr_drag_state {
     CCR_DRAG_IDLE,
@@ -154,6 +138,8 @@ uint32_t ccr_editor_loose_count(const ccr_editor *ed);
  * Call while the mouse button is down; normal updates carry on the drag.
  */
 bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse);
+/* The same, held by `grab` (where in the block, in block units). */
+bool ccr_editor_spawn_held(ccr_editor *ed, ccr_template t, ccr_vec2 mouse, ccr_vec2 grab);
 
 /* Text slot under edit: set its code (one undo step). */
 bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text);

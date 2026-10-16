@@ -233,7 +233,9 @@ static void expr_look(const layout *L, ccr_node_id id, shape *sh, category *cat)
     *sh = SHAPE_PILL;
 
     switch (n->kind) {
-    case CCR_NODE_REF:       *cat = CAT_VARIABLE; break;
+    case CCR_NODE_REF:       *cat = strcmp(S(L, n->name), "NULL") == 0 ? CAT_POINTER : CAT_VARIABLE; break;
+    case CCR_NODE_CAST:
+    case CCR_NODE_SIZEOF:    *cat = CAT_TYPE; break;
     case CCR_NODE_MEMBER:
     case CCR_NODE_INDEX:     *cat = CAT_VARIABLE; break;
     case CCR_NODE_INT_LIT:
@@ -251,6 +253,8 @@ static void expr_look(const layout *L, ccr_node_id id, shape *sh, category *cat)
     case CCR_NODE_UNARY_OP:
         if (strcmp(op, "&") == 0 || strcmp(op, "*") == 0) {
             *cat = CAT_POINTER;            /* future wires start here */
+        } else if (strcmp(op, "++") == 0 || strcmp(op, "--") == 0) {
+            *cat = CAT_VARIABLE;           /* Scratch's "change by 1" */
         } else {
             *cat = CAT_OPERATOR;
             if (op_is_bool(op))
@@ -258,23 +262,91 @@ static void expr_look(const layout *L, ccr_node_id id, shape *sh, category *cat)
         }
         break;
     case CCR_NODE_MACRO_VALUE: *cat = CAT_PREPROC; break;
-    case CCR_NODE_TEXT:      *cat = CAT_LITERAL; break;   /* a white field to type in */
+    case CCR_NODE_TEXT:
+        *cat = CAT_LITERAL;                /* a white field to type in */
+        if (n->flags & CCR_FLAG_WORD)
+            *sh = SHAPE_BLOCK;             /* a name, not a slot: square-ish */
+        break;
     case CCR_NODE_OTHER:     *cat = CAT_DRAGON; break;
     default:                 *cat = CAT_OPERATOR; break;
     }
 }
 
+static bool is_word(const layout *L, ccr_node_id id)
+{
+    return id != CCR_NONE && (N(L, id)->flags & CCR_FLAG_WORD) != 0;
+}
+
+/* The name or type field of a new block. */
+static ccr_node_id word_of(const layout *L, ccr_node_id id, uint32_t which)
+{
+    for (ccr_node_id c = N(L, id)->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
+        if (N(L, c)->flags & which)
+            return c;
+    return CCR_NONE;
+}
+
+/* The index-th child that is not a name or type field. */
+static ccr_node_id operand(const layout *L, ccr_node_id id, uint32_t index)
+{
+    for (ccr_node_id c = N(L, id)->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
+        if (!is_word(L, c) && index-- == 0)
+            return c;
+    return CCR_NONE;
+}
+
 static void args_with_commas(const layout *L, ccr_node_id first, items *it)
 {
     for (ccr_node_id c = first; c != CCR_NONE; c = N(L, c)->next_sibling) {
+        if (is_word(L, c))
+            continue;
         /* `.x = 1` arrives as two siblings: the designator, then the value */
         if (N(L, c)->kind == CCR_NODE_DESIGNATOR) {
             it_fmt(it, ".%s =", S(L, N(L, c)->name));
             continue;
         }
         it_expr(it, c);
-        if (N(L, c)->next_sibling != CCR_NONE)
+        ccr_node_id next = N(L, c)->next_sibling;
+        while (is_word(L, next))
+            next = N(L, next)->next_sibling;
+        if (next != CCR_NONE)
             it_text(it, ",");
+    }
+}
+
+/* New blocks with name or type fields: the fields are typed into. */
+static bool word_items(const layout *L, ccr_node_id id, items *it)
+{
+    const ccr_node *n = N(L, id);
+    const ccr_node_id name = word_of(L, id, CCR_FLAG_WORD_NAME);
+    const ccr_node_id type = word_of(L, id, CCR_FLAG_WORD_TYPE);
+    if (name == CCR_NONE && type == CCR_NONE)
+        return false;
+    switch (n->kind) {
+    case CCR_NODE_CALL:
+        it_expr(it, name);
+        it_text(it, "(");
+        args_with_commas(L, n->first_child, it);
+        it_text(it, ")");
+        return true;
+    case CCR_NODE_MEMBER:
+        it_expr(it, operand(L, id, 0));
+        it_text(it, (n->flags & CCR_FLAG_ARROW) ? "->" : ".");
+        it_expr(it, name);
+        return true;
+    case CCR_NODE_CAST:
+        it_text(it, "(");
+        it_expr(it, type);
+        it_text(it, ")");
+        it_expr(it, operand(L, id, 0));
+        return true;
+    case CCR_NODE_SIZEOF:
+        it_text(it, "sizeof (");
+        it_expr(it, type);
+        it_text(it, ")");
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -286,6 +358,9 @@ static void expr_items(const layout *L, ccr_node_id id, items *it)
     ccr_node_id c0 = n->first_child;
     ccr_node_id c1 = c0 != CCR_NONE ? N(L, c0)->next_sibling : CCR_NONE;
     ccr_node_id c2 = c1 != CCR_NONE ? N(L, c1)->next_sibling : CCR_NONE;
+
+    if ((n->flags & CCR_FLAG_NEW) && word_items(L, id, it))
+        return;
 
     switch (n->kind) {
     case CCR_NODE_TEXT:
@@ -442,10 +517,11 @@ static void emit_expr(layout *L, ccr_node_id id, float x, float y)
     const float w = L->ew[id], h = L->eh[id];
     push_shape(L, sh, cat, (ccr_rect){ x, y, w, h }, id);
 
-    /* an empty slot (not a code line, that is a statement): reporters drop in */
+    /* a text slot, empty or typed into (not a code line, that is a
+     * statement): reporters drop in, Scratch-style, over what was typed */
     const ccr_node *n = N(L, id);
-    if (n->kind == CCR_NODE_TEXT && !*S(L, n->name) && n->parent != CCR_NONE &&
-        N(L, n->parent)->kind != CCR_NODE_BLOCK)
+    if (n->kind == CCR_NODE_TEXT && n->parent != CCR_NONE &&
+        N(L, n->parent)->kind != CCR_NODE_BLOCK && !(n->flags & CCR_FLAG_WORD))
         push_snap(L, CCR_SNAP_SLOT, id, x, y, w, h);
 
     items it = { .n = 0, .used = 0 };
@@ -732,6 +808,17 @@ static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *
         break;
     }
     case CCR_NODE_LABEL: {
+        if (n->flags & CCR_FLAG_NEW) {
+            /* a new label: its name to type, and nothing hanging off it */
+            push_jump(L, id);
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_NAME));
+            it_text(&head, ":");
+            const uint32_t line = L->out->prim_count;
+            sz = emit_line_block(L, &head, CAT_CONTROL, x, y, id);
+            if (line < L->out->prim_count)
+                add_tab(L, x, y + sz.h, L->out->prims[line].fill, L->out->prims[line].edge, id);
+            break;
+        }
         /* `done:` then the labelled statement right under it */
         push_jump(L, id);
         it_fmt(&head, "%s:", S(L, n->name));
@@ -747,6 +834,15 @@ static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *
     }
     case CCR_NODE_VAR: {
         ccr_node_id init = var_init(L, id);
+        if (n->flags & CCR_FLAG_NEW) {
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_TYPE));
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_NAME));
+            if (init != CCR_NONE)
+                it_text(&head, "=");
+            it_expr(&head, init);
+            sz = emit_line_block(L, &head, CAT_VARIABLE, x, y, id);
+            break;
+        }
         it_decl(&head, S(L, n->type), S(L, n->name), init != CCR_NONE);
         it_expr(&head, init);
         sz = emit_line_block(L, &head, CAT_VARIABLE, x, y, id);
@@ -785,7 +881,12 @@ static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *
     case CCR_NODE_EMPTY:    it_text(&head, ";");        goto control_line;
     case CCR_NODE_GOTO:
         push_jump(L, id);
-        it_fmt(&head, "goto %s", S(L, n->name));
+        if (n->flags & CCR_FLAG_NEW) {
+            it_text(&head, "goto");
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_NAME));
+        } else {
+            it_fmt(&head, "goto %s", S(L, n->name));
+        }
     control_line:
         sz = emit_line_block(L, &head, CAT_CONTROL, x, y, id);
         break;

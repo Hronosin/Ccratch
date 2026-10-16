@@ -213,11 +213,267 @@ static ccr_node_id kid(const gen *g, ccr_node_id id, uint32_t index)
     return c;
 }
 
+/* The index-th child that is not a name or type field. */
+static ccr_node_id arg(const gen *g, ccr_node_id id, uint32_t index)
+{
+    for (ccr_node_id c = N(g, id)->first_child; c != CCR_NONE; c = N(g, c)->next_sibling)
+        if (!(N(g, c)->flags & CCR_FLAG_WORD) && index-- == 0)
+            return c;
+    return CCR_NONE;
+}
+
+/* ------------------------------------------------- operator precedence */
+
+/* C's binding strength of a binary operator: higher binds tighter. */
+static int binary_prec(const char *op)
+{
+    static const struct { const char *op; int prec; } table[] = {
+        { "*", 13 }, { "/", 13 }, { "%", 13 }, { "+", 12 }, { "-", 12 },
+        { "<<", 11 }, { ">>", 11 }, { "<", 10 }, { ">", 10 }, { "<=", 10 }, { ">=", 10 },
+        { "==", 9 }, { "!=", 9 }, { "&", 8 }, { "^", 7 }, { "|", 6 }, { "&&", 5 }, { "||", 4 },
+        { "=", 2 }, { "+=", 2 }, { "-=", 2 }, { "*=", 2 }, { "/=", 2 }, { "%=", 2 },
+        { "<<=", 2 }, { ">>=", 2 }, { "&=", 2 }, { "^=", 2 }, { "|=", 2 }, { ",", 1 },
+    };
+    for (size_t i = 0; i < sizeof table / sizeof table[0]; ++i)
+        if (strcmp(op, table[i].op) == 0)
+            return table[i].prec;
+    return 0;   /* unknown: always parenthesised */
+}
+
+/* How tightly typed text holds together, by its loosest operator outside
+ * brackets: 16 for one thing on its own (a name, a call, p->x, a[i]), 14
+ * for -x or (int)x, 12 for a + b... 0 if it cannot tell. */
+static int text_prec(const char *s)
+{
+    static const char *const ops[] = {
+        ">>=", "<<=", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
+        "+=", "-=", "*=", "/=", "%=", "&=", "^=", "|=",
+        "+", "-", "*", "/", "%", "<", ">", "&", "|", "^", "!", "~", "=", "?", ":", ",", ".",
+    };
+    int prec = 16;
+    bool want_operand = true;   /* at the start, after an operator */
+    bool after_group = false;   /* just closed a ( ) at the top */
+    const char *p = s;
+    while (*p) {
+        const char c = *p;
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            ++p;
+            continue;
+        }
+        if (c == '/' && p[1] == '/') {           /* comments are space */
+            while (*p && *p != '\n')
+                ++p;
+            continue;
+        }
+        if (c == '/' && p[1] == '*') {
+            const char *end = strstr(p + 2, "*/");
+            if (!end)
+                return 0;
+            p = end + 2;
+            continue;
+        }
+        if (c == '#' && (p == s || p[-1] == '\n' || p[-1] == ' ' || p[-1] == '\t')) {
+            while (*p && *p != '\n')            /* #if lines inside it */
+                ++p;
+            continue;
+        }
+        const bool word = c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                          (c >= 'A' && c <= 'Z');
+        if (word || c == '"' || c == '\'') {
+            if (!want_operand) {
+                if (!after_group)
+                    return 0;           /* two things side by side */
+                if (prec > 14)
+                    prec = 14;          /* (int)x: a cast */
+            }
+            if (word) {
+                while (*p == '_' || *p == '.' || (*p >= '0' && *p <= '9') ||
+                       (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))
+                    ++p;
+            } else {
+                const char q = *p++;
+                while (*p && *p != q)
+                    p += (*p == '\\' && p[1]) ? 2 : 1;
+                if (!*p)
+                    return 0;
+                ++p;
+            }
+            want_operand = false;
+            after_group = false;
+            continue;
+        }
+        if (c == '(' || c == '[' || c == '{') {
+            /* a group: parentheses, a call, an index, a compound literal */
+            int depth = 0;
+            char quote = 0;
+            for (; *p; ++p) {
+                if (quote) {
+                    if (*p == '\\' && p[1])
+                        ++p;
+                    else if (*p == quote)
+                        quote = 0;
+                } else if (*p == '"' || *p == '\'') {
+                    quote = *p;
+                } else if (*p == '(' || *p == '[' || *p == '{') {
+                    ++depth;
+                } else if (*p == ')' || *p == ']' || *p == '}') {
+                    if (--depth == 0)
+                        break;
+                }
+            }
+            if (!*p)
+                return 0;
+            ++p;
+            after_group = c == '(' && want_operand;
+            want_operand = false;
+            continue;
+        }
+        const char *op = NULL;
+        for (size_t i = 0; i < sizeof ops / sizeof ops[0] && !op; ++i)
+            if (strncmp(p, ops[i], strlen(ops[i])) == 0)
+                op = ops[i];
+        if (!op)
+            return 0;
+        p += strlen(op);
+        after_group = false;
+        if (want_operand) {
+            /* prefix: -x, !x, *p, &x, ++x */
+            if (strchr("-+!~*&", op[0]) && (strlen(op) == 1 || strcmp(op, "++") == 0 ||
+                                            strcmp(op, "--") == 0)) {
+                if (prec > 14)
+                    prec = 14;
+                continue;
+            }
+            return 0;
+        }
+        if (strcmp(op, "++") == 0 || strcmp(op, "--") == 0)
+            continue;                   /* postfix */
+        if (strcmp(op, "->") == 0 || strcmp(op, ".") == 0) {
+            want_operand = true;        /* the member's name follows */
+            continue;
+        }
+        const int bp = strcmp(op, "?") == 0 || strcmp(op, ":") == 0 ? 3 : binary_prec(op);
+        if (bp < prec)
+            prec = bp;
+        want_operand = true;
+    }
+    return want_operand ? 0 : prec;
+}
+
+static int kind_prec(const gen *g, const ccr_node *n);
+
+/* How tightly expression `id` holds together, as an operand. */
+static int expr_prec(const gen *g, ccr_node_id id)
+{
+    const ccr_node *n = N(g, id);
+    if (!(n->flags & CCR_FLAG_NEW) && n->src_e > n->src_b && n->src_e <= g->ast->source_len) {
+        /* parsed: go by its text, which may be a macro call around it */
+        const size_t len = n->src_e - n->src_b;
+        char small[256];
+        char *copy = len < sizeof small ? small : malloc(len + 1);
+        if (!copy)
+            return 0;
+        memcpy(copy, g->ast->source + n->src_b, len);
+        copy[len] = '\0';
+        int prec = text_prec(copy);
+        if (copy != small)
+            free(copy);
+        /* (float)-x reads like a subtraction; its kind knows better */
+        const int kind = kind_prec(g, n);
+        return kind > prec ? kind : prec;
+    }
+    return kind_prec(g, n);
+}
+
+static int kind_prec(const gen *g, const ccr_node *n)
+{
+    switch (n->kind) {
+    case CCR_NODE_BINARY_OP: return binary_prec(ccr_ast_str(g->ast, n->op));
+    case CCR_NODE_TERNARY:   return 3;
+    case CCR_NODE_UNARY_OP:  return (n->flags & CCR_FLAG_POSTFIX) ? 15 : 14;
+    case CCR_NODE_CAST:
+    case CCR_NODE_SIZEOF:    return 14;
+    case CCR_NODE_CALL: case CCR_NODE_INDEX: case CCR_NODE_MEMBER:
+    case CCR_NODE_COMPOUND_LIT: return 15;
+    case CCR_NODE_TEXT:      return text_prec(ccr_ast_str(g->ast, n->name));
+    default:                 return 16;
+    }
+}
+
+/* How tightly the operand at `index` of `parent` must hold together to need
+ * no parentheses there; 0 for slots that are not operands (arguments,
+ * conditions, a body's statements...). */
+static int operand_need(const gen *g, ccr_node_id parent, uint32_t index)
+{
+    if (parent == CCR_NONE)
+        return 0;
+    const ccr_node *p = N(g, parent);
+    switch (p->kind) {
+    case CCR_NODE_BINARY_OP: {
+        const int prec = binary_prec(ccr_ast_str(g->ast, p->op));
+        if (prec == 2)   /* assignment: right to left */
+            return index == 0 ? 14 : 2;
+        return index == 0 ? prec : prec + 1;
+    }
+    case CCR_NODE_TERNARY:  return index == 0 ? 4 : index == 1 ? 0 : 3;
+    case CCR_NODE_UNARY_OP: return (p->flags & CCR_FLAG_POSTFIX) ? 15 : 14;
+    case CCR_NODE_CAST:
+    case CCR_NODE_SIZEOF:   return 14;
+    case CCR_NODE_MEMBER:   return 15;
+    case CCR_NODE_INDEX:    return index == 0 ? 15 : 0;
+    default:                return 0;
+    }
+}
+
+/* An expression in a slot of its parent. Text and expressions that were
+ * not parsed there get parentheses if C would otherwise bind them wrong. */
+static void emit_operand(gen *g, ccr_node_id id, unsigned depth)
+{
+    const ccr_node *n = N(g, id);
+    uint32_t index = 0;
+    if (n->parent != CCR_NONE)
+        for (ccr_node_id c = N(g, n->parent)->first_child; c != id && c != CCR_NONE;
+             c = N(g, c)->next_sibling)
+            if (!(N(g, c)->flags & CCR_FLAG_WORD))
+                ++index;
+    const bool placed = (n->flags & (CCR_FLAG_NEW | CCR_FLAG_MOVED)) != 0;
+    bool wrap = placed && expr_prec(g, id) < operand_need(g, n->parent, index);
+    if (wrap && n->parent != CCR_NONE && !(N(g, n->parent)->flags & CCR_FLAG_NEW) &&
+        n->place_e > n->place_b && n->place_e <= g->ast->source_len) {
+        /* the parsed text around it has the parentheses already */
+        const char *src = g->ast->source;
+        uint32_t b = n->place_b, e = n->place_e;
+        while (b > 0 && (src[b - 1] == ' ' || src[b - 1] == '	'))
+            --b;
+        while (e < g->ast->source_len && (src[e] == ' ' || src[e] == '	'))
+            ++e;
+        if (b > 0 && src[b - 1] == '(' && e < g->ast->source_len && src[e] == ')')
+            wrap = false;
+    }
+    if (wrap)
+        puts_(g, "(");
+    emit(g, id, depth);
+    if (wrap)
+        puts_(g, ")");
+}
+
 /* What a slot holds: typed text, or whatever expression was put there. */
 static void slot(gen *g, ccr_node_id id, unsigned depth)
 {
     if (id != CCR_NONE)
-        emit(g, id, depth + 1);
+        emit_operand(g, id, depth + 1);
+}
+
+/* A name or type that must not be left empty. */
+static bool filled(gen *g, ccr_node_id id, const char *s)
+{
+    if (*s)
+        return true;
+    uint32_t line = 0;
+    for (ccr_node_id a = id; a != CCR_NONE && !line; a = N(g, a)->parent)
+        line = N(g, a)->line;
+    fail(g, ccr_tr(CCR_T_GEN_EMPTY_SLOT), line);
+    return false;
 }
 
 /* A body: a Block is printed `{ ... }`; anything else as one statement. */
@@ -240,8 +496,14 @@ static void print_new(gen *g, ccr_node_id id, unsigned depth)
     const ccr_node_id p = n->parent;
     const bool statement = p != CCR_NONE && N(g, p)->kind == CCR_NODE_BLOCK;
 
+    const char *name = ccr_ast_str(g->ast, n->name);
+    const char *type = ccr_ast_str(g->ast, n->type);
+    const char *op = ccr_ast_str(g->ast, n->op);
+
     switch (n->kind) {
     case CCR_NODE_TEXT:
+        if (n->flags & CCR_FLAG_WORD)
+            break;   /* printed by its block, from the block's name/type */
         if (!statement && !*ccr_ast_str(g->ast, n->name) &&
             (p == CCR_NONE || N(g, p)->kind != CCR_NODE_FOR)) {   /* for (;;) is fine */
             uint32_t line = 0;
@@ -307,6 +569,140 @@ static void print_new(gen *g, ccr_node_id id, unsigned depth)
         break;
     case CCR_NODE_CONTINUE:
         puts_(g, "continue;");
+        break;
+    case CCR_NODE_SWITCH:
+        puts_(g, "switch (");
+        slot(g, kid(g, id, 0), depth);
+        puts_(g, ") ");
+        body(g, kid(g, id, 1), depth);
+        break;
+    case CCR_NODE_CASE:
+        puts_(g, "case ");
+        slot(g, kid(g, id, 0), depth);
+        puts_(g, ": ");
+        body(g, kid(g, id, 1), depth);
+        break;
+    case CCR_NODE_DEFAULT:
+        puts_(g, "default: ");
+        body(g, kid(g, id, 0), depth);
+        break;
+    case CCR_NODE_GOTO:
+        if (filled(g, id, name)) {
+            puts_(g, "goto ");
+            puts_(g, name);
+            puts_(g, ";");
+        }
+        break;
+    case CCR_NODE_LABEL:
+        if (filled(g, id, name)) {
+            puts_(g, name);
+            puts_(g, ": ;");   /* a statement after it, so it may end a block */
+        }
+        break;
+    case CCR_NODE_VAR: {
+        if (!filled(g, id, type) || !filled(g, id, name))
+            break;
+        puts_(g, type);
+        if (type[strlen(type) - 1] != '*')
+            puts_(g, " ");   /* int *p, not int * p */
+        puts_(g, name);
+        ccr_node_id init = arg(g, id, 0);
+        if (init != CCR_NONE) {
+            puts_(g, " = ");
+            slot(g, init, depth);
+        }
+        puts_(g, ";");
+        break;
+    }
+
+    /* expressions, statements on their own or in slots */
+    case CCR_NODE_BINARY_OP: {
+        slot(g, arg(g, id, 0), depth);
+        puts_(g, " ");
+        puts_(g, op);
+        puts_(g, " ");
+        slot(g, arg(g, id, 1), depth);
+        goto expression_end;
+    }
+    case CCR_NODE_UNARY_OP: {
+        const ccr_node_id x = arg(g, id, 0);
+        if (n->flags & CCR_FLAG_POSTFIX) {
+            slot(g, x, depth);
+            puts_(g, op);
+        } else {
+            puts_(g, op);
+            /* - -x, not --x; & &x, not &&x */
+            const size_t mark = g->len;
+            slot(g, x, depth);
+            if (g->ok && g->len > mark && *op && g->buf[mark] == op[strlen(op) - 1]) {
+                put(g, " ", 1);
+                memmove(g->buf + mark + 1, g->buf + mark, g->len - mark - 1);
+                g->buf[mark] = ' ';
+            }
+        }
+        goto expression_end;
+    }
+    case CCR_NODE_TERNARY:
+        slot(g, arg(g, id, 0), depth);
+        puts_(g, " ? ");
+        slot(g, arg(g, id, 1), depth);
+        puts_(g, " : ");
+        slot(g, arg(g, id, 2), depth);
+        goto expression_end;
+    case CCR_NODE_INDEX:
+        slot(g, arg(g, id, 0), depth);
+        puts_(g, "[");
+        slot(g, arg(g, id, 1), depth);
+        puts_(g, "]");
+        goto expression_end;
+    case CCR_NODE_MEMBER:
+        if (!filled(g, id, name))
+            break;
+        slot(g, arg(g, id, 0), depth);
+        puts_(g, (n->flags & CCR_FLAG_ARROW) ? "->" : ".");
+        puts_(g, name);
+        goto expression_end;
+    case CCR_NODE_CALL: {
+        if (!filled(g, id, name))
+            break;
+        puts_(g, name);
+        puts_(g, "(");
+        bool first = true;
+        for (uint32_t i = 0; arg(g, id, i) != CCR_NONE; ++i) {
+            ccr_node_id a = arg(g, id, i);
+            if (N(g, a)->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, a)->name))
+                continue;   /* an empty argument slot: f() */
+            if (!first)
+                puts_(g, ", ");
+            first = false;
+            slot(g, a, depth);
+        }
+        puts_(g, ")");
+        goto expression_end;
+    }
+    case CCR_NODE_CAST:
+        if (!filled(g, id, type))
+            break;
+        puts_(g, "(");
+        puts_(g, type);
+        puts_(g, ")");
+        slot(g, arg(g, id, 0), depth);
+        goto expression_end;
+    case CCR_NODE_SIZEOF:
+        if (arg(g, id, 0) != CCR_NONE) {
+            puts_(g, "sizeof ");
+            slot(g, arg(g, id, 0), depth);
+        } else if (filled(g, id, type)) {
+            puts_(g, "sizeof(");
+            puts_(g, type);
+            puts_(g, ")");
+        }
+        goto expression_end;
+    case CCR_NODE_REF:
+        puts_(g, name);
+    expression_end:
+        if (statement)
+            puts_(g, ";");
         break;
     default:
         fail(g, "internal: cannot print a new %s block yet", ccr_node_kind_name(n->kind));
@@ -393,7 +789,7 @@ static void emit(gen *g, ccr_node_id id, unsigned depth)
             break;
         }
         put_src(g, cur, k->place_b);
-        emit(g, kids[i], depth + 1);
+        emit_operand(g, kids[i], depth + 1);
         cur = k->place_e;
     }
     put_src(g, cur, n->src_e);
@@ -460,8 +856,8 @@ static bool spliceable(const ccr_ast *ast, ccr_node_id id)
 bool ccr_codegen_can_move(const ccr_ast *ast, ccr_node_id id)
 {
     const ccr_node *n = AN(ast, id);
-    if (!is_expr_kind(n->kind) || n->parent == CCR_NONE)
-        return false;
+    if (!is_expr_kind(n->kind) || n->parent == CCR_NONE || (n->flags & CCR_FLAG_WORD))
+        return false;   /* a name or type field stays with its block */
     if (AN(ast, n->parent)->kind == CCR_NODE_BLOCK)
         return false;   /* a statement, or a loose reporter itself */
     if (n->kind == CCR_NODE_TEXT ? !*ccr_ast_str(ast, n->name)

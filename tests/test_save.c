@@ -556,7 +556,7 @@ static void test_every_template(void)
     CHECK(load(&ed), "load failed");
     static const char *const fill[] = { "n++", "n > 0", "n > 0", "n > 0", NULL, "n > 0", "n", NULL, NULL };
     ccr_node_id after = stmt(&ed, "do b--;");
-    for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t) {
+    for (int t = 0; t <= CCR_TEMPLATE_CONTINUE; ++t) {   /* the first ones; the rest below */
         if (t == CCR_TEMPLATE_BREAK || t == CCR_TEMPLATE_CONTINUE)
             continue;   /* need a loop around them; covered inside the while below */
         ccr_vec2 at;
@@ -591,6 +591,224 @@ static void test_every_template(void)
         free(text);
         check_compiles("templates.c");
     }
+    ccr_editor_free(&ed);
+}
+
+/* --------------------------------------------- operators, variables... */
+
+/* A new block's name or type field. */
+static ccr_node_id word(const ccr_editor *ed, ccr_node_id block, uint32_t which)
+{
+    for (ccr_node_id c = N(ed, block)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+        if (N(ed, c)->flags & which)
+            return c;
+    fprintf(stderr, "node %u has no such field\n", block);
+    ++g_failures;
+    return CCR_NONE;
+}
+
+/* The index-th slot of a new block (name and type fields not counted). */
+static ccr_node_id slot_of(const ccr_editor *ed, ccr_node_id block, int index)
+{
+    for (ccr_node_id c = N(ed, block)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+        if (!(N(ed, c)->flags & CCR_FLAG_WORD) && index-- == 0)
+            return c;
+    fprintf(stderr, "node %u has no such slot\n", block);
+    ++g_failures;
+    return CCR_NONE;
+}
+
+/* A statement from the palette, dropped after `after`. */
+static ccr_node_id add_after(ccr_editor *ed, ccr_template t, ccr_node_id after)
+{
+    ccr_vec2 at = { 0, 0 };
+    snap_at(ed, CCR_SNAP_AFTER, after, &at);
+    ccr_node_id made = spawn_at(ed, t, at);
+    CHECK(N(ed, made)->parent == N(ed, after)->parent, "%s did not snap after node %u",
+          ccr_template_label(t), after);
+    return made;
+}
+
+/* The first statement inside `block` (a body). */
+static ccr_node_id add_first(ccr_editor *ed, ccr_template t, ccr_node_id block)
+{
+    ccr_vec2 at = { 0, 0 };
+    snap_at(ed, CCR_SNAP_FIRST, block, &at);
+    ccr_node_id made = spawn_at(ed, t, at);
+    CHECK(N(ed, made)->parent == block, "%s did not go into node %u", ccr_template_label(t), block);
+    return made;
+}
+
+/* A reporter from the palette, dropped into an empty slot. */
+static ccr_node_id fill(ccr_editor *ed, ccr_template t, ccr_node_id hole)
+{
+    const ccr_node_id parent = N(ed, hole)->parent;
+    ccr_vec2 at = { 0, 0 };
+    snap_at(ed, CCR_SNAP_SLOT, hole, &at);
+    ccr_node_id made = spawn_at(ed, t, at);
+    CHECK(N(ed, made)->parent == parent, "%s did not drop into the slot",
+          ccr_template_label(t));
+    return made;
+}
+
+static void type(ccr_editor *ed, ccr_node_id field, const char *text)
+{
+    CHECK(ccr_editor_set_text(ed, field, text), "could not type \"%s\"", text);
+}
+
+/* Scratch-style C: declarations, operators nested in operators, pointers,
+ * switch, goto, casts; parentheses only where C needs them. */
+static void test_new_blocks(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_node_id at = stmt(&ed, "do b--;");
+
+    /* int total = n * 2 + 1;  (no parentheses: * binds tighter) */
+    ccr_node_id total = add_after(&ed, CCR_TEMPLATE_DECL_INIT, at);
+    type(&ed, word(&ed, total, CCR_FLAG_WORD_NAME), "total");
+    ccr_node_id sum = fill(&ed, CCR_TEMPLATE_ADD, slot_of(&ed, total, 0));
+    ccr_node_id prod = fill(&ed, CCR_TEMPLATE_MUL, slot_of(&ed, sum, 0));
+    type(&ed, slot_of(&ed, prod, 0), "n");
+    type(&ed, slot_of(&ed, prod, 1), "2");
+    type(&ed, slot_of(&ed, sum, 1), "1");
+
+    /* total = total - (n + b);  (parentheses: they are needed) */
+    ccr_node_id set = add_after(&ed, CCR_TEMPLATE_ASSIGN, total);
+    type(&ed, slot_of(&ed, set, 0), "total");
+    ccr_node_id diff = fill(&ed, CCR_TEMPLATE_SUB, slot_of(&ed, set, 1));
+    type(&ed, slot_of(&ed, diff, 0), "total");
+    ccr_node_id inner = fill(&ed, CCR_TEMPLATE_ADD, slot_of(&ed, diff, 1));
+    type(&ed, slot_of(&ed, inner, 0), "n");
+    type(&ed, slot_of(&ed, inner, 1), "b");
+
+    /* int *p = &total;  *p += 1; */
+    ccr_node_id ptr = add_after(&ed, CCR_TEMPLATE_DECL_INIT, set);
+    type(&ed, word(&ed, ptr, CCR_FLAG_WORD_TYPE), "int *");
+    type(&ed, word(&ed, ptr, CCR_FLAG_WORD_NAME), "p");
+    type(&ed, slot_of(&ed, fill(&ed, CCR_TEMPLATE_ADDR, slot_of(&ed, ptr, 0)), 0), "total");
+    ccr_node_id bump = add_after(&ed, CCR_TEMPLATE_ADD_ASSIGN, ptr);
+    type(&ed, slot_of(&ed, fill(&ed, CCR_TEMPLATE_DEREF, slot_of(&ed, bump, 0)), 0), "p");
+    type(&ed, slot_of(&ed, bump, 1), "1");
+
+    /* int size = (int)sizeof(long); */
+    ccr_node_id size = add_after(&ed, CCR_TEMPLATE_DECL_INIT, bump);
+    type(&ed, word(&ed, size, CCR_FLAG_WORD_NAME), "size");
+    ccr_node_id cast = fill(&ed, CCR_TEMPLATE_CAST, slot_of(&ed, size, 0));
+    ccr_node_id szof = fill(&ed, CCR_TEMPLATE_SIZEOF_TYPE, slot_of(&ed, cast, 0));
+    type(&ed, word(&ed, szof, CCR_FLAG_WORD_TYPE), "long");
+
+    /* int arr[3] = { 0 };  arr[1] = pr.y;  total = n > 0 ? total : -total; */
+    ccr_node_id arr = add_after(&ed, CCR_TEMPLATE_DECL_INIT, size);
+    type(&ed, word(&ed, arr, CCR_FLAG_WORD_NAME), "arr[3]");
+    type(&ed, slot_of(&ed, arr, 0), "{ 0 }");
+    ccr_node_id put = add_after(&ed, CCR_TEMPLATE_ASSIGN, arr);
+    ccr_node_id idx = fill(&ed, CCR_TEMPLATE_INDEX, slot_of(&ed, put, 0));
+    type(&ed, slot_of(&ed, idx, 0), "arr");
+    type(&ed, slot_of(&ed, idx, 1), "1");
+    ccr_node_id mem = fill(&ed, CCR_TEMPLATE_MEMBER, slot_of(&ed, put, 1));
+    type(&ed, slot_of(&ed, mem, 0), "pr");
+    type(&ed, word(&ed, mem, CCR_FLAG_WORD_NAME), "y");
+    ccr_node_id pick = add_after(&ed, CCR_TEMPLATE_ASSIGN, put);
+    type(&ed, slot_of(&ed, pick, 0), "total");
+    ccr_node_id tern = fill(&ed, CCR_TEMPLATE_TERNARY, slot_of(&ed, pick, 1));
+    type(&ed, slot_of(&ed, tern, 0), "n > 0");
+    type(&ed, slot_of(&ed, tern, 1), "total");
+    type(&ed, slot_of(&ed, tern, 2), "-total");
+
+    /* if (!(n == 3)) goto skip;  ...  skip: */
+    ccr_node_id iff = add_after(&ed, CCR_TEMPLATE_IF, pick);
+    ccr_node_id eq = fill(&ed, CCR_TEMPLATE_EQ, slot_of(&ed, fill(&ed, CCR_TEMPLATE_NOT,
+                                                                   slot_of(&ed, iff, 0)), 0));
+    type(&ed, slot_of(&ed, eq, 0), "n");
+    type(&ed, slot_of(&ed, eq, 1), "3");
+    ccr_node_id go = add_first(&ed, CCR_TEMPLATE_GOTO, slot_of(&ed, iff, 1));
+    type(&ed, word(&ed, go, CCR_FLAG_WORD_NAME), "skip");
+
+    /* switch (n) { case 1: { total++; break; } default: { total--; } } */
+    ccr_node_id sw = add_after(&ed, CCR_TEMPLATE_SWITCH, iff);
+    type(&ed, slot_of(&ed, sw, 0), "n");
+    ccr_node_id one = add_first(&ed, CCR_TEMPLATE_CASE, slot_of(&ed, sw, 1));
+    type(&ed, slot_of(&ed, one, 0), "1");
+    ccr_node_id inc = add_first(&ed, CCR_TEMPLATE_INC, slot_of(&ed, one, 1));
+    type(&ed, slot_of(&ed, inc, 0), "total");
+    add_after(&ed, CCR_TEMPLATE_BREAK, inc);
+    ccr_node_id dflt = add_after(&ed, CCR_TEMPLATE_DEFAULT, one);
+    type(&ed, slot_of(&ed, add_first(&ed, CCR_TEMPLATE_DEC, slot_of(&ed, dflt, 0)), 0), "total");
+
+    ccr_node_id label = add_after(&ed, CCR_TEMPLATE_LABEL, sw);
+    type(&ed, word(&ed, label, CCR_FLAG_WORD_NAME), "skip");
+    ccr_node_id lbl;
+    CHECK(ccr_editor_jump(&ed, go, &lbl) == CCR_JUMP_OK && lbl == label,
+          "the new goto does not find its new label");
+
+    /* printf("%d %d\n", total, arr[1] + size); */
+    ccr_node_id say = add_after(&ed, CCR_TEMPLATE_CALL_STMT, label);
+    type(&ed, word(&ed, say, CCR_FLAG_WORD_NAME), "printf");
+    type(&ed, slot_of(&ed, say, 0), "\"%d %d\\n\", total, arr[1] + size");
+    add_after(&ed, CCR_TEMPLATE_PRINTF, say);
+    CHECK(ccr_editor_loose_count(&ed) == 0, "something was left loose");
+
+    char err[256];
+    char *text = save_to(&ed, "new_blocks.c", err, sizeof err);
+    CHECK(text != NULL, "save failed: %s", err);
+    if (text) {
+        static const char *const want[] = {
+            "    int total = n * 2 + 1;\n",
+            "    total = total - (n + b);\n",
+            "    int *p = &total;\n",
+            "    *p += 1;\n",
+            "    int size = (int)sizeof(long);\n",
+            "    int arr[3] = { 0 };\n",
+            "    arr[1] = pr.y;\n",
+            "    total = n > 0 ? total : -total;\n",
+            "    if (!(n == 3)) {\n        goto skip;\n    }\n",
+            "    switch (n) {\n        case 1: {\n            total++;\n            break;\n        }\n"
+            "        default: {\n            total--;\n        }\n    }\n",
+            "    skip: ;\n",
+            "    printf(\"%d %d\\n\", total, arr[1] + size);\n",
+            "    printf(\"Hello, world!\\n\");\n",
+        };
+        for (size_t i = 0; i < sizeof want / sizeof want[0]; ++i)
+            CHECK(strstr(text, want[i]) != NULL, "missing:\n%s", want[i]);
+        free(text);
+        check_compiles("new_blocks.c");
+    }
+
+    /* a name left empty is not saved as broken C */
+    type(&ed, word(&ed, total, CCR_FLAG_WORD_NAME), "");
+    text = save_to(&ed, "new_blocks_empty.c", err, sizeof err);
+    CHECK(text == NULL, "a declaration without a name was saved");
+    free(text);
+
+    /* and all of it undoes, back to the file as it was */
+    while (ccr_editor_undo(&ed))
+        ;
+    char *back = generate(&ed);
+    CHECK(back && strcmp(back, ed.ast.source) == 0, "undoing the new blocks did not restore the file");
+    free(back);
+    ccr_editor_free(&ed);
+}
+
+/* Every template can be taken from the palette, and lies there loose. */
+static void test_all_templates_spawn(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t) {
+        const ccr_vec2 where = { 5000.0f + (float)t * 600.0f, -4000.0f };   /* apart: no snapping */
+        CHECK(ccr_editor_spawn(&ed, (ccr_template)t, where),
+              "%s: spawn refused", ccr_template_label((ccr_template)t));
+        frame(&ed, where, false, false, true);
+        const ccr_node_id root = ed.scripts[ed.script_count - 1].root;
+        CHECK(((N(&ed, root)->flags & CCR_FLAG_REPORTER) != 0) ==
+              ccr_template_is_reporter((ccr_template)t), "%s: reporter or not?",
+              ccr_template_label((ccr_template)t));
+        CHECK(ed.scripts[ed.script_count - 1].blocks.bounds.w > 10.0f, "%s: drawn as nothing",
+              ccr_template_label((ccr_template)t));
+    }
+    CHECK(ccr_editor_loose_count(&ed) == CCR_TEMPLATE_COUNT, "%u loose, expected %d",
+          ccr_editor_loose_count(&ed), CCR_TEMPLATE_COUNT);
     ccr_editor_free(&ed);
 }
 
@@ -938,6 +1156,8 @@ int main(int argc, char **argv)
     test_undo_and_save_point();
     test_palette_blocks();
     test_every_template();
+    test_new_blocks();
+    test_all_templates_spawn();
     test_trash();
     test_delete();
     test_duplicate();

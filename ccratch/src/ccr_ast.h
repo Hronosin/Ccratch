@@ -154,6 +154,11 @@ typedef struct ccr_node {
                                             (a Scratch reporter), not a stack */
 #define CCR_FLAG_MOVED       (1u << 14)  /* expression dropped into another
                                             slot: its place is not its src */
+#define CCR_FLAG_WORD_NAME   (1u << 15)  /* Text holding its parent's name (a
+                                            new block's variable, function,
+                                            label, field): no reporter goes in */
+#define CCR_FLAG_WORD_TYPE   (1u << 16)  /* the same for its parent's type */
+#define CCR_FLAG_WORD        (CCR_FLAG_WORD_NAME | CCR_FLAG_WORD_TYPE)
 
 typedef enum ccr_diag_severity {
     CCR_DIAG_NOTE,
@@ -176,6 +181,7 @@ typedef struct ccr_node_links {
     ccr_node_id parent, first_child, last_child, next_sibling;
     uint32_t    flags;
     ccr_str     name;   /* text typed into a palette block's slot */
+    ccr_str     type;   /* and a new declaration's type */
     uint32_t    place_b, place_e;
 } ccr_node_links;
 

@@ -39,6 +39,12 @@
     X(PALETTE_TITLE,    "palette.title",         0, "Blocks")                            \
     X(PALETTE_DROP,     "palette.drop",          0, "drop to delete")                    \
     X(TEMPLATE_CODE,    "palette.code_line",     0, "code line")                         \
+    X(CAT_CONTROL,      "palette.control",       0, "Control")                           \
+    X(CAT_OPERATORS,    "palette.operators",     0, "Operators")                         \
+    X(CAT_VARIABLES,    "palette.variables",     0, "Variables")                         \
+    X(CAT_POINTERS,     "palette.pointers",      0, "Pointers")                          \
+    X(CAT_FUNCTIONS,    "palette.functions",     0, "Functions")                         \
+    X(CAT_TYPES,        "palette.types",         0, "Types")                             \
     X(EMPTY_TITLE,      "empty.title",           0, "Drop a .c file here")               \
     X(EMPTY_HINT,       "empty.hint",            0, "(or: ccratch file.c)")              \
     /* status bar, left: what just happened */                                           \

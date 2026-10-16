@@ -110,6 +110,13 @@ add_test(NAME lang_template
                  ${CCR_BIN} ${CMAKE_CURRENT_BINARY_DIR}/en.lang)
 
 # goto arrows find their labels, and notice when one leaves.
+add_executable(test_palette test_palette.c)
+target_link_libraries(test_palette PRIVATE ccratch_core)
+if(XVFB_RUN)
+    add_test(NAME palette
+             COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24" $<TARGET_FILE:test_palette>)
+endif()
+
 add_executable(test_jumps test_jumps.c)
 target_link_libraries(test_jumps PRIVATE ccratch_core)
 if(XVFB_RUN)

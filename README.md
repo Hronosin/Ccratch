@@ -21,6 +21,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 10: expressions come out of their slots and go into other ones.
 - Step 11: every `goto` has an arrow to its label.
 - Step 12: themes, as files, and four of them to start with.
+- Step 13: the palette grows up: six categories, operators, variables, pointers, switch, casts.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -62,19 +63,35 @@ Every move edits the syntax tree itself, and Ctrl+S writes it back.
 
 ## Writing new code
 
-The palette on the left has `if`, `if / else`, `while`, `for`,
-`do / while`, `return`, `break`, `continue` and a **code line** for
-anything else (a call, an assignment, a declaration). Drag one out and it
-behaves like any block: it snaps into stacks, takes other blocks inside it,
-and old statements can be dropped into it.
+The palette on the left is Scratch's: a strip of coloured dots, one per
+category (click one and the list glides to it, or scroll with the wheel),
+and next to it every block, drawn as the real thing:
 
-The white fields are typed into: click one, type, Enter keeps it, Esc
-throws it away, Ctrl+V pastes. Each edit is one undo step.
+| Category | Blocks |
+| --- | --- |
+| **Control** | `if`, `if / else`, `while`, `for`, `do / while`, `return`, `break`, `continue`, `switch`, `case`, `default`, `goto`, a label |
+| **Operators** | `+ - * / %`, `< > <= >= == !=`, `&& \|\| !`, `& \| ^ ~ << >>`, `c ? a : b` |
+| **Variables** | `int x = 0`, `int x`, `=`, `+=`, `-=`, `*=`, `++`, `--` |
+| **Pointers** | `&a`, `*p`, `a[i]`, `s.field`, `p->field`, `NULL` |
+| **Functions** | a **code line** for anything else, `f(...)` as a statement and as a reporter, `printf`, `malloc`, `free` |
+| **Types** | `(int) a`, `sizeof(int)`, `sizeof a` |
+
+Statements snap into stacks; the rounded and pointy ones are reporters
+and go into slots, like Scratch's. Drag one out and it behaves like any
+block: old statements can be dropped into new ones and the other way
+round.
+
+Round white slots take a reporter, or text: click one, type, Enter keeps
+it, Esc throws it away, Ctrl+V pastes. A reporter dropped on a slot that
+has text in it replaces the text. Square white fields are names and types
+(the `x` and `int` of `int x = 0`, the `f` of `f(...)`, a label's name):
+typed into, never dropped into. A fresh `goto` and a fresh label are both
+`done`, so a new pair is already an arrow. Each edit is one undo step.
 
 Drop a block back onto the palette to delete it (Ctrl+Z brings it back).
 That works for statements from the file too.
 
-![the palette: an if typed into sum(), a code line inside it](docs/palette.png)
+![the palette open at Operators; int total = n * 2 + 1 built from blocks](docs/palette.png)
 
 New blocks have no text in the file, so saving prints them; everything
 around them is still copied as written:
@@ -86,6 +103,12 @@ around them is still copied as written:
         n = 100;
     }
 ```
+
+Parentheses are added only where C needs them: `+` dropped into the
+right side of `-` saves as `total - (n + b)`, `*` into `+` as
+`n * 2 + 1`, and `!` around `n == 3` as `!(n == 3)`. That goes for text
+typed into a slot too, and for expressions moved out of the file into new
+places.
 
 ## Expressions
 
@@ -311,6 +334,8 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_blocks  one script -> blocks: flat display list + snap points
   ccr_editor  scripts on the canvas, drag and drop, edits the tree
   ccr_codegen tree -> C: copies untouched text, rebuilds changed blocks
+  ccr_template what the palette offers, as syntax trees (no window)
+  ccr_palette the palette: categories, real blocks, scrolling
   ccr_pie     the pie menu: picks an action by direction, knows no editor
   ccr_lang    every text the window shows, and the language packs
   ccr_theme   every colour, and the theme files

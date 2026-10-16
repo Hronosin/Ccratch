@@ -35,7 +35,9 @@ add_library(ccratch_core OBJECT
     src/ccr_editor.c
     src/ccr_lang.c
     src/ccr_parse.c
+    src/ccr_palette.c
     src/ccr_pie.c
+    src/ccr_template.c
     src/ccr_theme.c
     ${CCR_ICON_C}
     ${CCR_FONT_C})

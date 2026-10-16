@@ -193,6 +193,7 @@ static ccr_node_id vacate(ccr_editor *ed, ccr_node_id x)
     ccr_ast_touch(&ed->ast, hole);
     ed->ast.nodes[hole].place_b = N(ed, x)->place_b;
     ed->ast.nodes[hole].place_e = N(ed, x)->place_e;
+    ed->ast.nodes[hole].flags |= N(ed, x)->flags & CCR_FLAG_INIT;   /* still the initializer */
     const ccr_node_id parent = N(ed, x)->parent;
     ccr_ast_insert_after(&ed->ast, x, hole);
     ccr_ast_unlink(&ed->ast, x);
@@ -573,100 +574,17 @@ static void restore_scripts(ccr_editor *ed, const ccr_placed *v, uint32_t n)
 
 /* ---------------------------------------------------------- palette */
 
-static const char *const g_template_labels[CCR_TEMPLATE_COUNT] = {
-    [CCR_TEMPLATE_CODE]     = "code line",
-    [CCR_TEMPLATE_IF]       = "if",
-    [CCR_TEMPLATE_IF_ELSE]  = "if / else",
-    [CCR_TEMPLATE_WHILE]    = "while",
-    [CCR_TEMPLATE_FOR]      = "for",
-    [CCR_TEMPLATE_DO_WHILE] = "do / while",
-    [CCR_TEMPLATE_RETURN]   = "return",
-    [CCR_TEMPLATE_BREAK]    = "break",
-    [CCR_TEMPLATE_CONTINUE] = "continue",
-};
-
-const char *ccr_template_label(ccr_template t)
-{
-    if (t == CCR_TEMPLATE_CODE)
-        return ccr_tr(CCR_T_TEMPLATE_CODE);
-    return (unsigned)t < CCR_TEMPLATE_COUNT ? g_template_labels[t] : "?";
-}
-
 static ccr_node_id new_node(ccr_editor *ed, ccr_node_kind kind, ccr_node_id parent)
 {
-    ccr_node_id id = ccr_ast_add(&ed->ast, kind, CCR_NONE);
-    if (id == CCR_NONE)
-        return CCR_NONE;
-    ed->ast.nodes[id].flags |= CCR_FLAG_NEW;
-    if (kind == CCR_NODE_BLOCK) {
-        /* printed with relative indents; the block it lands in shifts it */
-        ed->ast.nodes[id].indent = ccr_ast_intern(&ed->ast, "    ");
-        ed->ast.nodes[id].flags |= CCR_FLAG_DIRTY;
-    }
-    if (parent != CCR_NONE)
-        ccr_ast_append(&ed->ast, parent, id);
-    return id;
-}
-
-static ccr_node_id new_text(ccr_editor *ed, ccr_node_id parent, const char *text)
-{
-    ccr_node_id id = new_node(ed, CCR_NODE_TEXT, CCR_NONE);
-    if (id == CCR_NONE)
-        return CCR_NONE;
-    ed->ast.nodes[id].name = ccr_ast_intern(&ed->ast, text);
-    ccr_ast_append(&ed->ast, parent, id);
-    return id;
-}
-
-/* Builds a template's nodes under `parent`. False if out of memory. */
-static bool build_template(ccr_editor *ed, ccr_template t, ccr_node_id parent)
-{
-    ccr_node_id s = CCR_NONE;
-    switch (t) {
-    case CCR_TEMPLATE_CODE:
-        return new_text(ed, parent, "") != CCR_NONE;
-    case CCR_TEMPLATE_IF:
-    case CCR_TEMPLATE_IF_ELSE:
-        s = new_node(ed, CCR_NODE_IF, parent);
-        new_text(ed, s, "");
-        new_node(ed, CCR_NODE_BLOCK, s);
-        if (t == CCR_TEMPLATE_IF_ELSE)
-            new_node(ed, CCR_NODE_BLOCK, s);
-        break;
-    case CCR_TEMPLATE_WHILE:
-        s = new_node(ed, CCR_NODE_WHILE, parent);
-        new_text(ed, s, "");
-        new_node(ed, CCR_NODE_BLOCK, s);
-        break;
-    case CCR_TEMPLATE_FOR:
-        s = new_node(ed, CCR_NODE_FOR, parent);
-        new_text(ed, s, "int i = 0");
-        new_text(ed, s, "i < n");
-        new_text(ed, s, "i++");
-        new_node(ed, CCR_NODE_BLOCK, s);
-        break;
-    case CCR_TEMPLATE_DO_WHILE:
-        s = new_node(ed, CCR_NODE_DO_WHILE, parent);
-        new_node(ed, CCR_NODE_BLOCK, s);
-        new_text(ed, s, "");
-        break;
-    case CCR_TEMPLATE_RETURN:
-        s = new_node(ed, CCR_NODE_RETURN, parent);
-        new_text(ed, s, "");
-        break;
-    case CCR_TEMPLATE_BREAK:
-        s = new_node(ed, CCR_NODE_BREAK, parent);
-        break;
-    case CCR_TEMPLATE_CONTINUE:
-        s = new_node(ed, CCR_NODE_CONTINUE, parent);
-        break;
-    case CCR_TEMPLATE_COUNT:
-        break;
-    }
-    return s != CCR_NONE && !ed->journal.oom;
+    return ccr_template_node(&ed->ast, kind, parent);
 }
 
 bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse)
+{
+    return ccr_editor_spawn_held(ed, t, mouse, (ccr_vec2){ 16.0f, 16.0f });
+}
+
+bool ccr_editor_spawn_held(ccr_editor *ed, ccr_template t, ccr_vec2 mouse, ccr_vec2 grab)
 {
     ccr_editor_settle(ed);
     if (ed->drag != CCR_DRAG_IDLE || (unsigned)t >= CCR_TEMPLATE_COUNT)
@@ -680,14 +598,17 @@ bool ccr_editor_spawn(ccr_editor *ed, ccr_template t, ccr_vec2 mouse)
     }
     ccr_ast_touch(&ed->ast, loose);
     ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE;
-    if (!build_template(ed, t, loose) || !push_script(ed, loose, mouse)) {
+    if (ccr_template_is_reporter(t))
+        ed->ast.nodes[loose].flags |= CCR_FLAG_REPORTER;
+    if (ccr_template_build(&ed->ast, t, loose) == CCR_NONE || ed->journal.oom ||
+        !push_script(ed, loose, mouse)) {
         commit_change(ed);
         return false;
     }
 
-    /* held a little in from its corner, as if grabbed there */
+    /* held where it was grabbed */
     ed->dragged = ed->script_count - 1;
-    ed->grab = (ccr_vec2){ 16.0f, 16.0f };
+    ed->grab = grab;
     ed->scripts[ed->dragged].pos = (ccr_vec2){ mouse.x - ed->grab.x, mouse.y - ed->grab.y };
     ed->drag = CCR_DRAG_MOVING;
     find_snap(ed);
@@ -708,6 +629,15 @@ bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text)
     ed->ast.nodes[slot].name = ccr_ast_intern(&ed->ast, text);
     /* the block it sits in changes, so saving rebuilds that part */
     ccr_node_id p = N(ed, slot)->parent;
+    const uint32_t word = N(ed, slot)->flags & CCR_FLAG_WORD;
+    if (word && p != CCR_NONE) {
+        /* a name or type: its block keeps it too (goto arrows, saving) */
+        ccr_ast_touch(&ed->ast, p);
+        if (word & CCR_FLAG_WORD_NAME)
+            ed->ast.nodes[p].name = N(ed, slot)->name;
+        else
+            ed->ast.nodes[p].type = N(ed, slot)->name;
+    }
     if (p != CCR_NONE && N(ed, p)->kind == CCR_NODE_BLOCK && !(N(ed, p)->flags & CCR_FLAG_LOOSE)) {
         ccr_ast_touch(&ed->ast, p);
         ed->ast.nodes[p].flags |= CCR_FLAG_DIRTY;
@@ -996,6 +926,7 @@ static void drop_into_slot(ccr_editor *ed)
     ed->ast.nodes[x].place_b = N(ed, hole)->place_b;
     ed->ast.nodes[x].place_e = N(ed, hole)->place_e;
     ed->ast.nodes[x].flags |= CCR_FLAG_MOVED;
+    ed->ast.nodes[x].flags = (N(ed, x)->flags & ~CCR_FLAG_INIT) | (N(ed, hole)->flags & CCR_FLAG_INIT);
     ccr_ast_insert_after(&ed->ast, hole, x);
     ccr_ast_unlink(&ed->ast, hole);
     ccr_ast_touch(&ed->ast, hole);

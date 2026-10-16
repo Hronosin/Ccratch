@@ -7,6 +7,7 @@
 #include "ccr_gui.h"
 #include "ccr_lang.h"
 #include "ccr_parse.h"
+#include "ccr_palette.h"
 #include "ccr_pie.h"
 #include "ccr_theme.h"
 
@@ -47,7 +48,7 @@ static bool load_font(void)
 }
 
 #define TOPBAR_H     40.0f
-#define PALETTE_W   176.0f
+#define PALETTE_W   CCR_PALETTE_W
 #define COL_PALETTE  ccr_th(CCR_C_PALETTE)
 #define STATUSBAR_H  26.0f
 #define PATH_MAX_LEN 4096
@@ -82,6 +83,18 @@ typedef struct ccr_document {
 /* Blocks glide, menus pop, deleted blocks go poof. Off with
  * --no-animations or "animations = off" in the config file. */
 static bool g_animate = true;
+
+/* The blocks to take from: one palette for the whole session. */
+static ccr_palette g_palette;
+
+/* Colours (or words) on the blocks changed: lay everything out again. */
+static void relayout_everything(ccr_document *doc)
+{
+    if (doc->loaded)
+        ccr_editor_relayout_all(&doc->ed);
+    if (g_palette.ready && !ccr_palette_relayout(&g_palette))
+        fprintf(stderr, "ccratch: out of memory laying out the palette\n");
+}
 
 const char *ccr_version(void)
 {
@@ -750,7 +763,10 @@ static void next_language(ccr_document *doc)
             ccr_theme_use(theme, NULL);   /* theme names come in this language too */
             ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
             doc->has_errors = false;
-            return;   /* blocks show C, not words: nothing to lay out again */
+            /* blocks show C, not words; only the palette's names change */
+            if (g_palette.ready && !ccr_palette_relayout(&g_palette))
+                fprintf(stderr, "ccratch: out of memory laying out the palette\n");
+            return;
         }
     }
 }
@@ -772,8 +788,7 @@ static void next_theme(ccr_document *doc)
                 fprintf(stderr, "ccratch: could not remember the theme in ~/.config/ccratch\n");
             ccr_trf(doc->status, sizeof doc->status, CCR_T_THEME_STATUS, ccr_theme_name());
             doc->has_errors = false;
-            if (doc->loaded)
-                ccr_editor_relayout_all(&doc->ed);
+            relayout_everything(doc);
             return;
         }
     }
@@ -845,61 +860,14 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
 
 /* ------------------------------------------------------------ palette */
 
-#define PALETTE_ITEM_H   34.0f
-#define PALETTE_GAP      10.0f
-#define PALETTE_TOP     (TOPBAR_H + 44.0f)
-
-static ccr_rect palette_item(int i)
-{
-    return (ccr_rect){ 14.0f, PALETTE_TOP + (float)i * (PALETTE_ITEM_H + PALETTE_GAP),
-                       PALETTE_W - 28.0f, PALETTE_ITEM_H };
-}
-
 static bool point_in(ccr_vec2 p, ccr_rect r)
 {
     return p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h;
 }
 
-/* Which palette block is under the mouse, or -1. */
-static int palette_hit(ccr_vec2 m)
+static ccr_rect palette_area(int height)
 {
-    for (int i = 0; i < CCR_TEMPLATE_COUNT; ++i)
-        if (point_in(m, palette_item(i)))
-            return i;
-    return -1;
-}
-
-static void draw_palette(int height, bool dragging_over)
-{
-    ccr_gui_rect((ccr_rect){ 0, TOPBAR_H, PALETTE_W, (float)height - TOPBAR_H - STATUSBAR_H },
-                 dragging_over ? ccr_th(CCR_C_TRASH) : COL_PALETTE);
-    ccr_gui_text(dragging_over ? ccr_tr(CCR_T_PALETTE_DROP) : ccr_tr(CCR_T_PALETTE_TITLE), 16.0f, TOPBAR_H + 12.0f, 19.0f,
-                 dragging_over ? ccr_th(CCR_C_ERROR) : ccr_th(CCR_C_PALETTE_TEXT));
-
-    for (int i = 0; i < CCR_TEMPLATE_COUNT; ++i) {
-        ccr_rect r = palette_item(i);
-        bool code = i == CCR_TEMPLATE_CODE;
-        bool mouth = i >= CCR_TEMPLATE_IF && i <= CCR_TEMPLATE_DO_WHILE;
-        const ccr_theme_cat cat = code ? CCR_CAT_CALL : CCR_CAT_CONTROL;
-        ccr_color fill = ccr_th_cat(cat, CCR_FILL);
-        ccr_color edge = ccr_th_cat(cat, CCR_EDGE);
-        ccr_gui_rect_rounded(r, 0.25f, edge);
-        ccr_gui_rect_rounded((ccr_rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 0.25f, fill);
-        /* the puzzle shape, as on the canvas: a notch on top, a tab under
-         * (not under return, break, continue: nothing runs after them) */
-        const ccr_rect dent = { r.x + 12.0f, r.y - 1.0f, 22.0f, 6.0f };
-        ccr_gui_rect_rounded(dent, 0.6f, edge);
-        ccr_gui_rect_rounded((ccr_rect){ dent.x + 1, dent.y - 1, dent.w - 2, dent.h }, 0.6f, COL_PALETTE);
-        if (i < CCR_TEMPLATE_RETURN) {
-            const ccr_rect tab = { r.x + 12.0f, r.y + r.h - 1.0f, 22.0f, 6.0f };
-            ccr_gui_rect_rounded(tab, 0.6f, edge);
-            ccr_gui_rect_rounded((ccr_rect){ tab.x + 1, tab.y - 1, tab.w - 2, tab.h }, 0.6f, fill);
-        }
-        if (mouth)   /* a hint of the C shape: there is room inside */
-            ccr_gui_rect((ccr_rect){ r.x + 14.0f, r.y + r.h - 7.0f, r.w - 28.0f, 4.0f }, edge);
-        ccr_gui_text(ccr_template_label((ccr_template)i), r.x + 12.0f, r.y + 6.0f, 19.0f,
-                     ccr_th_cat(cat, CCR_TEXT));
-    }
+    return (ccr_rect){ 0, TOPBAR_H, PALETTE_W, (float)height - TOPBAR_H - STATUSBAR_H };
 }
 
 /* ------------------------------------------------- actions (pie, keys) */
@@ -1014,6 +982,8 @@ int ccr_run(int argc, char **argv)
         opt.smoke_frames == 0 && !ccr_config_get("eula", answered, sizeof answered);
     if (!load_font())
         fprintf(stderr, "ccratch: font did not load, falling back to raylib's (ASCII only)\n");
+    if (!ccr_palette_init(&g_palette))
+        fprintf(stderr, "ccratch: out of memory laying out the palette\n");
     if (!ccr_gui_set_icon_png(ccr_icon_png, ccr_icon_png_size))
         fprintf(stderr, "ccratch: icon did not load, carrying on without it\n");
 
@@ -1075,6 +1045,9 @@ int ccr_run(int argc, char **argv)
         const bool inside = point_in(m, viewport);
         const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
         const bool can_act = doc.loaded && te.node == CCR_NONE && !eula.open;
+        if (!pie.open && !eula.open)
+            ccr_palette_update(&g_palette, palette_area(h), m, ccr_gui_wheel(),
+                               over_palette && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), dt);
 
         /* the pie, while it is open, gets the mouse and Esc to itself */
         if (pie.open) {
@@ -1150,9 +1123,11 @@ int ccr_run(int argc, char **argv)
             /* a carried copy (Duplicate) lands on a click anywhere, the
              * palette included, where it is thrown away */
             const bool lmb = ccr_gui_mouse_pressed(CCR_MOUSE_LEFT);
-            int spawn = (over_palette && lmb) ? palette_hit(m) : -1;
+            ccr_vec2 grab;
+            int spawn = (over_palette && lmb && !doc.ed.carrying)
+                      ? ccr_palette_hit(&g_palette, palette_area(h), m, &grab) : -1;
             if (spawn >= 0)
-                ccr_editor_spawn(&doc.ed, (ccr_template)spawn, world);
+                ccr_editor_spawn_held(&doc.ed, (ccr_template)spawn, world, grab);
             ccr_editor_input in = {
                 .mouse      = ccr_canvas_to_world(&canvas, m),
                 .pressed    = lmb && (inside || doc.ed.carrying),
@@ -1177,8 +1152,8 @@ int ccr_run(int argc, char **argv)
             ccr_editor_draw(&doc.ed, &canvas, viewport);
         else
             draw_empty_hint(viewport);
-        if (doc.loaded)
-            draw_palette(h, doc.ed.drag == CCR_DRAG_MOVING && over_palette);
+        ccr_palette_draw(&g_palette, palette_area(h),
+                         doc.loaded && doc.ed.drag == CCR_DRAG_MOVING && over_palette);
 
         /* the text box over the slot being edited */
         if (te.node != CCR_NONE) {

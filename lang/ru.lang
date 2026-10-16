@@ -7,6 +7,12 @@ topbar.build = Собрать
 palette.title = Блоки
 palette.drop = отпусти — и нет его
 palette.code_line = строка кода
+palette.control = Управление
+palette.operators = Операторы
+palette.variables = Переменные
+palette.pointers = Указатели
+palette.functions = Функции
+palette.types = Типы
 empty.title = Перетащи сюда .c файл
 empty.hint = (или: ccratch file.c)
 
