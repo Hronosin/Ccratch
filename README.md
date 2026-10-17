@@ -488,9 +488,9 @@ style cleanup ladder to play with.
 ## Themes
 
 The **Theme** button in the top bar drops a list of them, each with its
-colours (the canvas, the accent, the blocks). The one under the mouse (or
-the arrow keys) is tried on the whole window at once; a click takes it and
-remembers it, Esc or a click outside goes back to the old one:
+colours (the canvas, the accent, the blocks). A click (or the arrow keys
+and Enter) takes one and remembers it; Esc or a click outside leaves
+everything as it was:
 
 ![Shrine, Super Serious, Masochist and Scratch](docs/themes.png)
 

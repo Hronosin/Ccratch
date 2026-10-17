@@ -1240,8 +1240,7 @@ static void use_theme(ccr_document *doc, const char *code, bool save)
 }
 
 /* The Theme and language buttons open a list to pick from, under them.
- * Themes show their colours, and the one under the mouse is tried on the
- * whole window at once; Esc or a click outside goes back to the old one. */
+ * Themes show their colours; only a click (or Enter) changes anything. */
 #define PICK_SWATCHES 8
 
 static struct {
@@ -1371,10 +1370,6 @@ static void pick_frame(ccr_document *doc, int w, float dt)
     wrap_text(ccr_tr(themes ? CCR_T_PICK_THEME_HINT : CCR_T_PICK_LANG_HINT), card.x + 14.0f,
               card.y + card.h - foot + 4.0f, card.w - 28.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT), true);
 
-    /* trying a theme on: the one under the mouse or the keys */
-    if (themes && g_pick.hot >= 0 && g_pick.hot < n)
-        use_theme(doc, g_pick.themes[g_pick.hot].code, false);
-
     if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(m, card) && !point_in(m, g_pick.button))
         cancel = true;
     if (choose >= 0) {
@@ -1384,9 +1379,7 @@ static void pick_frame(ccr_document *doc, int w, float dt)
             use_language(doc, g_pick.langs[choose].code);
         g_pick.kind = 0;
     } else if (cancel) {
-        if (themes)
-            use_theme(doc, g_pick.was, false);   /* as it was */
-        g_pick.kind = 0;
+        g_pick.kind = 0;   /* nothing changes until a click */
     }
 }
 
