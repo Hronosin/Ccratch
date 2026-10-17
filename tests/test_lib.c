@@ -97,6 +97,30 @@ static void test_api(const char *toy_h, const char *annotated_h, const char *so,
         CHECK(strstr(p, "set pitch to {hz} Hz") && strstr(p, "the beeper is busy"), "/** @block */:\n%s", p);
         CHECK(!strstr(p, "beeper_internal_thing") && !strstr(p, "beeper_twice"), "unmarked ones:\n%s", p);
         CHECK(strstr(p, "BEEP_SHORT") && strstr(p, "BEEP_LONG"), "enums:\n%s", p);
+        /* and loaded: the slot of that enum type picks from its values */
+        char pdir[256], ppath[300];
+        snprintf(pdir, sizeof pdir, "/tmp/ccratch_test_enum_%d", (int)getpid());
+        char pblocks[400];
+        ccr_lib_project_dir(pdir, pblocks, (int)sizeof pblocks);
+        char mk[600];
+        snprintf(mk, sizeof mk, "mkdir -p '%s'", pblocks);
+        CHECK(system(mk) == 0, "mkdir");
+        snprintf(ppath, sizeof ppath, "%.250s/beeper.yaml", pblocks);
+        FILE *pf2 = fopen(ppath, "w");
+        if (pf2) {
+            fputs(p, pf2);
+            fclose(pf2);
+        }
+        ccr_lib_load_project(pdir, NULL);
+        const ccr_lib_block *kb = ccr_lib_find("beeper_kind", 1);
+        const char *vals[8];
+        char lname[64];
+        const int nv = kb ? ccr_lib_param_choices(kb, 0, vals, 8, lname, (int)sizeof lname) : 0;
+        CHECK(nv == 2 && strcmp(vals[0], "BEEP_SHORT") == 0 && strcmp(lname, "beep_kind") == 0,
+              "a drafted pack's enum slot: %d values (%s)", nv, lname);
+        snprintf(mk, sizeof mk, "rm -rf '%s'", pdir);
+        CHECK(system(mk) == 0, "rm");
+        ccr_lib_load(NULL);
         ccr_api_free(&api);
     }
 
@@ -178,6 +202,18 @@ int main(int argc, char **argv)
           sc ? sc->text : "");
     CHECK(ccr_lib_index(dot) >= 0 && ccr_lib_block_at(ccr_lib_index(dot)) == dot, "index");
 
+    /* what a slot picks from: a list of its own, a named enum, the C type */
+    const char *vals[16];
+    char lname[64];
+    int nv = ccr_lib_param_choices(dot, 0, vals, 16, lname, (int)sizeof lname);
+    CHECK(nv == 3 && strcmp(vals[2], "3") == 0 && strcmp(lname, "x") == 0, "x: a list (%d, %s)", nv, lname);
+    nv = ccr_lib_param_choices(dot, 1, vals, 16, lname, (int)sizeof lname);
+    CHECK(nv == 3 && strcmp(vals[1], "MIDDLE") == 0 && strcmp(lname, "Rows") == 0, "y: Rows (%d)", nv);
+    nv = ccr_lib_param_choices(sc, 0, vals, 16, lname, (int)sizeof lname);
+    CHECK(nv == 2 && strcmp(vals[0], "HALF") == 0, "k: by its type, const enum Scale (%d)", nv);
+    CHECK(ccr_lib_param_choices(rd, 0, vals, 16, lname, (int)sizeof lname) == 0, "no slot, no choices");
+    CHECK(ccr_lib_enum_values("enum Rows", vals, 2) == 2, "capped at what fits");
+
     /* texts in the interface language */
     ccr_lang_use("ru", NULL);
     ccr_lib_load(NULL);
@@ -188,7 +224,7 @@ int main(int argc, char **argv)
     /* a broken pack: every problem told */
     FILE *sink = tmpfile();
     const int problems = ccr_lib_check(argv[1], sink);
-    CHECK(problems == 4, "%d problems in the broken pack, want 4", problems);
+    CHECK(problems == 5, "%d problems in the broken pack, want 5", problems);
     if (sink)
         fclose(sink);
 

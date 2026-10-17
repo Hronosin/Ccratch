@@ -322,6 +322,13 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_V:      return IsKeyPressed(KEY_V);
     case CCR_KEY_A:      return IsKeyPressed(KEY_A);
     case CCR_KEY_M:      return IsKeyPressed(KEY_M);
+    case CCR_KEY_UP:     return IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP);
+    case CCR_KEY_DOWN:   return IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN);
+    case CCR_KEY_F9:     return IsKeyPressed(KEY_F9);
+    case CCR_KEY_F10:    return IsKeyPressed(KEY_F10);
+    case CCR_KEY_F11:    return IsKeyPressed(KEY_F11);
+    case CCR_KEY_G:      return IsKeyPressed(KEY_G);
+    case CCR_KEY_K:      return IsKeyPressed(KEY_K);
     }
     return false;
 }

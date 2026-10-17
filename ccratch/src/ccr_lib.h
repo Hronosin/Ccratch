@@ -13,8 +13,12 @@
  *         text.ru: открыть окно {width} x {height} с заголовком {title}
  *         params: [width, height, title]
  *         defaults: {width: 800, height: 450, title: '"Hello"'}
+ *         choices: {title: Titles}   # a list to pick from for that slot
  *       - call: WindowShouldClose
  *         returns: bool          # not void: a reporter; bool: a pointy one
+ *     choices: {color: Color}    # every slot called color, in every block
+ *     enums:                     # the lists; also picked by C type (`types:`)
+ *       Titles: ['"Hello"', '"Game"']
  *
  * {name} in the text is that parameter's slot. A call in the code, old or
  * new, with the name and the number of arguments of a block in a pack is
@@ -39,6 +43,8 @@ typedef struct ccr_lib_block {
     int  nparams;
     char params[CCR_LIB_MAX_PARAMS][32];
     char defaults[CCR_LIB_MAX_PARAMS][128];
+    char types[CCR_LIB_MAX_PARAMS][64];     /* C types, if the pack says (`types:`) */
+    char choices[CCR_LIB_MAX_PARAMS][64];   /* the enum a slot picks from (`choices:`) */
     int  pack;
 } ccr_lib_block;
 
@@ -79,6 +85,14 @@ int ccr_lib_index(const ccr_lib_block *b);
 /* Does a file that includes `include` (as written: "raylib.h",
  * <GL/gl.h>...) get pack `p`'s blocks? */
 bool ccr_lib_pack_matches(const ccr_lib_pack *p, const char *include);
+
+/* The values of enum `type` from the packs ("KeyboardKey", "enum Foo",
+ * "const Color"): how many, up to `cap` of them in `out`. */
+int ccr_lib_enum_values(const char *type, const char **out, int cap);
+/* What slot `param` of `b` can be picked from: its `choices`, else the
+ * enum its type names. 0 if nothing. `name` gets the list's name. */
+int ccr_lib_param_choices(const ccr_lib_block *b, int param, const char **out, int cap,
+                          char *name, int name_cap);
 
 /* --check-blocks: the problems found, 0 if none. */
 int  ccr_lib_check(const char *path, FILE *out);

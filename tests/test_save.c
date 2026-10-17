@@ -1586,6 +1586,42 @@ static void test_library_blocks(void)
     ccr_lib_unload();
 }
 
+/* A slot with a list: a value read from the file swapped for another. */
+static void test_pick_value(void)
+{
+    char path[1024];
+    snprintf(path, sizeof path, "%s", g_input);
+    char *slash = strrchr(path, '/');
+    snprintf(slash ? slash + 1 : path, sizeof path - (size_t)(slash ? slash + 1 - path : 0), "enums.c");
+    ccr_ast ast;
+    ccr_ast_init(&ast);
+    ccr_editor ed;
+    CHECK(ccr_parse_file(path, NULL, 0, &ast) && ccr_editor_init(&ed, &ast), "enums.c");
+    char *before = generate(&ed);
+    ccr_node_id green = CCR_NONE, five = CCR_NONE;
+    for (ccr_node_id i = 0; i < ed.ast.node_count; ++i) {
+        if (N(&ed, i)->kind == CCR_NODE_REF && strcmp(ccr_ast_str(&ed.ast, N(&ed, i)->name), "GREEN") == 0 &&
+            N(&ed, i)->parent != CCR_NONE && N(&ed, N(&ed, i)->parent)->kind == CCR_NODE_CALL)
+            green = i;
+        if (N(&ed, i)->kind == CCR_NODE_INT_LIT)
+            five = i;   /* return 0 in int main: no list */
+    }
+    CHECK(green != CCR_NONE && ccr_editor_value_slot(&ed, green), "GREEN is a slot with a list");
+    CHECK(five != CCR_NONE && !ccr_editor_value_slot(&ed, five), "return 0 has no list");
+    CHECK(ccr_editor_set_value(&ed, green, "RED"), "picked RED");
+    char err[256];
+    char *text = save_to(&ed, "picked.c", err, sizeof err);
+    CHECK(text && strstr(text, "    go(d, RED, true);\n"), "picked value saved as:\n%s", text ? text : err);
+    free(text);
+    check_compiles("picked.c");
+    while (ccr_editor_undo(&ed)) {}
+    char *after = generate(&ed);
+    CHECK(before && after && strcmp(before, after) == 0, "undo: GREEN again");
+    free(before);
+    free(after);
+    ccr_editor_free(&ed);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -1600,6 +1636,7 @@ int main(int argc, char **argv)
     }
 
     test_unchanged();
+    test_pick_value();
     test_move_with_comment();
     test_braceless_body();
     test_reindent();

@@ -1,4 +1,5 @@
 #include "ccr_blocks.h"
+#include "ccr_choice.h"
 #include "ccr_cmake.h"
 #include "ccr_lib.h"
 #include "ccr_theme.h"
@@ -18,6 +19,7 @@
 #define BLOCK_MIN_H 44.0f
 #define BLOCK_MIN_W 60.0f
 #define EXPR_PAD_X   9.0f
+#define ARROW_W     13.0f   /* room for a list slot's little triangle */
 #define EXPR_PAD_Y   4.0f
 #define ARM_W       20.0f   /* left side of a C-block */
 #define MOUTH_MIN_H 24.0f
@@ -526,6 +528,31 @@ static void measure_items(layout *L, const items *it, float *w, float *h)
     *h = th;
 }
 
+/* A slot holding one word or number that could be picked from a list:
+ * an enum's values, true/false. */
+static bool has_list(const layout *L, ccr_node_id id)
+{
+    const ccr_node *n = N(L, id);
+    if (n->first_child != CCR_NONE || (n->flags & CCR_FLAG_WORD) || L->ast->lang != CCR_LANG_C)
+        return false;
+    switch (n->kind) {
+    case CCR_NODE_TEXT:
+    case CCR_NODE_REF:
+    case CCR_NODE_INT_LIT:
+    case CCR_NODE_MACRO_VALUE:
+    case CCR_NODE_CHAR_LIT:
+    case CCR_NODE_STRING_LIT:
+    case CCR_NODE_FLOAT_LIT:
+        break;
+    default:
+        return false;
+    }
+    if (n->parent == CCR_NONE || N(L, n->parent)->kind == CCR_NODE_BLOCK)
+        return false;   /* a code line, or a reporter on its own */
+    static ccr_choices c;   /* big: off the stack */
+    return ccr_slot_choices(L->ast, id, &c);
+}
+
 static void measure_expr(layout *L, ccr_node_id id)
 {
     if (L->eh[id] > 0.0f)
@@ -544,6 +571,8 @@ static void measure_expr(layout *L, ccr_node_id id)
     expr_look(L, id, &sh, &cat);
     if (sh == SHAPE_HEX)
         w += h * 0.5f;  /* room for the pointy ends */
+    if (has_list(L, id))
+        w += ARROW_W;
 
     L->ew[id] = w;
     L->eh[id] = h;
@@ -590,6 +619,15 @@ static void emit_expr(layout *L, ccr_node_id id, float x, float y)
     expr_items(L, id, &it);
     float pad = EXPR_PAD_X + (sh == SHAPE_HEX ? h * 0.25f : 0.0f);
     emit_items(L, &it, x + pad, y, h, cat, id);
+    if (has_list(L, id)) {
+        ccr_prim p = {
+            .kind = CCR_PRIM_ARROW,
+            .rect = { x + w - pad - ARROW_W + 4.0f, y + h * 0.5f - 2.5f, 8.0f, 5.0f },
+            .fill = L->dim ? ccr_th(CCR_C_DIM_TEXT) : PAL(cat, CCR_TEXT),
+            .node = id,
+        };
+        push_prim(L, p);
+    }
 }
 
 /* --------------------------------------------------------- blocks */
@@ -1599,6 +1637,11 @@ void ccr_blocks_draw(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewpor
                                      edge * 3.0f + 1.0f }, fade(p->fill, alpha));
             break;
         }
+        case CCR_PRIM_ARROW:
+            if (z >= 0.35f)
+                ccr_gui_triangle((ccr_vec2){ r.x, r.y }, (ccr_vec2){ r.x + r.w, r.y },
+                                 (ccr_vec2){ r.x + r.w * 0.5f, r.y + r.h }, fade(p->fill, alpha * 0.75f));
+            break;
         case CCR_PRIM_TEXT:
             if (p->font * z >= 5.0f)  /* unreadable below that anyway */
                 ccr_gui_text(b->text + p->text, r.x, r.y, p->font * z, fade(p->fill, alpha));

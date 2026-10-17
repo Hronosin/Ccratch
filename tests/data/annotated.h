@@ -11,6 +11,9 @@ void beeper_beep(int times);
 /** @block set pitch to {hz} Hz */
 void beeper_pitch(int hz);
 
+/// @block beep a {kind} one
+void beeper_kind(beep_kind kind);
+
 /// @block the beeper is busy
 _Bool beeper_busy(void);
 

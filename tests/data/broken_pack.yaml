@@ -6,3 +6,6 @@ blocks:
     params: [a]
     defaults: {b: 1}
     colour: red
+  - call: picky
+    params: [a]
+    choices: {a: NoSuchEnum}

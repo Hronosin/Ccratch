@@ -28,7 +28,8 @@ typedef enum ccr_prim_kind {
     CCR_PRIM_BLOCK,   /* rounded rectangle with an outline */
     CCR_PRIM_HEX,     /* boolean reporter */
     CCR_PRIM_TEXT,
-    CCR_PRIM_TAB      /* puzzle tab hanging under a block; rect.y = the block's bottom */
+    CCR_PRIM_TAB,     /* puzzle tab hanging under a block; rect.y = the block's bottom */
+    CCR_PRIM_ARROW    /* a slot with a list to pick from: a small triangle */
 } ccr_prim_kind;
 
 typedef struct ccr_prim {

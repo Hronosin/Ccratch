@@ -3,6 +3,7 @@
 #include "ccr_build.h"
 #include "ccr_canvas.h"
 #include "ccr_ccdb.h"
+#include "ccr_choice.h"
 #include "ccr_cmake.h"
 #include "ccr_codegen.h"
 #include "ccr_config.h"
@@ -3355,8 +3356,127 @@ typedef struct text_edit {
     char        buf[1024];
 } text_edit;
 
+/* The list under a slot being typed into, when it takes an enum. */
+static struct {
+    ccr_node_id node;     /* whose list it is */
+    ccr_choices c;
+    char        start[1024];   /* what the slot said: shown unfiltered until typed over */
+    int         hot;      /* -1: none (Enter keeps what was typed) */
+    float       scroll;
+    ccr_rect    at;       /* where it was drawn */
+} g_drop = { .node = CCR_NONE, .hot = -1 };
+
+static bool fold_has(const char *hay, const char *needle)
+{
+    char a[256], b[256];
+    ccr_fold_case(hay, a, sizeof a);
+    ccr_fold_case(needle, b, sizeof b);
+    return strstr(a, b) != NULL;
+}
+
+/* Draws the list under `box`; true with the value in `te_buf` when one
+ * was picked (clicked, or Enter on the one the arrows chose). */
+static bool drop_frame(const ccr_editor *ed, ccr_node_id node, ccr_rect box, char *te_buf, size_t cap, int h)
+{
+    if (g_drop.node != node) {
+        g_drop.node = node;
+        g_drop.hot = -1;
+        g_drop.scroll = 0.0f;
+        snprintf(g_drop.start, sizeof g_drop.start, "%s", te_buf);
+        if (!ccr_slot_choices(&ed->ast, node, &g_drop.c))
+            g_drop.c.n = 0;
+        if (g_drop.c.n) {   /* typing looks for one: start from nothing */
+            te_buf[0] = '\0';
+            ccr_gui_textbox_reset();
+        }
+    }
+    if (g_drop.c.n == 0)
+        return false;
+    /* typed: the ones that have what was typed in them */
+    const bool all = !*te_buf;
+    int shown[CCR_CHOICES_MAX], n = 0;
+    for (int i = 0; i < g_drop.c.n; ++i)
+        if (all || fold_has(g_drop.c.v[i], te_buf))
+            shown[n++] = i;
+    g_drop.at = (ccr_rect){ 0 };
+    if (n == 0)
+        return false;
+    if (g_drop.hot >= n)
+        g_drop.hot = n - 1;
+    if (ccr_gui_key_pressed(CCR_KEY_DOWN))
+        g_drop.hot = g_drop.hot + 1 < n ? g_drop.hot + 1 : n - 1;
+    if (ccr_gui_key_pressed(CCR_KEY_UP))
+        g_drop.hot = g_drop.hot > 0 ? g_drop.hot - 1 : 0;
+
+    const float row = 26.0f, head = 22.0f;
+    const int fit = n < 9 ? n : 9;
+    float lw = box.w;
+    for (int i = 0; i < n; ++i) {
+        const float tw = ccr_gui_text_width(g_drop.c.v[shown[i]], 17.0f) + 34.0f;
+        if (tw > lw)
+            lw = tw;
+    }
+    ccr_rect r = { box.x, box.y + box.h + 3.0f, lw, head + row * (float)fit + 6.0f };
+    if (r.y + r.h > (float)h - 30.0f)
+        r.y = box.y - r.h - 3.0f;   /* no room below: above */
+    const float max_scroll = (float)(n - fit) * row;
+    const ccr_vec2 m = ccr_gui_mouse();
+    g_drop.at = r;
+    if (point_in(m, r))
+        g_drop.scroll -= ccr_gui_wheel() * row * 2.0f;
+    if (g_drop.hot >= 0) {   /* keep the chosen one in view */
+        const float top = (float)g_drop.hot * row;
+        if (top < g_drop.scroll)
+            g_drop.scroll = top;
+        if (top + row > g_drop.scroll + row * (float)fit)
+            g_drop.scroll = top + row - row * (float)fit;
+    }
+    g_drop.scroll = g_drop.scroll < 0.0f ? 0.0f : g_drop.scroll > max_scroll ? max_scroll : g_drop.scroll;
+
+    ccr_gui_rect_rounded((ccr_rect){ r.x + 2, r.y + 3, r.w, r.h }, 0.08f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded(r, 0.08f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded((ccr_rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 0.08f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    ccr_gui_text(g_drop.c.title, r.x + 10.0f, r.y + 5.0f, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+    const ccr_rect list = { r.x, r.y + head, r.w, row * (float)fit };
+    ccr_gui_clip_begin(list);
+    int picked = -1;
+    for (int i = 0; i < n; ++i) {
+        const ccr_rect it = { r.x + 3.0f, list.y + (float)i * row - g_drop.scroll, r.w - 6.0f, row };
+        if (it.y + row < list.y || it.y > list.y + list.h)
+            continue;
+        const bool over = point_in(m, it) && point_in(m, list);
+        if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+            picked = shown[i];
+        const bool is_now = strcmp(g_drop.c.v[shown[i]], g_drop.start) == 0;
+        if (over || i == g_drop.hot)
+            ccr_gui_rect_rounded(it, 0.3f, ccr_th(CCR_C_HOT));
+        if (is_now)
+            ccr_gui_circle((ccr_vec2){ it.x + 10.0f, it.y + row * 0.5f }, 3.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_text(g_drop.c.v[shown[i]], it.x + 20.0f, it.y + 4.0f, 17.0f, ccr_th(CCR_C_PANEL_TEXT));
+    }
+    ccr_gui_clip_end();
+    if (n > fit) {   /* where in the list */
+        const float th = list.h * (float)fit / (float)n;
+        const float ty = list.y + (list.h - th) * (max_scroll > 0.0f ? g_drop.scroll / max_scroll : 0.0f);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + r.w - 6.0f, ty, 3.0f, th }, 1.0f, ccr_th(CCR_C_PANEL_HINT));
+    }
+    if (picked < 0 && g_drop.hot >= 0 && ccr_gui_key_pressed(CCR_KEY_ENTER))
+        picked = shown[g_drop.hot];
+    if (picked < 0)
+        return false;
+    snprintf(te_buf, cap, "%s", g_drop.c.v[picked]);
+    return true;
+}
+
+/* Is the mouse over the list drawn last frame (the wheel scrolls it, not the canvas)? */
+static bool drop_has_mouse(void)
+{
+    return g_drop.node != CCR_NONE && g_drop.c.n > 0 && point_in(ccr_gui_mouse(), g_drop.at);
+}
+
 static void start_editing(text_edit *te, const ccr_editor *ed, ccr_node_id slot)
 {
+    g_drop.node = CCR_NONE;
     te->node = slot;
     ccr_gui_textbox_reset();
     snprintf(te->buf, sizeof te->buf, "%s", ccr_ast_str(&ed->ast, ed->ast.nodes[slot].name));
@@ -3547,6 +3667,8 @@ int ccr_run(int argc, char **argv)
                                (float)h - TOPBAR_H - TABS_H - STATUSBAR_H };
         if (!doc.loaded)
             te.node = CCR_NONE;
+        if (te.node == CCR_NONE)
+            g_drop.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
         const bool modal = eula.open || g_libs.open || g_quit.open || g_help;   /* a dialog has the mouse */
         if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open)
@@ -3756,7 +3878,7 @@ int ccr_run(int argc, char **argv)
             fit_view_smooth(&canvas, &doc, viewport);
 
         const bool gliding = glide_step(&canvas, dt);
-        if (!pie.open && !was_open && !modal) {
+        if (!pie.open && !was_open && !modal && !(te.node != CCR_NONE && drop_has_mouse())) {
             const ccr_canvas before = canvas;
             ccr_canvas_update(&canvas, viewport);
             /* the user panned or zoomed: they have the wheel now */
@@ -3840,25 +3962,6 @@ int ccr_run(int argc, char **argv)
         psearch_frame(!modal && !pie.open && !opm.open && te.node == CCR_NONE &&
                       g_fpanel.naming == CCR_NAMING_NONE && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE));
 
-        /* the text box over the slot being edited */
-        if (te.node != CCR_NONE) {
-            ccr_rect r;
-            if (!ccr_editor_node_rect(&doc.ed, te.node, &r)) {
-                te.node = CCR_NONE;
-            } else {
-                ccr_vec2 tl = ccr_canvas_to_screen(&canvas, (ccr_vec2){ r.x, r.y });
-                float bw = r.w * canvas.zoom;
-                ccr_rect box = { tl.x - 4.0f, tl.y - 4.0f, bw < 320.0f ? 320.0f : bw + 40.0f, 34.0f };
-                if (ccr_gui_key_pressed(CCR_KEY_ESCAPE)) {
-                    te.node = CCR_NONE;                     /* cancel */
-                } else if (ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD),
-                                                  ccr_th(CCR_C_FIELD_TEXT)),
-                           ccr_gui_textbox(box, te.buf, (int)sizeof te.buf, 20.0f)) {
-                    ccr_editor_set_text(&doc.ed, te.node, te.buf);
-                    te.node = CCR_NONE;
-                }
-            }
-        }
         sel_draw(&doc, &canvas);
         minimap_frame(&doc, &canvas, visible_view(viewport, w, h),
                       !modal && !pie.open && !opm.open && te.node == CCR_NONE && !on_split &&
@@ -3869,6 +3972,35 @@ int ccr_run(int argc, char **argv)
         tabs_frame(w, &doc, &canvas, viewport, &opt,
                    !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         mark_tooltip(&doc, &canvas, viewport);
+        /* the text box over the slot being edited */
+        if (te.node != CCR_NONE) {
+            ccr_rect r;
+            if (!ccr_editor_node_rect(&doc.ed, te.node, &r)) {
+                te.node = CCR_NONE;
+            } else {
+                ccr_vec2 tl = ccr_canvas_to_screen(&canvas, (ccr_vec2){ r.x, r.y });
+                float bw = r.w * canvas.zoom;
+                ccr_rect box = { tl.x - 4.0f, tl.y - 4.0f, bw < 320.0f ? 320.0f : bw + 40.0f, 34.0f };
+                if (box.x + box.w > (float)w - 8.0f)   /* in the window */
+                    box.x = (float)w - 8.0f - box.w;
+                if (box.x < viewport.x + 4.0f)
+                    box.x = viewport.x + 4.0f;
+                if (ccr_gui_key_pressed(CCR_KEY_ESCAPE)) {
+                    te.node = CCR_NONE;                     /* cancel */
+                } else if (drop_frame(&doc.ed, te.node, box, te.buf, sizeof te.buf, h)) {
+                    ccr_editor_set_value(&doc.ed, te.node, te.buf);   /* picked from the list */
+                    te.node = CCR_NONE;
+                } else if (ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD),
+                                                  ccr_th(CCR_C_FIELD_TEXT)),
+                           ccr_gui_textbox(box, te.buf, (int)sizeof te.buf, 20.0f)) {
+                    if (te.buf[0] || g_drop.c.n == 0)   /* nothing typed over a list: as it was */
+                        ccr_editor_set_value(&doc.ed, te.node, te.buf);
+                    te.node = CCR_NONE;
+                }
+                if (te.node != CCR_NONE && !te.buf[0] && g_drop.c.n > 0)   /* what it says now, faintly */
+                    ccr_gui_text(g_drop.start, box.x + 10.0f, box.y + 7.0f, 20.0f, ccr_th(CCR_C_PANEL_HINT));
+            }
+        }
         build_panel(w, h, &doc, &canvas, viewport, &opt,
                     !modal && !pie.open && !opm.open && te.node == CCR_NONE && !on_split);
         if (g_files_t > 0.0f) {

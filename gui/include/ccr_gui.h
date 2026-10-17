@@ -52,7 +52,14 @@ typedef enum ccr_key {
     CCR_KEY_C,
     CCR_KEY_V,
     CCR_KEY_A,
-    CCR_KEY_M
+    CCR_KEY_M,
+    CCR_KEY_UP,        /* held: repeats */
+    CCR_KEY_DOWN,
+    CCR_KEY_F9,
+    CCR_KEY_F10,
+    CCR_KEY_F11,
+    CCR_KEY_G,
+    CCR_KEY_K
 } ccr_key;
 
 /* Window and frame lifecycle */

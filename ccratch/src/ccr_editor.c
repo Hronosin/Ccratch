@@ -1,4 +1,5 @@
 #include "ccr_editor.h"
+#include "ccr_choice.h"
 #include "ccr_codegen.h"
 #include "ccr_theme.h"
 #include "ccr_lang.h"
@@ -825,6 +826,49 @@ bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text)
     uint32_t i = script_index_of_root(ed, script_root_of(ed, slot));
     if (i != UINT32_MAX)
         relayout(ed, i);
+    commit_change(ed);
+    return true;
+}
+
+bool ccr_editor_value_slot(const ccr_editor *ed, ccr_node_id id)
+{
+    if (id >= ed->ast.node_count)
+        return false;
+    const ccr_node *n = N(ed, id);
+    if (n->kind == CCR_NODE_TEXT || n->first_child != CCR_NONE || !expr_movable(ed, id))
+        return false;
+    switch (n->kind) {
+    case CCR_NODE_REF: case CCR_NODE_INT_LIT: case CCR_NODE_MACRO_VALUE: case CCR_NODE_CHAR_LIT:
+    case CCR_NODE_FLOAT_LIT: case CCR_NODE_STRING_LIT:
+        break;
+    default:
+        return false;
+    }
+    static ccr_choices c;   /* big: off the stack */
+    return ccr_slot_choices(&ed->ast, id, &c);
+}
+
+bool ccr_editor_set_value(ccr_editor *ed, ccr_node_id slot, const char *text)
+{
+    if (slot < ed->ast.node_count && N(ed, slot)->kind == CCR_NODE_TEXT)
+        return ccr_editor_set_text(ed, slot, text);
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE || !ccr_editor_value_slot(ed, slot) || !*text)
+        return false;
+    if (strcmp(ccr_ast_str(&ed->ast, N(ed, slot)->name), text) == 0)
+        return true;   /* the same: nothing to do */
+    const uint32_t si = script_index_of_root(ed, script_root_of(ed, slot));
+    begin_change(ed);
+    const ccr_node_id hole = vacate(ed, slot);   /* a new text slot where it was... */
+    if (hole == CCR_NONE) {
+        commit_change(ed);
+        return false;
+    }
+    ccr_ast_touch(&ed->ast, slot);
+    ed->ast.nodes[slot].flags |= CCR_FLAG_DEAD;   /* (the old one goes nowhere) */
+    ed->ast.nodes[hole].name = ccr_ast_intern(&ed->ast, text);   /* ...saying the new value */
+    if (si != UINT32_MAX)
+        relayout(ed, si);
     commit_change(ed);
     return true;
 }
@@ -1872,7 +1916,8 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
                 ed->op_request = ed->press_op;
             else if (include_of(ed, ed->press_node) != CCR_NONE)
                 ed->include_request = include_of(ed, ed->press_node);
-            else if (ed->press_node != CCR_NONE && N(ed, ed->press_node)->kind == CCR_NODE_TEXT)
+            else if (ed->press_node != CCR_NONE && (N(ed, ed->press_node)->kind == CCR_NODE_TEXT ||
+                                                     ccr_editor_value_slot(ed, ed->press_node)))
                 ed->edit_request = ed->press_node;
             break;
         }

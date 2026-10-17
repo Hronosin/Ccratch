@@ -205,6 +205,14 @@ bool ccr_editor_spawn_held(ccr_editor *ed, ccr_template t, ccr_vec2 mouse, ccr_v
 /* Text slot under edit: set its code (one undo step). */
 bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text);
 
+/* A slot with a list to pick from (ccr_slot_choices) can be typed into
+ * even when it holds a name or a number read from the file: the value
+ * typed or picked takes its place (one undo step). For a text slot this
+ * is ccr_editor_set_text. */
+bool ccr_editor_set_value(ccr_editor *ed, ccr_node_id slot, const char *text);
+/* Can a click on `id` type into it that way? */
+bool ccr_editor_value_slot(const ccr_editor *ed, ccr_node_id id);
+
 /* The text slot to edit after a click, or CCR_NONE. Clears the request. */
 ccr_node_id ccr_editor_take_edit_request(ccr_editor *ed);
 

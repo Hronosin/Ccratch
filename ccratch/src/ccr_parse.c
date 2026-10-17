@@ -377,6 +377,12 @@ static void fill_node(visit_ctx *ctx, CXCursor c, enum CXCursorKind ck, ccr_node
     ccr_str name = take(ast, clang_getCursorSpelling(c));
     ast->nodes[id].name = name;
 
+    if (kind == CCR_NODE_REF || kind == CCR_NODE_MEMBER) {
+        /* what it is: an enum's values make a list for the slot next to it */
+        ccr_str ts = take(ast, clang_getTypeSpelling(clang_getCursorType(c)));
+        ast->nodes[id].raw = ts;
+    }
+
     if (kind == CCR_NODE_FUNCTION || kind == CCR_NODE_PARAM || kind == CCR_NODE_VAR ||
         kind == CCR_NODE_FIELD || kind == CCR_NODE_TYPEDEF) {
         CXType t = (kind == CCR_NODE_TYPEDEF)

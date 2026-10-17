@@ -33,6 +33,7 @@ add_library(ccratch_core OBJECT
     src/ccr_job.c
     src/ccr_ccdb.c
     src/ccr_paste.c
+    src/ccr_choice.c
     src/ccr_app.c
     src/ccr_ast.c
     src/ccr_blocks.c

@@ -249,3 +249,10 @@ set_tests_properties(build_job PROPERTIES TIMEOUT 240)
 add_executable(test_ccdb test_ccdb.c)
 target_link_libraries(test_ccdb PRIVATE ccratch_core)
 add_test(NAME compile_commands COMMAND test_ccdb)
+
+add_executable(test_choice test_choice.c)
+target_link_libraries(test_choice PRIVATE ccratch_core)
+add_test(NAME slot_choices COMMAND test_choice ${CMAKE_CURRENT_SOURCE_DIR}/data/enums.c
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/data/uses_toy.c)
+set_tests_properties(slot_choices PROPERTIES
+    ENVIRONMENT "CCRATCH_BLOCKS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/blocks")

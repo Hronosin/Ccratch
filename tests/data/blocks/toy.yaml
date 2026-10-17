@@ -10,9 +10,14 @@ blocks:
     text.ru: точка в {x} {y}
     params: [x, y]
     defaults: {x: 1, y: 2}
+    choices: {x: [1, 2, 3], y: Rows}
   - call: is_ready
     text: toy is ready
     returns: bool
   - call: scale
     text: scale by          # {k} left out: it goes at the end
     params: [k]
+    types: ["const enum Scale"]
+enums:
+  Rows: [TOP, MIDDLE, BOTTOM]
+  Scale: [HALF, DOUBLE]

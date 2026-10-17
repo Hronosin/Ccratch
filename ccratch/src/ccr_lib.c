@@ -21,6 +21,16 @@ static ccr_lib_block *g_blocks;
 static int            g_block_count, g_block_cap;
 static int           *g_sorted;   /* block indexes by (call, nparams) */
 
+/* the packs' enums: name, and its values in g_values */
+typedef struct lib_enum {
+    char name[64];
+    int  first, count;
+} lib_enum;
+static lib_enum *g_enums;
+static int       g_enum_count, g_enum_cap;
+static char    (*g_values)[64];
+static int       g_value_count, g_value_cap;
+
 int                  ccr_lib_pack_count(void) { return g_pack_count; }
 const ccr_lib_pack  *ccr_lib_pack_at(int i)   { return (i >= 0 && i < g_pack_count) ? &g_packs[i] : NULL; }
 int                  ccr_lib_block_count(void) { return g_block_count; }
@@ -62,6 +72,92 @@ static const char *local(const ccr_yaml_node *map, const char *key, const char *
         }                                                   \
     } while (0)
 
+/* An enum from a list of values (later ones of the same name win). */
+static bool add_enum(const char *name, const ccr_yaml_node *seq)
+{
+    if (g_enum_count == g_enum_cap) {
+        const int cap = g_enum_cap ? g_enum_cap * 2 : 32;
+        lib_enum *v = realloc(g_enums, (size_t)cap * sizeof *v);
+        if (!v)
+            return false;
+        g_enums = v;
+        g_enum_cap = cap;
+    }
+    lib_enum *e = &g_enums[g_enum_count];
+    snprintf(e->name, sizeof e->name, "%s", name);
+    e->first = g_value_count;
+    e->count = 0;
+    for (const ccr_yaml_node *v = seq->first; v; v = v->next) {
+        if (v->kind != CCR_YAML_SCALAR || !v->value[0] || strlen(v->value) >= sizeof g_values[0])
+            continue;
+        if (g_value_count == g_value_cap) {
+            const int cap = g_value_cap ? g_value_cap * 2 : 256;
+            char (*nv)[64] = realloc(g_values, (size_t)cap * sizeof *nv);
+            if (!nv)
+                return false;
+            g_values = nv;
+            g_value_cap = cap;
+        }
+        snprintf(g_values[g_value_count++], sizeof g_values[0], "%s", v->value);
+        ++e->count;
+    }
+    ++g_enum_count;
+    return true;
+}
+
+static const lib_enum *find_enum(const char *type)
+{
+    /* "const enum Foo" -> "Foo" */
+    char t[96];
+    snprintf(t, sizeof t, "%s", type ? type : "");
+    char *p = t;
+    for (;;) {
+        while (*p == ' ')
+            ++p;
+        if (strncmp(p, "const ", 6) == 0)
+            p += 6;
+        else if (strncmp(p, "enum ", 5) == 0)
+            p += 5;
+        else
+            break;
+    }
+    size_t n = strlen(p);
+    while (n && p[n - 1] == ' ')
+        p[--n] = '\0';
+    for (int i = g_enum_count - 1; i >= 0; --i)
+        if (strcmp(g_enums[i].name, p) == 0)
+            return &g_enums[i];
+    return NULL;
+}
+
+int ccr_lib_enum_values(const char *type, const char **out, int cap)
+{
+    const lib_enum *e = find_enum(type);
+    if (!e)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < e->count && n < cap; ++i)
+        out[n++] = g_values[e->first + i];
+    return n;
+}
+
+int ccr_lib_param_choices(const ccr_lib_block *b, int param, const char **out, int cap, char *name,
+                          int name_cap)
+{
+    if (name_cap)
+        name[0] = '\0';
+    if (!b || param < 0 || param >= CCR_LIB_MAX_PARAMS)
+        return 0;
+    const char *which = b->choices[param][0] ? b->choices[param] : b->types[param];
+    const int n = ccr_lib_enum_values(which, out, cap);
+    if (n && name_cap) {
+        const lib_enum *e = find_enum(which);
+        const char *dot = e ? strchr(e->name, '.') : NULL;   /* a block's own list: the slot's name */
+        snprintf(name, (size_t)name_cap, "%s", dot ? dot + 1 : e ? e->name : which);
+    }
+    return n;
+}
+
 /* Reads one block of a pack into `b`; the problems found. */
 static int read_block(const char *path, const ccr_yaml_node *m, ccr_lib_block *b, FILE *log)
 {
@@ -71,7 +167,7 @@ static int read_block(const char *path, const ccr_yaml_node *m, ccr_lib_block *b
         PROBLEM("%d: a block is a mapping (call: ..., text: ...)", m ? m->line : 0);
         return problems;
     }
-    static const char *const known[] = { "call", "text", "params", "defaults", "returns", "types" };
+    static const char *const known[] = { "call", "text", "params", "defaults", "returns", "types", "choices" };
     for (const ccr_yaml_node *k = m->first; k; k = k->next) {
         bool ok = strncmp(k->key, "text.", 5) == 0;
         for (size_t i = 0; i < sizeof known / sizeof known[0] && !ok; ++i)
@@ -118,6 +214,40 @@ static int read_block(const char *path, const ccr_yaml_node *m, ccr_lib_block *b
         }
     } else if (defs && defs->kind != CCR_YAML_NULL) {
         PROBLEM("%d: %s: 'defaults' is a mapping: {a: 1}", defs->line, call);
+    }
+
+    const ccr_yaml_node *types = ccr_yaml_get(m, "types");
+    if (types && types->kind == CCR_YAML_SEQ) {
+        int i = 0;
+        for (const ccr_yaml_node *t = types->first; t && i < CCR_LIB_MAX_PARAMS; t = t->next, ++i)
+            if (t->kind == CCR_YAML_SCALAR)
+                snprintf(b->types[i], sizeof b->types[i], "%s", t->value);
+    } else if (types && types->kind != CCR_YAML_NULL) {
+        PROBLEM("%d: %s: 'types' is a list: [int, Color]", types->line, call);
+    }
+
+    /* choices: {param: EnumName} or {param: [A, B, C]} (a list of its own) */
+    const ccr_yaml_node *ch = ccr_yaml_get(m, "choices");
+    if (ch && ch->kind == CCR_YAML_MAP) {
+        for (const ccr_yaml_node *d = ch->first; d; d = d->next) {
+            int i = 0;
+            while (i < b->nparams && strcmp(b->params[i], d->key) != 0)
+                ++i;
+            if (i == b->nparams) {
+                PROBLEM("%d: %s: choices for '%s', which is no parameter", d->line, call, d->key);
+            } else if (d->kind == CCR_YAML_SCALAR) {
+                snprintf(b->choices[i], sizeof b->choices[i], "%s", d->value);
+            } else if (d->kind == CCR_YAML_SEQ) {
+                char own[64];
+                snprintf(own, sizeof own, "%.30s.%.30s", call, d->key);
+                if (add_enum(own, d))
+                    snprintf(b->choices[i], sizeof b->choices[i], "%s", own);
+            } else {
+                PROBLEM("%d: %s: choices for '%s': an enum's name or a list", d->line, call, d->key);
+            }
+        }
+    } else if (ch && ch->kind != CCR_YAML_NULL) {
+        PROBLEM("%d: %s: 'choices' is a mapping: {key: KeyboardKey}", ch->line, call);
     }
 
     /* the text: every {name} a parameter, every parameter somewhere */
@@ -196,7 +326,7 @@ static int read_pack(const char *path, bool keep, FILE *log)
     snprintf(pack.link, sizeof pack.link, "%s", ccr_yaml_str(r, "link", ""));
     snprintf(pack.find, sizeof pack.find, "%s", ccr_yaml_str(r, "find_package", ""));
     static const char *const known[] = { "name", "header", "include", "link", "find_package", "color",
-                                         "blocks", "enums" };
+                                         "blocks", "enums", "choices" };
     for (const ccr_yaml_node *k = r->first; k; k = k->next) {
         bool ok = strncmp(k->key, "name.", 5) == 0;
         for (size_t i = 0; i < sizeof known / sizeof known[0] && !ok; ++i)
@@ -213,6 +343,21 @@ static int read_pack(const char *path, bool keep, FILE *log)
     snprintf(pack.path, sizeof pack.path, "%s", path);
     pack.first = g_block_count;
 
+    const int enums_before = g_enum_count, values_before = g_value_count;
+    const ccr_yaml_node *enums = ccr_yaml_get(r, "enums");
+    if (enums && enums->kind == CCR_YAML_MAP) {
+        for (const ccr_yaml_node *e = enums->first; e; e = e->next) {
+            if (!is_ident(e->key) || strlen(e->key) >= 64)
+                PROBLEM("%d: enum '%s': a name, like KeyboardKey", e->line, e->key);
+            else if (e->kind != CCR_YAML_SEQ)
+                PROBLEM("%d: enum %s: a list of values: [A, B]", e->line, e->key);
+            else
+                add_enum(e->key, e);
+        }
+    } else if (enums && enums->kind != CCR_YAML_NULL) {
+        PROBLEM("%d: 'enums' is a mapping: Name: [A, B]", enums->line);
+    }
+
     const ccr_yaml_node *blocks = ccr_yaml_get(r, "blocks");
     if (!blocks || blocks->kind != CCR_YAML_SEQ) {
         PROBLEM("%d: 'blocks' is a list of blocks", blocks ? blocks->line : 1);
@@ -221,11 +366,28 @@ static int read_pack(const char *path, bool keep, FILE *log)
             ccr_lib_block b;
             int bad = read_block(path, m, &b, log);
             problems += bad;
+            /* the pack's choices by slot name: {color: Color} for every color slot */
+            const ccr_yaml_node *pc = ccr_yaml_get(r, "choices");
+            for (int k = 0; k < b.nparams && pc && pc->kind == CCR_YAML_MAP; ++k) {
+                const char *e = ccr_yaml_str(pc, b.params[k], NULL);
+                if (e && !b.choices[k][0] && !find_enum(b.types[k]))
+                    snprintf(b.choices[k], sizeof b.choices[k], "%s", e);
+            }
+            for (int k = 0; k < b.nparams && b.call[0]; ++k)
+                if (b.choices[k][0] && !find_enum(b.choices[k])) {
+                    PROBLEM("%d: %s: choices for '%s': no enum %s in the pack", m->line, b.call, b.params[k],
+                            b.choices[k]);
+                    b.choices[k][0] = '\0';
+                }
             if (b.call[0] && keep) {
                 b.pack = g_pack_count;
                 push_block(&b);
             }
         }
+    }
+    if (!keep) {   /* only checked: its enums go */
+        g_enum_count = enums_before;
+        g_value_count = values_before;
     }
     pack.count = g_block_count - pack.first;
     if (keep && g_pack_count < CCR_LIB_MAX_PACKS)
@@ -250,9 +412,14 @@ void ccr_lib_unload(void)
 {
     free(g_blocks);
     free(g_sorted);
+    free(g_enums);
+    free(g_values);
     g_blocks = NULL;
     g_sorted = NULL;
+    g_enums = NULL;
+    g_values = NULL;
     g_block_count = g_block_cap = g_pack_count = 0;
+    g_enum_count = g_enum_cap = g_value_count = g_value_cap = 0;
 }
 
 void ccr_lib_project_dir(const char *project, char *out, int cap)

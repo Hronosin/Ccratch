@@ -166,6 +166,14 @@ blocks:
   - call: WindowShouldClose
     text: the window wants to close
     returns: bool           # not void: a reporter; bool: a pointy one
+  - call: IsKeyDown
+    text: key {key} is down
+    params: [key]
+    choices: {key: KeyboardKey}   # this slot picks from a list
+choices: {color: Color}     # every slot called color, in every block
+enums:
+  KeyboardKey: [KEY_SPACE, KEY_ENTER, KEY_UP, KEY_DOWN]
+  Color: [LIGHTGRAY, RED, GREEN, BLUE, RAYWHITE]
 ```
 
 `{name}` in the text is that parameter's slot; `text.ru` and friends are
@@ -176,6 +184,25 @@ of arguments is drawn as its block. Saving writes it as the plain C call
 it always was.
 
 ![raylib's own example as blocks: open a window, aim for 60 frames a second, circle at x](docs/library.png)
+
+### Slots with a list
+
+A slot that takes one of a few values has a little ▾: a click drops a
+list down, typing narrows it (`re` leaves RED, GREEN, DARKGREEN), the
+arrow keys and Enter pick, and so does the mouse. The lists come from:
+
+- the pack: a block's `choices`, the pack's `choices` by slot name, or
+  the enum its C type names (drafted packs write `types:` and `enums:`);
+- the file's own enums, wherever one is expected: an argument of the
+  file's function that takes `enum dir`, the other side of `d == DOWN`
+  or `d = LEFT`, `enum dir d = UP`, a `case` in a `switch` over one, the
+  `return` of a function that gives one back; typedefs are followed;
+- `bool`: true and false.
+
+A name or number read from the file gets the list as well: picking
+another value puts it in that slot, one undo step.
+
+![A Color slot's list, narrowed by typing "re"](docs/choices.png)
 
 A raylib pack with what a first game needs ships with Ccratch. Any other
 library becomes blocks from inside Ccratch: **Libraries** in the top bar.

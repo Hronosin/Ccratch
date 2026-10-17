@@ -99,7 +99,8 @@ typedef struct ccr_node {
     ccr_str  name;    /* identifier, literal text, include path...  */
     ccr_str  type;    /* C type spelling, when it means something   */
     ccr_str  op;      /* operator for BinaryOp/UnaryOp              */
-    ccr_str  raw;     /* original clang kind, for OTHER nodes       */
+    ccr_str  raw;     /* original clang kind, for OTHER nodes; the
+                         type of a Ref or Member expression         */
     ccr_str  aux;     /* return type of a Function; source text of
                          Other and type-only sizeof                 */
 
