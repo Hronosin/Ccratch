@@ -264,3 +264,7 @@ add_executable(test_gdb test_gdb.c)
 target_link_libraries(test_gdb PRIVATE ccratch_core)
 add_dependencies(test_gdb debugme)
 add_test(NAME debugger COMMAND test_gdb $<TARGET_FILE:debugme> ${CMAKE_CURRENT_SOURCE_DIR}/data/debugme.c)
+
+add_executable(test_git test_git.c)
+target_link_libraries(test_git PRIVATE ccratch_core)
+add_test(NAME git COMMAND test_git)

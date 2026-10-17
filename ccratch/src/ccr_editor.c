@@ -297,6 +297,7 @@ void ccr_editor_free(ccr_editor *ed)
     ccr_ast_free(&ed->ast);
     free(ed->marks);
     free(ed->dbg_breaks);
+    free(ed->changes);
     memset(ed, 0, sizeof *ed);
 }
 
@@ -453,6 +454,45 @@ ccr_node_id ccr_editor_statement_of(const ccr_editor *ed, ccr_node_id id)
             return CCR_NONE;
     }
     return CCR_NONE;
+}
+
+void ccr_editor_set_changes(ccr_editor *ed, const ccr_editor_change *ch, uint32_t count)
+{
+    free(ed->changes);
+    ed->changes = NULL;
+    ed->change_count = 0;
+    if (count && (ed->changes = malloc(count * sizeof *ed->changes)) != NULL) {
+        memcpy(ed->changes, ch, count * sizeof *ch);
+        ed->change_count = count;
+    }
+}
+
+/* As in an editor's gutter: a bar left of each changed block. */
+static void draw_changes(const ccr_editor *ed, const ccr_canvas *cv)
+{
+    const float z = cv->zoom;
+    for (uint32_t i = 0; i < ed->change_count; ++i) {
+        ccr_rect r;
+        if (!ccr_editor_node_rect(ed, ed->changes[i].node, &r))
+            continue;
+        const float line = r.h < 40.0f ? r.h : 40.0f;
+        const ccr_vec2 a = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x - 5.0f, r.y + 2.0f });
+        const float w = 3.5f * (z < 1.0f ? 1.0f : z);
+        switch (ed->changes[i].kind) {
+        case CCR_CHANGE_ADDED:
+            ccr_gui_rect((ccr_rect){ a.x - w, a.y, w, (line - 4.0f) * z }, 0x3FB950FFu);
+            break;
+        case CCR_CHANGE_MODIFIED:
+            ccr_gui_rect((ccr_rect){ a.x - w, a.y, w, (line - 4.0f) * z }, 0x4C9BE8FFu);
+            break;
+        case CCR_CHANGE_DELETED: {   /* above it: something was here */
+            const ccr_vec2 b = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x - 5.0f, r.y });
+            ccr_gui_triangle((ccr_vec2){ b.x - 8.0f * z, b.y - 5.0f * z }, (ccr_vec2){ b.x, b.y },
+                             (ccr_vec2){ b.x - 8.0f * z, b.y + 5.0f * z }, 0xE5534BFFu);
+            break;
+        }
+        }
+    }
 }
 
 /* A breakpoint: a red dot left of the block; where it stopped: an outline
@@ -2417,6 +2457,7 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
         ccr_blocks_draw(&s->blocks, cv, viewport, s->pos, alpha);
     }
     draw_jumps(ed, cv);
+    draw_changes(ed, cv);
     draw_marks(ed, cv);
     draw_debug(ed, cv);
 

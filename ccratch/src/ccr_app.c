@@ -13,6 +13,7 @@
 #include "ccr_parse.h"
 #include "ccr_files.h"
 #include "ccr_gdb.h"
+#include "ccr_git.h"
 #include "ccr_job.h"
 #include "ccr_lib.h"
 #include "ccr_palette.h"
@@ -404,6 +405,9 @@ static float approach(float t, float target, float step)
     return target;
 }
 
+/* The file's text changed (read, saved): its git bars are read again. */
+static bool g_git_marks_dirty = true;
+
 static void forget_places(ccr_document *doc)
 {
     free(doc->place);
@@ -443,6 +447,7 @@ static void remember_places(ccr_document *doc)
     free(text);
     doc->place = map;
     doc->place_n = a->node_count;
+    g_git_marks_dirty = true;
 }
 
 static void document_close(ccr_document *doc)
@@ -2453,6 +2458,887 @@ static void debug_panel(ccr_rect r, ccr_document *doc, ccr_canvas *cv, ccr_rect 
     (void)viewport;
 }
 
+/* ---------------------------------------------------------------- git */
+
+/* Source Control, as in VS Code: a tab of the panel on the right. What
+ * changed (staged or not), a commit message and Commit, the branch,
+ * pull / push / fetch, the history; a click on a file shows its diff.
+ * And on the canvas, a bar beside every block that changed since the
+ * last commit. */
+#define GIT_TABS_H 30.0f
+#define GIT_ROW    24.0f
+
+static struct {
+    bool           tab;           /* the right panel shows git, not the files */
+    ccr_git_status st;
+    bool           have;          /* st was read */
+    double         read_at;
+    char           msg[512];
+    bool           msg_focus, amend;
+    char           note[700];
+    bool           note_bad;
+    ccr_git_job    net;
+    char           branches[32][256];
+    int            nbranches;
+    bool           branch_menu;
+    char           new_branch[128];
+    bool           new_focus;
+    ccr_git_commit_info log[30];
+    int            nlog;
+    bool           log_open;
+    float          scroll;
+    unsigned       gen;           /* bumps whenever st is read again */
+    char           discard[CCR_GIT_PATH];   /* asked once: the second click throws away */
+    double         discard_at;
+    bool           diff_open;     /* the diff on show, over the canvas */
+    char          *diff;
+    char           diff_title[400];
+    char           diff_path[CCR_GIT_PATH];
+    float          diff_scroll;
+    char           marks_for[PATH_MAX_LEN];
+} g_git;
+
+static ccr_rect visible_view(ccr_rect viewport, int w, int h);
+
+/* The folder git is asked about: the project's. */
+static void git_dir(const ccr_document *doc, char *out, size_t cap)
+{
+    if (g_files.root[0])
+        snprintf(out, cap, "%s", g_files.root);
+    else if (doc->loaded)
+        ccr_files_project_of(doc->path, out, (int)cap);
+    else
+        snprintf(out, cap, ".");
+}
+
+static void git_refresh(const ccr_document *doc)
+{
+    char dir[CCR_FILES_PATH];
+    git_dir(doc, dir, sizeof dir);
+    ccr_git_status_free(&g_git.st);
+    g_git.have = ccr_git_status_read(dir, &g_git.st);
+    if (g_git.have && g_git.st.repo && g_git.st.untracked) {
+        bool backups = false;   /* FILE~ shown as a change: keep them out, and read again */
+        for (int i = 0; i < g_git.st.count && !backups; ++i) {
+            const size_t n = strlen(g_git.st.files[i].path);
+            backups = g_git.st.files[i].work == '?' && n && g_git.st.files[i].path[n - 1] == '~';
+        }
+        if (backups) {
+            ccr_git_exclude_backups(g_git.st.root);
+            ccr_git_status_free(&g_git.st);
+            g_git.have = ccr_git_status_read(dir, &g_git.st);
+        }
+    }
+    g_git.read_at = ccr_gui_time();
+    ++g_git.gen;
+    g_git.nlog = g_git.st.repo && !g_git.st.no_commits ? ccr_git_log(g_git.st.root, g_git.log, 30) : 0;
+    g_git_marks_dirty = true;
+}
+
+static void git_say(const char *text, bool bad)
+{
+    snprintf(g_git.note, sizeof g_git.note, "%s", text);
+    g_git.note_bad = bad;
+}
+
+/* The bars beside the blocks of `doc` that changed since the last commit. */
+static void git_marks(ccr_document *doc)
+{
+    if (!doc->loaded)
+        return;
+    static ccr_git_hunk hunks[512];
+    const int n = ccr_git_available() ? ccr_git_file_hunks(doc->path, hunks, 512) : -1;
+    ccr_editor_change *ch = NULL;
+    uint32_t count = 0, cap = 0;
+    for (int i = 0; i < n && i < 512; ++i) {
+        const ccr_git_hunk *h = &hunks[i];
+        /* lines deleted after line `first`: the wedge goes on what comes next */
+        const int from = h->kind == CCR_GIT_DELETED ? h->first + 1 : h->first;
+        const int lines = h->kind == CCR_GIT_DELETED ? 1 : (h->count < 4000 ? h->count : 4000);
+        for (int l = from; l < from + lines; ++l) {
+            const ccr_node_id at = locate(doc, (uint32_t)l, 0);
+            if (at == CCR_NONE)
+                continue;
+            const ccr_change_kind kind = h->kind == CCR_GIT_ADDED ? CCR_CHANGE_ADDED
+                                       : h->kind == CCR_GIT_CHANGED ? CCR_CHANGE_MODIFIED : CCR_CHANGE_DELETED;
+            bool seen = false;
+            for (uint32_t k = 0; k < count && !seen; ++k)
+                if (ch[k].node == at && (ch[k].kind == CCR_CHANGE_DELETED) == (kind == CCR_CHANGE_DELETED)) {
+                    seen = true;
+                    if (kind == CCR_CHANGE_MODIFIED)
+                        ch[k].kind = kind;   /* changed wins over added */
+                }
+            if (seen)
+                continue;
+            if (count == cap) {
+                cap = cap ? cap * 2 : 64;
+                ccr_editor_change *g = realloc(ch, cap * sizeof *ch);
+                if (!g)
+                    break;
+                ch = g;
+            }
+            ch[count++] = (ccr_editor_change){ at, kind };
+        }
+    }
+    ccr_editor_set_changes(&doc->ed, ch, count);
+    free(ch);
+    snprintf(g_git.marks_for, sizeof g_git.marks_for, "%s", doc->path);
+}
+
+/* Does the file on disk say something else than `doc` would save? */
+static bool disk_differs(const ccr_document *doc)
+{
+    char *text = NULL, err[256];
+    size_t len = 0;
+    if (!ccr_codegen(&doc->ed.ast, &text, &len, err, sizeof err))
+        return false;
+    FILE *f = fopen(doc->path, "rb");
+    bool differs = true;
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        const long n = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (n >= 0 && (size_t)n == len) {
+            char *disk = malloc(len + 1);
+            differs = !disk || fread(disk, 1, len, f) != len || memcmp(disk, text, len) != 0;
+            free(disk);
+        }
+        fclose(f);
+    }
+    free(text);
+    return differs;
+}
+
+/* Reads `doc` again from disk, its breakpoints kept by line. */
+static void reopen_keeping_breaks(ccr_document *doc, const ccr_options *opt)
+{
+    int lines[256], n = 0;
+    for (uint32_t i = 0; i < doc->ed.dbg_break_count && n < 256; ++i) {
+        const int l = place_line(doc, doc->ed.dbg_breaks[i]);
+        if (l > 0)
+            lines[n++] = l;
+    }
+    char path[PATH_MAX_LEN];
+    snprintf(path, sizeof path, "%s", doc->path);
+    if (!document_open(doc, path, opt))
+        return;
+    ccr_node_id back[256];
+    uint32_t k = 0;
+    for (int i = 0; i < n; ++i) {
+        const ccr_node_id at = locate(doc, (uint32_t)lines[i], 0);
+        if (at != CCR_NONE)
+            back[k++] = at;
+    }
+    ccr_editor_set_debug(&doc->ed, CCR_NONE, false, back, k, "");
+}
+
+/* After git changed files (a branch, a pull, a discard): open files that
+ * are not being edited are read again. */
+static void git_files_changed(ccr_document *doc, const ccr_options *opt)
+{
+    ccr_document *all[MAX_OPEN + 1];
+    int n = 0;
+    if (doc->loaded)
+        all[n++] = doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        all[n++] = g_stash[i].doc;
+    for (int i = 0; i < n; ++i) {
+        if (!all[i]->loaded || !disk_differs(all[i]))
+            continue;
+        char said[600];
+        if (ccr_editor_modified(&all[i]->ed)) {
+            ccr_trf(said, sizeof said, CCR_T_GIT_KEPT, base_name(all[i]->path));
+            git_say(said, true);
+            continue;
+        }
+        reopen_keeping_breaks(all[i], opt);
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_GIT_RELOADED, base_name(all[i]->path));
+        doc->has_errors = false;
+    }
+    ccr_files_scan(&g_files, g_files.root[0] ? g_files.root : ".", doc->loaded ? doc->path : NULL);
+    g_git_marks_dirty = true;
+}
+
+static void git_open_diff(const ccr_git_file *f, bool staged)
+{
+    free(g_git.diff);
+    const bool untracked = f->work == '?';
+    g_git.diff = ccr_git_diff(g_git.st.root, f->path, staged, untracked);
+    g_git.diff_open = g_git.diff != NULL;
+    g_git.diff_scroll = 0.0f;
+    snprintf(g_git.diff_path, sizeof g_git.diff_path, "%s", f->path);
+    ccr_trf(g_git.diff_title, sizeof g_git.diff_title,
+            untracked ? CCR_T_GIT_DIFF_NEW : staged ? CCR_T_GIT_DIFF_STAGED : CCR_T_GIT_DIFF_WORK, f->path);
+}
+
+static void git_commit(ccr_document *doc, const ccr_options *opt)
+{
+    char err[512], said[700];
+    if (!g_git.msg[0]) {
+        ccr_trf(said, sizeof said, CCR_T_GIT_NEED_MESSAGE);
+        git_say(said, true);
+        g_git.msg_focus = true;
+        return;
+    }
+    /* what is on screen is what goes in */
+    ccr_document *all[MAX_OPEN + 1];
+    int n = 0;
+    if (doc->loaded)
+        all[n++] = doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        all[n++] = g_stash[i].doc;
+    for (int i = 0; i < n; ++i)
+        if (ccr_editor_modified(&all[i]->ed))
+            document_save(all[i], opt);
+    git_refresh(doc);
+    const bool everything = g_git.st.staged == 0 && !g_git.amend;
+    if (everything && g_git.st.changed + g_git.st.untracked == 0) {
+        ccr_trf(said, sizeof said, CCR_T_GIT_NOTHING);
+        git_say(said, true);
+        return;
+    }
+    bool ok = true;
+    if (everything)   /* nothing staged: all of it, as VS Code's smart commit */
+        ok = ccr_git_stage_all(g_git.st.root, err, (int)sizeof err);
+    ok = ok && ccr_git_commit(g_git.st.root, g_git.msg, g_git.amend, false, err, (int)sizeof err);
+    if (ok) {
+        ccr_trf(said, sizeof said, everything ? CCR_T_GIT_COMMITTED_ALL : CCR_T_GIT_COMMITTED, g_git.msg);
+        git_say(said, false);
+        g_git.msg[0] = '\0';
+        g_git.amend = false;
+        g_git.msg_focus = false;
+    } else {
+        git_say(err, true);
+    }
+    git_refresh(doc);
+}
+
+static void git_net(ccr_document *doc, ccr_git_net what)
+{
+    if (!g_git.st.repo || (g_git.net.what != CCR_GIT_NET_NONE && !g_git.net.done))
+        return;
+    char err[300];
+    bool upstream = false;
+    if (what == CCR_GIT_NET_PUSH && !g_git.st.upstream[0]) {
+        const char *args[] = { "remote", NULL };
+        int code = 0;
+        char *remotes = ccr_git_run(g_git.st.root, args, &code);
+        const bool origin = remotes && strstr(remotes, "origin") != NULL;
+        free(remotes);
+        if (!origin) {
+            ccr_trf(err, sizeof err, CCR_T_GIT_NO_REMOTE);
+            git_say(err, true);
+            return;
+        }
+        upstream = true;   /* the first push: where it goes from now on */
+    }
+    if (!ccr_git_net_start(&g_git.net, g_git.st.root, what, upstream, err, (int)sizeof err))
+        git_say(err, true);
+    (void)doc;
+}
+
+/* Every frame: a pull or push going on; the status now and then; the
+ * bars of the file on screen. */
+static void git_follow(ccr_document *doc, const ccr_options *opt)
+{
+    if (g_git.net.what != CCR_GIT_NET_NONE && !g_git.net.done && !ccr_git_net_poll(&g_git.net)) {
+        char said[1300];
+        const ccr_git_net what = g_git.net.what;
+        if (g_git.net.ok) {
+            ccr_trf(said, sizeof said, what == CCR_GIT_NET_PULL ? CCR_T_GIT_PULLED
+                                     : what == CCR_GIT_NET_PUSH ? CCR_T_GIT_PUSHED : CCR_T_GIT_FETCHED);
+            git_say(said, false);
+        } else {
+            /* git's last line says it best */
+            const char *last = strrchr(g_git.net.said, '\n');
+            ccr_trf(said, sizeof said, CCR_T_GIT_NET_FAILED, last ? last + 1 : g_git.net.said);
+            git_say(said, true);
+        }
+        git_refresh(doc);
+        if (what == CCR_GIT_NET_PULL)
+            git_files_changed(doc, opt);
+    }
+    const bool shown = g_files_open && g_git.tab;
+    if (shown && (!g_git.have || ccr_gui_time() - g_git.read_at > 3.0))
+        git_refresh(doc);
+    if (doc->loaded && (g_git_marks_dirty || strcmp(g_git.marks_for, doc->path) != 0)) {
+        g_git_marks_dirty = false;
+        git_marks(doc);
+    }
+}
+
+/* A small square button with an icon drawn by hand: + - or the undo arrow. */
+static bool git_icon_button(ccr_rect r, char icon, bool input, const char *tip_text)
+{
+    const ccr_button_style plain = *button_style(false);
+    const bool hit = ccr_gui_button(r, "", &plain) && input;
+    const ccr_color c = ccr_th(CCR_C_BUTTON_TEXT);
+    const ccr_vec2 m = { r.x + r.w * 0.5f, r.y + r.h * 0.5f };
+    if (icon == '+' || icon == '-')
+        ccr_gui_line((ccr_vec2){ m.x - 5.0f, m.y }, (ccr_vec2){ m.x + 5.0f, m.y }, 2.0f, c);
+    if (icon == '+')
+        ccr_gui_line((ccr_vec2){ m.x, m.y - 5.0f }, (ccr_vec2){ m.x, m.y + 5.0f }, 2.0f, c);
+    if (icon == 'u') {   /* undo: an arc with a head */
+        ccr_gui_ring(m, 3.8f, 5.6f, 200.0f, 470.0f, c);
+        ccr_gui_triangle((ccr_vec2){ m.x - 8.5f, m.y - 3.0f }, (ccr_vec2){ m.x - 1.5f, m.y - 3.0f },
+                         (ccr_vec2){ m.x - 5.0f, m.y + 2.0f }, c);
+    }
+    if (input && tip_text)
+        tip(r, tip_text);
+    return hit;
+}
+
+static ccr_color git_letter_color(char c)
+{
+    switch (c) {
+    case 'M': return 0x4C9BE8FFu;
+    case 'A': case '?': return 0x3FB950FFu;
+    case 'D': return 0xE5534BFFu;
+    case 'R': case 'C': return 0xA371F7FFu;
+    case 'U': return 0xD29922FFu;
+    default:  return ccr_th(CCR_C_PANEL_HINT);
+    }
+}
+
+/* One file's row: its letter, its name, the folder it is in, buttons. */
+static void git_row(ccr_document *doc, const ccr_options *opt, ccr_rect r, const ccr_git_file *f, bool staged,
+                    bool input)
+{
+    const ccr_vec2 m = ccr_gui_mouse();
+    const bool over = input && point_in(m, r);
+    if (over)
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 4, r.y + 1, r.w - 8, r.h - 2 }, 0.3f,
+                             (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0x80u);
+    char letter = f->conflict ? 'U' : staged ? f->index : (f->work == '?' ? 'U' : f->work);
+    if (!staged && f->work == '?')
+        letter = 'U';   /* untracked, as VS Code says it */
+    const ccr_color lc = git_letter_color(f->conflict ? 'U' : staged ? f->index : f->work);
+    const char *name = strrchr(f->path, '/');
+    name = name ? name + 1 : f->path;
+    const float bw = 22.0f;
+    const int buttons = staged ? 1 : 2;
+    const float text_w = r.w - 34.0f - (float)buttons * (bw + 4.0f);
+    ccr_gui_clip_begin((ccr_rect){ r.x, r.y, 12.0f + text_w, r.h });
+    ccr_gui_text(name, r.x + 12.0f, r.y + 4.0f, 15.0f,
+                 f->index == 'D' || f->work == 'D' ? ccr_th(CCR_C_PANEL_HINT) : ccr_th(CCR_C_PANEL_TEXT));
+    if (name != f->path) {   /* the folder, faint, after the name */
+        char dir[CCR_GIT_PATH];
+        snprintf(dir, sizeof dir, "%.*s", (int)(name - f->path - 1), f->path);
+        ccr_gui_text(dir, r.x + 20.0f + ccr_gui_text_width(name, 15.0f), r.y + 6.0f, 12.0f,
+                     ccr_th(CCR_C_PANEL_HINT));
+    }
+    ccr_gui_clip_end();
+    char l[2] = { letter, 0 };
+    ccr_gui_text(l, r.x + r.w - 20.0f, r.y + 4.0f, 15.0f, lc);
+    float bx = r.x + r.w - 26.0f;
+    char err[512], said[700];
+    bool clicked_button = false;
+    if (over || g_git.discard[0]) {
+        bx -= bw + 4.0f;
+        const ccr_rect b1 = { bx, r.y + 1.0f, bw, r.h - 2.0f };
+        if (over && git_icon_button(b1, staged ? '-' : '+', input, ccr_tr(staged ? CCR_T_TIP_UNSTAGE : CCR_T_TIP_STAGE))) {
+            clicked_button = true;
+            const bool ok = staged ? ccr_git_unstage(g_git.st.root, f->path, g_git.st.no_commits, err, (int)sizeof err)
+                                   : ccr_git_stage(g_git.st.root, f->path, err, (int)sizeof err);
+            if (!ok)
+                git_say(err, true);
+            git_refresh(doc);
+            return;   /* the list changed under us */
+        }
+        if (!staged) {
+            bx -= bw + 4.0f;
+            const ccr_rect b2 = { bx, r.y + 1.0f, bw, r.h - 2.0f };
+            const bool asked = strcmp(g_git.discard, f->path) == 0 && ccr_gui_time() - g_git.discard_at < 4.0;
+            if (asked)
+                ccr_gui_rect_rounded((ccr_rect){ b2.x - 2, b2.y - 2, b2.w + 4, b2.h + 4 }, 0.3f, ccr_th(CCR_C_ERROR));
+            if (over && git_icon_button(b2, 'u', input, ccr_tr(CCR_T_TIP_DISCARD))) {
+                clicked_button = true;
+                if (!asked) {   /* a second click is needed: this cannot be undone */
+                    snprintf(g_git.discard, sizeof g_git.discard, "%s", f->path);
+                    g_git.discard_at = ccr_gui_time();
+                    ccr_trf(said, sizeof said, CCR_T_GIT_DISCARD_ASK, name);
+                    git_say(said, true);
+                } else {
+                    g_git.discard[0] = '\0';
+                    if (ccr_git_discard(g_git.st.root, f->path, f->work == '?', err, (int)sizeof err)) {
+                        ccr_trf(said, sizeof said, CCR_T_GIT_DISCARDED, name);
+                        git_say(said, false);
+                    } else {
+                        git_say(err, true);
+                    }
+                    git_refresh(doc);
+                    git_files_changed(doc, opt);
+                    return;
+                }
+            }
+        }
+    }
+    /* a press on the row, not on its buttons: the diff */
+    const float buttons_left = r.x + r.w - 26.0f - (float)buttons * (bw + 4.0f);
+    if (over && !clicked_button && m.x < buttons_left && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+        git_open_diff(f, staged);
+}
+
+/* A section header: its title and count, and a button for all of them. */
+static bool git_section(ccr_rect r, ccr_text title, int count, char all_icon, bool input)
+{
+    char t[96];
+    snprintf(t, sizeof t, "%s  %d", ccr_tr(title), count);
+    ccr_gui_text(t, r.x + 10.0f, r.y + 6.0f, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+    if (!all_icon || count == 0)
+        return false;
+    return git_icon_button((ccr_rect){ r.x + r.w - 52.0f, r.y + 2.0f, 22.0f, r.h - 4.0f }, all_icon, input,
+                           ccr_tr(all_icon == '+' ? CCR_T_TIP_STAGE : CCR_T_TIP_UNSTAGE));
+}
+
+/* The Git button, Ctrl+G: the right panel on its Git tab, or away. */
+static void git_toggle(const ccr_document *doc)
+{
+    if (g_files_open && g_git.tab) {
+        files_toggle(doc);   /* closes it */
+        return;
+    }
+    if (!g_files_open)
+        files_toggle(doc);
+    g_git.tab = true;
+    if (g_lay.files_w < 340.0f)   /* room for the buttons */
+        g_lay.files_w = 340.0f;
+    git_refresh(doc);
+}
+
+/* The tab strip on top of the right panel: Files | Git. */
+static void panel_tabs(ccr_rect area, const ccr_document *doc, bool input)
+{
+    ccr_gui_rect((ccr_rect){ area.x, area.y, area.w, GIT_TABS_H }, ccr_th(CCR_C_PALETTE));
+    const ccr_text names[2] = { CCR_T_FILES_TITLE, CCR_T_GIT_TITLE };
+    float x = area.x + 8.0f;
+    for (int i = 0; i < 2; ++i) {
+        char label[64];
+        snprintf(label, sizeof label, "%s", ccr_tr(names[i]));
+        const int changes = g_git.have ? g_git.st.count : 0;
+        if (i == 1 && changes)
+            snprintf(label + strlen(label), sizeof label - strlen(label), "  %d", changes);
+        const float tw = ccr_gui_text_width(label, 15.0f) + 20.0f;
+        const ccr_rect t = { x, area.y + 4.0f, tw, GIT_TABS_H - 4.0f };
+        const bool on = (i == 1) == g_git.tab;
+        if (on)
+            ccr_gui_rect_corners(t, 6.0f, 3u, ccr_th(CCR_C_PANEL) | 0xFFu);
+        ccr_gui_text(label, t.x + 10.0f, t.y + 5.0f, 15.0f, on ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PALETTE_TEXT));
+        if (input && point_in(ccr_gui_mouse(), t) && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+            g_git.tab = i == 1;
+            if (g_git.tab)
+                git_refresh(doc);
+        }
+        x += tw + 4.0f;
+    }
+    ccr_gui_rect((ccr_rect){ area.x, area.y + GIT_TABS_H - 1.0f, area.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+}
+
+/* The files panel's part under the tabs. */
+static ccr_rect panel_body(ccr_rect area)
+{
+    return (ccr_rect){ area.x, area.y + GIT_TABS_H, area.w, area.h - GIT_TABS_H };
+}
+
+/* The Git tab: drawing and clicks in one go. */
+static void git_panel(ccr_rect a, ccr_document *doc, const ccr_options *opt, bool input)
+{
+    ccr_gui_rect(a, ccr_th(CCR_C_PANEL) | 0xFFu);
+    const ccr_vec2 m = ccr_gui_mouse();
+    const ccr_button_style plain = *button_style(false), *mainb = button_style(true);
+    float y = a.y + 10.0f;
+    char err[512];
+    if (!ccr_git_available()) {
+        wrap_text(ccr_tr(CCR_T_GIT_NO_GIT), a.x + 12.0f, y, a.w - 24.0f, 15.0f, ccr_th(CCR_C_PANEL_HINT), true);
+        return;
+    }
+    if (!g_git.have)
+        git_refresh(doc);
+    if (!g_git.st.repo) {
+        y += wrap_text(ccr_tr(CCR_T_GIT_NO_REPO), a.x + 12.0f, y, a.w - 24.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT), true) + 10.0f;
+        const char *l = ccr_tr(CCR_T_GIT_INIT);
+        const float bw = ccr_gui_text_width(l, 15.0f) + 24.0f;
+        if (ccr_gui_button((ccr_rect){ a.x + 12.0f, y, bw, 28.0f }, l, mainb) && input) {
+            char dir[CCR_FILES_PATH];
+            git_dir(doc, dir, sizeof dir);
+            if (!ccr_git_init(dir, err, (int)sizeof err))
+                git_say(err, true);
+            git_refresh(doc);
+        }
+        return;
+    }
+
+    /* the branch, and the server */
+    const bool net_busy = g_git.net.what != CCR_GIT_NET_NONE && !g_git.net.done;
+    char branch[300];
+    snprintf(branch, sizeof branch, "%s", strcmp(g_git.st.branch, "(detached)") == 0 ? ccr_tr(CCR_T_GIT_DETACHED)
+                                                                                     : g_git.st.branch);
+    {
+        const float sw = 32.0f;
+        float rx = a.x + a.w - 10.0f;
+        char push[48], pull[48];
+        snprintf(push, sizeof push, g_git.st.ahead ? "%s %d" : "%s", ccr_tr(CCR_T_GIT_PUSH), g_git.st.ahead);
+        snprintf(pull, sizeof pull, g_git.st.behind ? "%s %d" : "%s", ccr_tr(CCR_T_GIT_PULL), g_git.st.behind);
+        const float pw = ccr_gui_text_width(push, 14.0f) + 18.0f, lw = ccr_gui_text_width(pull, 14.0f) + 18.0f;
+        rx -= pw;
+        const ccr_rect pb = { rx, y, pw, 26.0f };
+        if (ccr_gui_button(pb, push, g_git.st.ahead ? mainb : &plain) && input && !net_busy)
+            git_net(doc, CCR_GIT_NET_PUSH);
+        rx -= 4.0f + lw;
+        if (ccr_gui_button((ccr_rect){ rx, y, lw, 26.0f }, pull, g_git.st.behind ? mainb : &plain) && input && !net_busy)
+            git_net(doc, CCR_GIT_NET_PULL);
+        rx -= 4.0f + sw;
+        const ccr_rect fb = { rx, y, sw, 26.0f };
+        if (ccr_gui_button(fb, "", &plain) && input && !net_busy)
+            git_net(doc, CCR_GIT_NET_FETCH);
+        {   /* fetch: a circle of arrows, turning while git talks */
+            const ccr_vec2 c = { fb.x + fb.w * 0.5f, fb.y + fb.h * 0.5f };
+            const float spin = net_busy ? (float)ccr_gui_time() * 360.0f : 0.0f;
+            ccr_gui_ring(c, 4.5f, 6.5f, spin + 20.0f, spin + 300.0f, ccr_th(CCR_C_BUTTON_TEXT));
+            const float ang = (spin + 300.0f) * 0.0174533f;
+            const ccr_vec2 tip_ = { c.x + cosf(ang) * 5.5f, c.y + sinf(ang) * 5.5f };
+            ccr_gui_circle(tip_, 2.5f, ccr_th(CCR_C_BUTTON_TEXT));
+        }
+        if (input)
+            tip(fb, ccr_tr(CCR_T_GIT_FETCH));
+        /* the branch button: a list of branches drops down */
+        const float bw = rx - 6.0f - (a.x + 10.0f);
+        const ccr_rect bb = { a.x + 10.0f, y, bw, 26.0f };
+        if (ccr_gui_button(bb, "", g_git.branch_menu ? mainb : &plain) && input) {
+            g_git.branch_menu = !g_git.branch_menu;
+            if (g_git.branch_menu)
+                g_git.nbranches = ccr_git_branches(g_git.st.root, g_git.branches, 32);
+        }
+        ccr_gui_clip_begin((ccr_rect){ bb.x + 4.0f, bb.y, bb.w - 8.0f, bb.h });
+        /* a branch: two dots and a line */
+        const float ix = bb.x + 12.0f, iy = bb.y + 6.0f;
+        ccr_gui_line((ccr_vec2){ ix, iy + 2.0f }, (ccr_vec2){ ix, iy + 13.0f }, 1.6f, ccr_th(CCR_C_BUTTON_TEXT));
+        ccr_gui_line((ccr_vec2){ ix + 7.0f, iy + 4.0f }, (ccr_vec2){ ix, iy + 11.0f }, 1.6f, ccr_th(CCR_C_BUTTON_TEXT));
+        ccr_gui_circle((ccr_vec2){ ix, iy + 13.0f }, 2.2f, ccr_th(CCR_C_BUTTON_TEXT));
+        ccr_gui_circle((ccr_vec2){ ix + 7.0f, iy + 3.0f }, 2.2f, ccr_th(CCR_C_BUTTON_TEXT));
+        ccr_gui_text(branch, bb.x + 26.0f, bb.y + 5.0f, 15.0f, ccr_th(CCR_C_BUTTON_TEXT));
+        ccr_gui_clip_end();
+        y += 32.0f;
+    }
+    if (net_busy) {
+        ccr_gui_text(ccr_tr(CCR_T_GIT_WORKING), a.x + 12.0f, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+        y += 18.0f;
+    }
+
+    /* the branches, when asked for: a click switches, a name makes one */
+    if (g_git.branch_menu) {
+        for (int i = 0; i < g_git.nbranches; ++i) {
+            const ccr_rect r = { a.x + 10.0f, y, a.w - 20.0f, 22.0f };
+            const bool current = strcmp(g_git.branches[i], g_git.st.branch) == 0;
+            if (input && point_in(m, r))
+                ccr_gui_rect_rounded(r, 0.3f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x50u);
+            if (current)
+                ccr_gui_circle((ccr_vec2){ r.x + 8.0f, r.y + 11.0f }, 3.0f, ccr_th(CCR_C_ACCENT));
+            ccr_gui_text(g_git.branches[i], r.x + 18.0f, r.y + 3.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
+            if (input && !current && point_in(m, r) && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+                char said[400];
+                if (ccr_git_switch(g_git.st.root, g_git.branches[i], false, err, (int)sizeof err)) {
+                    ccr_trf(said, sizeof said, CCR_T_GIT_SWITCHED, g_git.branches[i]);
+                    git_say(said, false);
+                    g_git.branch_menu = false;
+                    git_refresh(doc);
+                    git_files_changed(doc, opt);
+                    return;
+                }
+                git_say(err, true);
+            }
+            y += 23.0f;
+        }
+        /* a new one */
+        const ccr_rect nb = { a.x + 10.0f, y + 2.0f, a.w - 20.0f, 28.0f };
+        if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && point_in(m, nb) && !g_git.new_focus) {
+            g_git.new_focus = true;
+            g_git.msg_focus = false;
+            ccr_gui_textbox_reset();
+        }
+        if (g_git.new_focus) {
+            ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+            if (ccr_gui_textbox(nb, g_git.new_branch, (int)sizeof g_git.new_branch, 15.0f) && g_git.new_branch[0]) {
+                char said[400];
+                if (ccr_git_switch(g_git.st.root, g_git.new_branch, true, err, (int)sizeof err)) {
+                    ccr_trf(said, sizeof said, CCR_T_GIT_SWITCHED, g_git.new_branch);
+                    git_say(said, false);
+                    g_git.branch_menu = false;
+                    g_git.new_branch[0] = '\0';
+                } else {
+                    git_say(err, true);
+                }
+                g_git.new_focus = false;
+                git_refresh(doc);
+                return;
+            }
+            if (ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+                g_git.new_focus = false;
+        } else {
+            ccr_gui_rect_rounded(nb, 0.2f, ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_rect_rounded((ccr_rect){ nb.x + 1, nb.y + 1, nb.w - 2, nb.h - 2 }, 0.2f, ccr_th(CCR_C_FIELD));
+            ccr_gui_text(ccr_tr(CCR_T_GIT_NEW_BRANCH), nb.x + 8.0f, nb.y + 6.0f, 14.0f, ccr_th(CCR_C_PANEL_HINT));
+        }
+        y += 38.0f;
+        ccr_gui_rect((ccr_rect){ a.x + 10.0f, y - 4.0f, a.w - 20.0f, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+    }
+
+    /* the message, and Commit */
+    {
+        const ccr_rect mb = { a.x + 10.0f, y, a.w - 20.0f, 30.0f };
+        if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+            const bool in = point_in(m, mb);
+            if (in && !g_git.msg_focus) {
+                g_git.msg_focus = true;
+                g_git.new_focus = false;
+                ccr_gui_textbox_reset();
+            } else if (!in && g_git.msg_focus) {
+                g_git.msg_focus = false;   /* a click anywhere else */
+            }
+        }
+        if (g_git.msg_focus) {
+            ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+            if (ccr_gui_textbox(mb, g_git.msg, (int)sizeof g_git.msg, 15.0f))
+                git_commit(doc, opt);
+            if (ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+                g_git.msg_focus = false;
+        } else {
+            ccr_gui_rect_rounded(mb, 0.2f, ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_rect_rounded((ccr_rect){ mb.x + 1, mb.y + 1, mb.w - 2, mb.h - 2 }, 0.2f, ccr_th(CCR_C_FIELD));
+            ccr_gui_clip_begin(mb);
+            ccr_gui_text(g_git.msg[0] ? g_git.msg : ccr_tr(CCR_T_GIT_MESSAGE), mb.x + 8.0f, mb.y + 7.0f, 15.0f,
+                         g_git.msg[0] ? ccr_th(CCR_C_FIELD_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+            ccr_gui_clip_end();
+        }
+        y += 36.0f;
+        const char *cl = ccr_tr(CCR_T_GIT_COMMIT);
+        const float cw = ccr_gui_text_width(cl, 15.0f) + 30.0f;
+        if (ccr_gui_button((ccr_rect){ a.x + 10.0f, y, cw, 28.0f }, cl, mainb) && input)
+            git_commit(doc, opt);
+        /* amend: a box to tick */
+        const ccr_rect box = { a.x + 22.0f + cw, y + 7.0f, 14.0f, 14.0f };
+        const ccr_rect hit = { box.x, y, a.x + a.w - box.x - 8.0f, 28.0f };
+        ccr_gui_rect_rounded(box, 0.25f, ccr_th(CCR_C_PANEL_EDGE));
+        if (g_git.amend)
+            ccr_gui_rect_rounded((ccr_rect){ box.x + 3, box.y + 3, 8, 8 }, 0.25f, ccr_th(CCR_C_ACCENT));
+        ccr_gui_text(ccr_tr(CCR_T_GIT_AMEND), box.x + 20.0f, y + 6.0f, 14.0f, ccr_th(CCR_C_PANEL_TEXT));
+        if (input && point_in(m, hit) && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !g_git.st.no_commits)
+            g_git.amend = !g_git.amend;
+        y += 36.0f;
+    }
+
+    /* what git said last */
+    if (g_git.note[0]) {
+        const float th = wrap_text(g_git.note, a.x + 12.0f, y, a.w - 24.0f, 13.0f,
+                                   g_git.note_bad ? ccr_th(CCR_C_ERROR) : ccr_th(CCR_C_OK), true);
+        y += th + 8.0f;
+    }
+
+    /* the files, in a list that scrolls */
+    const ccr_rect list = { a.x, y, a.w, a.y + a.h - y };
+    const ccr_git_status *s = &g_git.st;
+    const int nconf = s->conflicts, nst = s->staged, nch = s->changed + s->untracked;
+    float total = 0.0f;
+    if (nconf) total += GIT_ROW + (float)nconf * GIT_ROW;
+    if (nst) total += GIT_ROW + (float)nst * GIT_ROW;
+    total += GIT_ROW + (float)nch * GIT_ROW;
+    total += GIT_ROW + (g_git.log_open ? (float)g_git.nlog * 36.0f : 0.0f) + 10.0f;
+    const float max_scroll = total > list.h ? total - list.h : 0.0f;
+    if (input && point_in(m, list))
+        g_git.scroll -= ccr_gui_wheel() * 40.0f;
+    g_git.scroll = g_git.scroll < 0.0f ? 0.0f : g_git.scroll > max_scroll ? max_scroll : g_git.scroll;
+    ccr_gui_clip_begin(list);
+    float ry = list.y - g_git.scroll;
+    const bool lin = input && point_in(m, list);
+    if (s->count == 0) {
+        ccr_gui_text(ccr_tr(CCR_T_GIT_CLEAN), a.x + 12.0f, ry + 4.0f, 14.0f, ccr_th(CCR_C_PANEL_HINT));
+        ry += GIT_ROW;
+    }
+    if (nconf) {
+        git_section((ccr_rect){ a.x, ry, a.w, GIT_ROW }, CCR_T_GIT_CONFLICTS, nconf, 0, lin);
+        ry += GIT_ROW;
+        for (int i = 0; i < s->count; ++i)
+            if (s->files[i].conflict) {
+                const unsigned gen = g_git.gen;
+                git_row(doc, opt, (ccr_rect){ a.x, ry, a.w, GIT_ROW }, &s->files[i], false, lin);
+                if (g_git.gen != gen)
+                    goto done;
+                ry += GIT_ROW;
+            }
+    }
+    if (nst) {
+        if (git_section((ccr_rect){ a.x, ry, a.w, GIT_ROW }, CCR_T_GIT_STAGED, nst, '-', lin)) {
+            if (!ccr_git_unstage_all(s->root, s->no_commits, err, (int)sizeof err))
+                git_say(err, true);
+            git_refresh(doc);
+            goto done;
+        }
+        ry += GIT_ROW;
+        for (int i = 0; i < s->count; ++i) {
+            const ccr_git_file *f = &s->files[i];
+            if (f->conflict || f->work == '?' || f->index == '.')
+                continue;
+            const unsigned gen = g_git.gen;
+            git_row(doc, opt, (ccr_rect){ a.x, ry, a.w, GIT_ROW }, f, true, lin);
+            if (g_git.gen != gen)
+                goto done;
+            ry += GIT_ROW;
+        }
+    }
+    if (s->count) {
+        if (git_section((ccr_rect){ a.x, ry, a.w, GIT_ROW }, CCR_T_GIT_CHANGES, nch, '+', lin)) {
+            if (!ccr_git_stage_all(s->root, err, (int)sizeof err))
+                git_say(err, true);
+            git_refresh(doc);
+            goto done;
+        }
+        ry += GIT_ROW;
+        for (int i = 0; i < s->count; ++i) {
+            const ccr_git_file *f = &s->files[i];
+            if (f->conflict || (f->work == '.' && f->index != '.'))
+                continue;
+            if (f->work == '.')
+                continue;
+            const unsigned gen = g_git.gen;
+            git_row(doc, opt, (ccr_rect){ a.x, ry, a.w, GIT_ROW }, f, false, lin);
+            if (g_git.gen != gen)
+                goto done;
+            ry += GIT_ROW;
+        }
+    }
+    /* the history, folded */
+    if (g_git.nlog) {
+        ry += 6.0f;
+        const ccr_rect hr = { a.x, ry, a.w, GIT_ROW };
+        char t[96];
+        snprintf(t, sizeof t, "%s %s", g_git.log_open ? "v" : ">", ccr_tr(CCR_T_GIT_HISTORY));
+        ccr_gui_text(t, a.x + 10.0f, ry + 6.0f, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+        if (lin && point_in(m, hr) && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+            g_git.log_open = !g_git.log_open;
+        ry += GIT_ROW;
+        for (int i = 0; g_git.log_open && i < g_git.nlog; ++i) {
+            const ccr_git_commit_info *c = &g_git.log[i];
+            ccr_gui_circle((ccr_vec2){ a.x + 16.0f, ry + 9.0f }, 3.5f, i == 0 ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_PANEL_HINT));
+            if (i + 1 < g_git.nlog)
+                ccr_gui_rect((ccr_rect){ a.x + 15.0f, ry + 12.0f, 2.0f, 30.0f }, ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_clip_begin((ccr_rect){ a.x, ry, a.w - 8.0f, 36.0f });
+            ccr_gui_text(c->subject, a.x + 28.0f, ry + 1.0f, 14.0f, ccr_th(CCR_C_PANEL_TEXT));
+            char sub[200];
+            snprintf(sub, sizeof sub, "%s  %s, %s", c->hash, c->author, c->when);
+            ccr_gui_text(sub, a.x + 28.0f, ry + 18.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+            ccr_gui_clip_end();
+            ry += 36.0f;
+        }
+    }
+done:
+    ccr_gui_clip_end();
+}
+
+/* A file's diff, over the canvas: added lines green, taken out red. */
+static void git_diff_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt, int w, int h)
+{
+    if (!g_git.diff_open)
+        return;
+    const ccr_rect vis = visible_view(viewport, w, h);
+    ccr_gui_rect(vis, ccr_th(CCR_C_BACKDROP));
+    const ccr_rect r = { vis.x + 24.0f, vis.y + 20.0f, vis.w - 48.0f, vis.h - 40.0f };
+    ccr_gui_rect_rounded((ccr_rect){ r.x - 2, r.y - 2, r.w + 4, r.h + 4 }, 0.02f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(r, 0.02f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    ccr_gui_text(g_git.diff_title, r.x + 16.0f, r.y + 12.0f, 17.0f, ccr_th(CCR_C_PANEL_TEXT));
+    const ccr_button_style plain = *button_style(false);
+    const ccr_vec2 m = ccr_gui_mouse();
+    bool close = ccr_gui_button((ccr_rect){ r.x + r.w - 40.0f, r.y + 8.0f, 30.0f, 26.0f }, "x", &plain) ||
+                 ccr_gui_key_pressed(CCR_KEY_ESCAPE) ||
+                 (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(m, r) && point_in(m, vis));
+    const char *ol = ccr_tr(CCR_T_GIT_OPEN);
+    const float ow = ccr_gui_text_width(ol, 15.0f) + 24.0f;
+    if (ccr_gui_button((ccr_rect){ r.x + r.w - 48.0f - ow, r.y + 8.0f, ow, 26.0f }, ol, &plain)) {
+        char path[CCR_GIT_PATH * 2];
+        snprintf(path, sizeof path, "%s/%s", g_git.st.root, g_git.diff_path);
+        FILE *probe = fopen(path, "rb");
+        if (probe) {
+            fclose(probe);
+            switch_to(doc, cv, viewport, path, opt);
+        }
+        close = true;
+    }
+    /* the lines, without git's header */
+    const ccr_rect body = { r.x + 8.0f, r.y + 44.0f, r.w - 16.0f, r.h - 52.0f };
+    const float row = 18.0f, fs = 14.0f;
+    int lines = 0;
+    for (const char *p = g_git.diff; p && *p; p = strchr(p, '\n') ? strchr(p, '\n') + 1 : NULL)
+        ++lines;
+    const float max_scroll = (float)lines * row > body.h ? (float)lines * row - body.h : 0.0f;
+    if (point_in(m, body))
+        g_git.diff_scroll -= ccr_gui_wheel() * row * 3.0f;
+    g_git.diff_scroll = g_git.diff_scroll < 0.0f ? 0.0f : g_git.diff_scroll > max_scroll ? max_scroll : g_git.diff_scroll;
+    ccr_gui_clip_begin(body);
+    float y = body.y - g_git.diff_scroll;
+    bool in_header = true;
+    int old_no = 0, new_no = 0;
+    char line[600];
+    for (const char *p = g_git.diff; p && *p;) {
+        const char *e = strchr(p, '\n');
+        const size_t n = e ? (size_t)(e - p) : strlen(p);
+        snprintf(line, sizeof line, "%.*s", (int)(n < sizeof line ? n : sizeof line - 1), p);
+        p = e ? e + 1 : NULL;
+        if (strncmp(line, "@@", 2) == 0) {
+            in_header = false;
+            sscanf(line, "@@ -%d", &old_no);
+            const char *plus = strchr(line, '+');
+            if (plus)
+                new_no = atoi(plus + 1);
+        } else if (in_header) {
+            continue;
+        }
+        if (y + row >= body.y && y <= body.y + body.h) {
+            ccr_color c = ccr_th(CCR_C_PANEL_TEXT);
+            if (line[0] == '+') {
+                ccr_gui_rect((ccr_rect){ body.x, y, body.w, row }, 0x3FB95030u);
+                c = 0x2E8B3EFFu;
+            } else if (line[0] == '-') {
+                ccr_gui_rect((ccr_rect){ body.x, y, body.w, row }, 0xE5534B30u);
+                c = 0xC0392BFFu;
+            } else if (line[0] == '@') {
+                c = ccr_th(CCR_C_PANEL_HINT);
+            }
+            char num[24] = "";
+            if (line[0] == '+' || line[0] == ' ')
+                snprintf(num, sizeof num, "%d", new_no);
+            else if (line[0] == '-')
+                snprintf(num, sizeof num, "%d", old_no);
+            ccr_gui_text(num, body.x + 4.0f, y + 1.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+            /* tabs as four spaces */
+            char shown[700];
+            size_t k = 0;
+            for (const char *q = line; *q && k + 5 < sizeof shown; ++q) {
+                if (*q == '\t')
+                    for (int t = 0; t < 4; ++t)
+                        shown[k++] = ' ';
+                else
+                    shown[k++] = *q;
+            }
+            shown[k] = '\0';
+            ccr_gui_text(shown, body.x + 44.0f, y + 1.0f, fs, c);
+        }
+        if (line[0] == '+')
+            ++new_no;
+        else if (line[0] == '-')
+            ++old_no;
+        else if (line[0] == ' ') {
+            ++new_no;
+            ++old_no;
+        }
+        y += row;
+    }
+    ccr_gui_clip_end();
+    if (close) {
+        g_git.diff_open = false;
+        free(g_git.diff);
+        g_git.diff = NULL;
+    }
+}
+
 /* A mark under the mouse: what the compiler said, next to it. */
 static void mark_tooltip(const ccr_document *doc, const ccr_canvas *cv, ccr_rect viewport)
 {
@@ -2759,6 +3645,7 @@ static bool help_frame(int w, int h)
         { "Ctrl+B, Ctrl+R", 0, CCR_T_HELP_BUILD },
         { "Ctrl+M", 0, CCR_T_HELP_MINIMAP },
         { "F8, F9, F10, F11", 0, CCR_T_HELP_DEBUG },
+        { "Ctrl+G", 0, CCR_T_HELP_GIT },
         { "F5", 0, CCR_T_HELP_RELOAD },
         { "F1", 0, CCR_T_HELP_HELP },
     };
@@ -3712,10 +4599,25 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     x -= group;
 
     /* the project */
+    char git_label[48];
+    snprintf(git_label, sizeof git_label, g_git.have && g_git.st.count ? "Git  %d" : "Git",
+             g_git.have ? g_git.st.count : 0);
+    const float gw = ccr_gui_text_width(git_label, 16.0f) + 24.0f;
+    x -= gw;
+    const ccr_rect gb = { x, y, gw, bh };
+    if (ccr_gui_button(gb, git_label, g_files_open && g_git.tab ? &main_ : bs) && !modal)
+        clicked |= TOP_GIT;
+    if (!modal)
+        tip(gb, ccr_tr(CCR_T_TIP_GIT));
     const float fw = ccr_gui_text_width(ccr_tr(CCR_T_FILES_TITLE), 16.0f) + 24.0f;
-    x -= fw;
-    if (ccr_gui_button((ccr_rect){ x, y, fw, bh }, ccr_tr(CCR_T_FILES_TITLE), g_files_open ? &main_ : bs) && !modal)
-        files_toggle(doc);
+    x -= gap + fw;
+    if (ccr_gui_button((ccr_rect){ x, y, fw, bh }, ccr_tr(CCR_T_FILES_TITLE), g_files_open && !g_git.tab ? &main_ : bs) &&
+        !modal) {
+        if (g_files_open && g_git.tab)
+            g_git.tab = false;
+        else
+            files_toggle(doc);
+    }
     const float lw = ccr_gui_text_width(ccr_tr(CCR_T_LIBS_TITLE), 16.0f) + 24.0f;
     x -= gap + lw;
     if (ccr_gui_button((ccr_rect){ x, y, lw, bh }, ccr_tr(CCR_T_LIBS_TITLE), g_libs.open ? &main_ : bs) && !modal) {
@@ -4174,7 +5076,7 @@ int ccr_run(int argc, char **argv)
         if (te.node == CCR_NONE)
             g_drop.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
-        const bool modal = eula.open || g_libs.open || g_quit.open || g_help;   /* a dialog has the mouse */
+        const bool modal = eula.open || g_libs.open || g_quit.open || g_help || g_git.diff_open;   /* a dialog has the mouse */
         if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open)
             g_help = !g_help;
 
@@ -4195,6 +5097,7 @@ int ccr_run(int argc, char **argv)
         ccr_job_poll(&g_job);
         marks_follow(&doc);
         dbg_follow(&doc, &canvas, viewport, &opt);
+        git_follow(&doc, &opt);
         if (g_bp.last == CCR_JOB_RUNNING && g_job.result != CCR_JOB_RUNNING && !ccr_job_busy(&g_job)) {
             ccr_color unused;
             build_headline(doc.status, sizeof doc.status, &unused);
@@ -4228,12 +5131,19 @@ int ccr_run(int argc, char **argv)
                               point_in(m, minimap_area(visible_view(viewport, w, h))));
         const bool over_palette = !on_split && m.x < PALETTE_W && m.y > TOPBAR_H;
         palette_follow(&doc);
+        const bool git_typing = g_files_open && g_git.tab && (g_git.msg_focus || g_git.new_focus);
         const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
-                             g_fpanel.naming == CCR_NAMING_NONE;   /* typing a new file's name */
+                             g_fpanel.naming == CCR_NAMING_NONE && !git_typing;   /* typing a new file's name */
 
         /* the files panel slides in from the right, over the canvas */
-        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_P) && !modal)
-            files_toggle(&doc);
+        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_P) && !modal) {
+            if (g_files_open && g_git.tab)
+                g_git.tab = false;   /* from Git to the files */
+            else
+                files_toggle(&doc);
+        }
+        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_G) && !modal && te.node == CCR_NONE)
+            git_toggle(&doc);
         if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_TAB) && !modal && te.node == CCR_NONE &&
             doc.ed.drag == CCR_DRAG_IDLE && !pie.open && !opm.open)
             next_file(&doc, &canvas);
@@ -4244,13 +5154,13 @@ int ccr_run(int argc, char **argv)
         }
         const ccr_rect files_r = files_area(w, h);
         const bool over_files = !on_split && g_files_t > 0.0f && point_in(m, files_r);
-        if (g_files_open && !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
+        if (g_files_open && !g_git.tab && !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
             (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             ccr_open_file of[MAX_OPEN + 1];
             const int nof = open_files(&doc, of);
             char path[CCR_FILES_PATH];
             ccr_files_event ev = ccr_files_panel_update(
-                &g_fpanel, &g_files, files_r, m, over_files ? ccr_gui_wheel() : 0.0f,
+                &g_fpanel, &g_files, panel_body(files_r), m, over_files ? ccr_gui_wheel() : 0.0f,
                 over_files && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), of, nof, path, (int)sizeof path);
             if (ev == CCR_FILES_OPEN && switch_to(&doc, &canvas, viewport, path, &opt))
                 te.node = CCR_NONE;
@@ -4309,7 +5219,7 @@ int ccr_run(int argc, char **argv)
         rmb_armed = rmb_armed && ccr_gui_mouse_down(CCR_MOUSE_RIGHT);
 
         /* a search box has the keyboard: keys type, they do not edit blocks */
-        const bool typing = (g_find.open && g_find.focused) || g_psearch.focused;
+        const bool typing = (g_find.open && g_find.focused) || g_psearch.focused || git_typing;
         if (doc.loaded && !modal && !pie.open && te.node == CCR_NONE && ccr_gui_ctrl_down() &&
             ccr_gui_key_pressed(CCR_KEY_F)) {
             find_open();
@@ -4532,19 +5442,28 @@ int ccr_run(int argc, char **argv)
         build_panel(w, h, &doc, &canvas, viewport, &opt,
                     !modal && !pie.open && !opm.open && te.node == CCR_NONE && !on_split);
         if (g_files_t > 0.0f) {
-            ccr_open_file of[MAX_OPEN + 1];
-            const int nof = open_files(&doc, of);
-            ccr_files_panel_draw(&g_fpanel, &g_files, files_area(w, h), of, nof);
-            if (g_files_open && te.node == CCR_NONE && !modal && !pie.open && !opm.open) {
-                char made[CCR_FILES_PATH];
-                if (ccr_files_panel_tools(&g_fpanel, &g_files, files_area(w, h), button_style(false),
-                                          made, (int)sizeof made) == CCR_FILES_OPEN &&
-                    switch_to(&doc, &canvas, viewport, made, &opt))
-                    te.node = CCR_NONE;
+            const bool panel_input = g_files_open && te.node == CCR_NONE && !modal && !pie.open && !opm.open;
+            const ccr_rect fa = files_area(w, h);
+            ccr_gui_rect_rounded((ccr_rect){ fa.x - 1.0f, fa.y, fa.w + 1.0f, fa.h }, 0.0f, ccr_th(CCR_C_PANEL_EDGE));
+            if (g_git.tab) {
+                git_panel(panel_body(fa), &doc, &opt, panel_input && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE));
             } else {
-                g_fpanel.naming = CCR_NAMING_NONE;
+                ccr_open_file of[MAX_OPEN + 1];
+                const int nof = open_files(&doc, of);
+                ccr_files_panel_draw(&g_fpanel, &g_files, panel_body(fa), of, nof);
+                if (panel_input) {
+                    char made[CCR_FILES_PATH];
+                    if (ccr_files_panel_tools(&g_fpanel, &g_files, panel_body(fa), button_style(false),
+                                              made, (int)sizeof made) == CCR_FILES_OPEN &&
+                        switch_to(&doc, &canvas, viewport, made, &opt))
+                        te.node = CCR_NONE;
+                } else {
+                    g_fpanel.naming = CCR_NAMING_NONE;
+                }
             }
+            panel_tabs(fa, &doc, panel_input);
         }
+        git_diff_frame(&doc, &canvas, viewport, &opt, w, h);
         splitters_draw(w, h);
         const int top = draw_topbar(w, &doc, &eula);
         if ((top & TOP_CMAKE) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
@@ -4560,6 +5479,8 @@ int ccr_run(int argc, char **argv)
             if (ccr_gdb_active(&g_gdb) || g_dbg.pending)
                 dbg_end();
         }
+        if (top & TOP_GIT)
+            git_toggle(&doc);
         if ((top & TOP_DEBUG) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             te.node = CCR_NONE;
             dbg_start(&doc, &opt);

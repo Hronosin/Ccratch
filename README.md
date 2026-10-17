@@ -400,6 +400,38 @@ to it in its machine interface (GDB/MI).
 
 ![stopped at a breakpoint the third time round the loop: the block outlined, i and total beside it, the variables, the call stack and the program's output in the panel](docs/debug.png)
 
+## Git
+
+**Git** in the top bar (Ctrl+G) turns the panel on the right to its Git
+tab, as VS Code's Source Control:
+
+- the branch, and **Pull**, **Push** (the number of commits each way on
+  them), **Fetch**; they run in the background, and git never sits asking
+  for a password nobody sees: it says no, and the panel says why. The
+  first push of a branch sets where it goes (`push -u origin`);
+- a click on the branch lists the others: a click switches, a name and
+  Enter makes a new one. Open files that git changed are read again (the
+  ones with unsaved work are left as they are, and it says so);
+- the message, and **Commit** (Enter). Nothing staged: everything goes
+  in. A tick puts it into the last commit instead (amend). Files with
+  changes are saved first: what is on screen is what is committed;
+- **Staged** and **Changes**: a file's letter (M, A, D, U), `+` stages,
+  `-` unstages, the arrow throws its changes away (a second click is
+  asked for: that cannot be undone); all of them at once from the
+  header. A click on a file shows its diff over the canvas, with line
+  numbers; **Open** opens it as blocks;
+- the **History**: the last commits, who and when.
+
+And on the canvas, as in an editor's gutter: a green bar beside a block
+that is new since the last commit, blue beside one that changed, a red
+wedge where blocks were taken out. They follow every save.
+
+Ccratch's own backups (`FILE~`) go into the repository's local exclude
+list, so they are never a change to commit. A project that is not a
+repository yet gets a button for `git init`.
+
+![the Git tab: master, staged and unstaged changes; bars beside the blocks that changed](docs/git.png)
+
 ## Expressions
 
 Like Scratch reporters: grab `count` out of `i < count` and it comes out
@@ -794,6 +826,7 @@ ccratch --list-blocks                    block packs found, and where
 - Click a goto arrow: travel to its other end
 - Click an operator: swap it for another
 - Ctrl+P: the files panel; Ctrl+Tab: the next open file
+- Ctrl+G: Git: changes, commit, branches, pull and push
 - Click an `#include "..."`: open that header
 - Double click an `if`, a loop, a function, a struct: fold or unfold it
 - Home: back to the start of the file at 100%

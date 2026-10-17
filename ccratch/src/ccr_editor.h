@@ -134,7 +134,26 @@ typedef struct ccr_editor {
     ccr_node_id   *dbg_breaks;
     uint32_t       dbg_break_count;
     char           dbg_values[600]; /* "i = 1\ntotal = 0": beside dbg_at */
+
+    /* what changed since the last commit: a bar at the left of each block */
+    struct ccr_editor_change *changes;
+    uint32_t       change_count;
 } ccr_editor;
+
+/* A block that differs from the last commit. */
+typedef enum ccr_change_kind {
+    CCR_CHANGE_ADDED,      /* new lines: green */
+    CCR_CHANGE_MODIFIED,   /* changed lines: blue */
+    CCR_CHANGE_DELETED     /* lines went away right after it: a red wedge */
+} ccr_change_kind;
+
+typedef struct ccr_editor_change {
+    ccr_node_id     node;
+    ccr_change_kind kind;
+} ccr_editor_change;
+
+/* Replaces the changed-since-commit bars (copied). */
+void ccr_editor_set_changes(ccr_editor *ed, const ccr_editor_change *ch, uint32_t count);
 
 /* Blocks from another tree (ccr_paste): a stack of `items` (or one
  * reporter) stuck to the mouse, dropped on the next click like Ctrl+D's

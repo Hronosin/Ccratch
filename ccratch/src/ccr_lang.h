@@ -163,6 +163,47 @@
     X(DBG_TIP,          "dbg.tip",               0, "Debug: build, run under gdb, stop at breakpoints (F8)") \
     X(DBG_KEYS,         "dbg.keys",              0, "F8 continue, F10 step, F11 into, Shift+F11 out, F9 breakpoint") \
     X(HELP_DEBUG,       "help.debug",            0, "debugger: start / continue, breakpoint on the block under the mouse, step, into, out") \
+    X(GIT_TITLE,        "git.title",             0, "Git")                               \
+    X(GIT_NO_GIT,       "git.no_git",            0, "git is not installed (sudo apt install git)") \
+    X(GIT_NO_REPO,      "git.no_repo",           0, "This project is not in a git repository") \
+    X(GIT_INIT,         "git.init",              0, "Make it one (git init)")            \
+    X(GIT_MESSAGE,      "git.message",           0, "What it does (Ctrl+Enter commits)") \
+    X(GIT_COMMIT,       "git.commit",            0, "Commit")                            \
+    X(GIT_AMEND,        "git.amend",             0, "into the last one")                 \
+    X(GIT_STAGED,       "git.staged",            0, "Staged")                            \
+    X(GIT_CHANGES,      "git.changes",           0, "Changes")                           \
+    X(GIT_CONFLICTS,    "git.conflicts",         0, "Conflicts")                         \
+    X(GIT_HISTORY,      "git.history",           0, "History")                           \
+    X(GIT_CLEAN,        "git.clean",             0, "Nothing changed since the last commit") \
+    X(GIT_COMMITTED,    "git.committed",         0, "Committed: %s")                     \
+    X(GIT_COMMITTED_ALL,"git.committed_all",     0, "Nothing was staged, so every change went in: %s") \
+    X(GIT_NOTHING,      "git.nothing",           0, "Nothing to commit")                 \
+    X(GIT_NEED_MESSAGE, "git.need_message",      0, "First write what the commit does")  \
+    X(GIT_PULL,         "git.pull",              0, "Pull")                              \
+    X(GIT_PUSH,         "git.push",              0, "Push")                              \
+    X(GIT_FETCH,        "git.fetch",             0, "Fetch")                             \
+    X(GIT_PULLED,       "git.pulled",            0, "Pulled")                            \
+    X(GIT_PUSHED,       "git.pushed",            0, "Pushed")                            \
+    X(GIT_FETCHED,      "git.fetched",           0, "Fetched")                           \
+    X(GIT_NET_FAILED,   "git.net_failed",        0, "Did not work: %s")                  \
+    X(GIT_NO_REMOTE,    "git.no_remote",         0, "Nowhere to push: no remote yet (git remote add origin URL)") \
+    X(GIT_NEW_BRANCH,   "git.new_branch",        0, "a new branch: its name, Enter")     \
+    X(GIT_SWITCHED,     "git.switched",          0, "On branch %s now")                  \
+    X(GIT_DISCARD_ASK,  "git.discard_ask",       0, "Throw away what changed in %s? Click again") \
+    X(GIT_DISCARDED,    "git.discarded",         0, "What changed in %s is thrown away") \
+    X(GIT_DIFF_STAGED,  "git.diff_staged",       0, "%s: staged")                        \
+    X(GIT_DIFF_WORK,    "git.diff_work",         0, "%s: not staged")                    \
+    X(GIT_DIFF_NEW,     "git.diff_new",          0, "%s: new file")                      \
+    X(GIT_OPEN,         "git.open",              0, "Open")                              \
+    X(GIT_RELOADED,     "git.reloaded",          0, "%s changed on disk: read again")    \
+    X(GIT_KEPT,         "git.kept",              0, "%s changed on disk, but has unsaved changes here: kept as it is") \
+    X(GIT_DETACHED,     "git.detached",          0, "(no branch)")                       \
+    X(GIT_WORKING,      "git.working",           0, "git is talking to the server...")   \
+    X(TIP_GIT,          "tip.git",               0, "Git: what changed, commit, branches, push and pull (Ctrl+G)") \
+    X(TIP_STAGE,        "tip.stage",             0, "Stage")                             \
+    X(TIP_UNSTAGE,      "tip.unstage",           0, "Unstage")                           \
+    X(TIP_DISCARD,      "tip.discard",           0, "Throw the changes away")            \
+    X(HELP_GIT,         "help.git",              0, "git: what changed (bars beside blocks), commit, branches, push, pull") \
     X(AUTOSAVE_ON,      "autosave.on",           0, "autosave: on")                      \
     X(AUTOSAVE_OFF,     "autosave.off",          0, "autosave: off")                     \
     X(TIP_AUTOSAVE,     "tip.autosave",          0, "Save by itself a moment after every change") \
