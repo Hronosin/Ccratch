@@ -290,6 +290,8 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_P:      return IsKeyPressed(KEY_P);
     case CCR_KEY_W:      return IsKeyPressed(KEY_W);
     case CCR_KEY_TAB:    return IsKeyPressed(KEY_TAB);
+    case CCR_KEY_B:      return IsKeyPressed(KEY_B);
+    case CCR_KEY_R:      return IsKeyPressed(KEY_R);
     }
     return false;
 }

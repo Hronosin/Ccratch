@@ -122,11 +122,30 @@ typedef struct ccr_editor {
     ccr_particle   particles[CCR_MAX_PARTICLES];
     uint32_t       particle_count;
     uint32_t       rng;
+
+    /* what the last build said about blocks of this file */
+    struct ccr_editor_mark *marks;
+    uint32_t       mark_count;
 } ccr_editor;
+
+/* An error or warning from a build, pinned to the block it is about. */
+typedef struct ccr_editor_mark {
+    ccr_node_id node;
+    bool        warning;      /* else an error */
+    char        text[300];
+} ccr_editor_mark;
 
 /* Takes ownership of `ast` (parsed, bodies wrapped). Needs an open window. */
 bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast);
 void ccr_editor_free(ccr_editor *ed);
+
+/* The build's errors and warnings on this file's blocks (copied; replaces
+ * what was there). Drawn as a red or orange outline with a badge. */
+void ccr_editor_set_marks(ccr_editor *ed, const ccr_editor_mark *marks, uint32_t count);
+/* The mark under a world point (its badge or its block), or -1. */
+int  ccr_editor_mark_at(const ccr_editor *ed, ccr_vec2 world);
+/* Where mark `i` is drawn (world): its block. */
+bool ccr_editor_mark_rect(const ccr_editor *ed, int i, ccr_rect *out);
 
 void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in);
 void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewport);

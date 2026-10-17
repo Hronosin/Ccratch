@@ -1388,6 +1388,33 @@ static void test_library_blocks(void)
         free(text);
     }
 
+    /* where each block went in the saved text: new, rebuilt, untouched */
+    {
+        ccr_out_range *map = calloc(ed.ast.node_count, sizeof *map);
+        char *out = NULL, err2[256];
+        size_t olen = 0;
+        CHECK(map && ccr_codegen_mapped(&ed.ast, &out, &olen, map, err2, sizeof err2), "mapped: %s", err2);
+        if (map && out) {
+            const ccr_out_range m = map[made];
+            CHECK(m.b != UINT32_MAX && strncmp(out + m.b, "draw_dot(1, n * 2);", m.e - m.b) == 0 &&
+                  m.e - m.b == strlen("draw_dot(1, n * 2);"), "a new block: [%.*s]",
+                  m.b == UINT32_MAX ? 0 : (int)(m.e - m.b), m.b == UINT32_MAX ? "" : out + m.b);
+            /* printf("hello\n") was never touched: found by its parent's text */
+            ccr_node_id hello = CCR_NONE;
+            for (uint32_t i = 0; i < ed.ast.node_count; ++i)
+                if (N(&ed, i)->kind == CCR_NODE_STRING_LIT &&
+                    strcmp(ccr_ast_str(&ed.ast, N(&ed, i)->name), "\"hello\\n\"") == 0)
+                    hello = i;
+            CHECK(hello != CCR_NONE && map[hello].b != UINT32_MAX &&
+                  strncmp(out + map[hello].b, "\"hello\\n\"", 9) == 0, "an untouched one");
+            const ccr_out_range f = map[N(&ed, N(&ed, made)->parent)->parent];   /* its function */
+            CHECK(f.b != UINT32_MAX && strncmp(out + f.b, "int work(int n)", 15) == 0, "its function: [%.20s]",
+                  f.b == UINT32_MAX ? "" : out + f.b);
+        }
+        free(out);
+        free(map);
+    }
+
     /* asked for: an include, where includes go; not twice */
     CHECK(ccr_editor_add_include(&ed, "<math.h>"), "add_include");
     CHECK(!ccr_editor_add_include(&ed, "<math.h>"), "add_include twice");

@@ -39,7 +39,9 @@ typedef enum ccr_key {
     CCR_KEY_SLASH,
     CCR_KEY_P,
     CCR_KEY_W,
-    CCR_KEY_TAB
+    CCR_KEY_TAB,
+    CCR_KEY_B,
+    CCR_KEY_R
 } ccr_key;
 
 /* Window and frame lifecycle */

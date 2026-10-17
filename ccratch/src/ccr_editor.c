@@ -292,7 +292,111 @@ void ccr_editor_free(ccr_editor *ed)
     free(ed->pending);
     ccr_layout_cache_free(&ed->cache);
     ccr_ast_free(&ed->ast);
+    free(ed->marks);
     memset(ed, 0, sizeof *ed);
+}
+
+/* ------------------------------------------------------ build marks */
+
+void ccr_editor_set_marks(ccr_editor *ed, const ccr_editor_mark *marks, uint32_t count)
+{
+    free(ed->marks);
+    ed->marks = NULL;
+    ed->mark_count = 0;
+    if (!count)
+        return;
+    ed->marks = malloc(count * sizeof *ed->marks);
+    if (!ed->marks)
+        return;
+    memcpy(ed->marks, marks, count * sizeof *ed->marks);
+    ed->mark_count = count;
+}
+
+/* The block a node is drawn in: its own, or (folded away, a word inside a
+ * line) the nearest one above it that is drawn. */
+bool ccr_editor_mark_rect(const ccr_editor *ed, int i, ccr_rect *out)
+{
+    if (i < 0 || (uint32_t)i >= ed->mark_count)
+        return false;
+    for (ccr_node_id n = ed->marks[i].node; n != CCR_NONE && n < ed->ast.node_count; n = N(ed, n)->parent)
+        if (ccr_editor_node_rect(ed, n, out))
+            return true;
+    return false;
+}
+
+/* Where a mark's badge sits: at the right of its block's first line. */
+static ccr_vec2 badge_at(ccr_rect r)
+{
+    const float line = r.h < 40.0f ? r.h : 40.0f;
+    return (ccr_vec2){ r.x + r.w + 12.0f, r.y + line * 0.5f };
+}
+
+#define BADGE_R 9.0f
+
+int ccr_editor_mark_at(const ccr_editor *ed, ccr_vec2 world)
+{
+    /* badges first: they stick out; then the smallest block */
+    int best = -1;
+    float best_area = 0.0f;
+    for (uint32_t i = 0; i < ed->mark_count; ++i) {
+        ccr_rect r;
+        if (!ccr_editor_mark_rect(ed, (int)i, &r))
+            continue;
+        const ccr_vec2 b = badge_at(r);
+        const float dx = world.x - b.x, dy = world.y - b.y;
+        if (dx * dx + dy * dy <= (BADGE_R + 3.0f) * (BADGE_R + 3.0f))
+            return (int)i;
+        const float line = r.h < 40.0f ? r.h : 40.0f;   /* a C-shaped one: its top bar */
+        if (world.x >= r.x && world.x < r.x + r.w && world.y >= r.y && world.y < r.y + line &&
+            (best < 0 || r.w * r.h < best_area)) {
+            best = (int)i;
+            best_area = r.w * r.h;
+        }
+    }
+    return best;
+}
+
+static void draw_marks(const ccr_editor *ed, const ccr_canvas *cv)
+{
+    const float z = cv->zoom;
+    for (uint32_t i = 0; i < ed->mark_count; ++i) {
+        ccr_rect r;
+        if (!ccr_editor_mark_rect(ed, (int)i, &r))
+            continue;
+        /* one outline per block: an error wins over a warning there */
+        bool first = true, warning = ed->marks[i].warning;
+        int count = 0;
+        for (uint32_t k = 0; k < ed->mark_count; ++k) {
+            ccr_rect q;
+            if (!ccr_editor_mark_rect(ed, (int)k, &q) || q.x != r.x || q.y != r.y)
+                continue;
+            if (k < i)
+                first = false;
+            warning = warning && ed->marks[k].warning;
+            ++count;
+        }
+        if (!first)
+            continue;
+        const ccr_color c = warning ? 0xE89B2EFFu : ccr_th(CCR_C_ERROR);
+        const float m = 3.0f, t = 2.5f * (z < 1.0f ? 1.0f : z);
+        const float line = r.h < 40.0f ? r.h : 40.0f;
+        const ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x - m, r.y - m });
+        const ccr_vec2 br = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x + r.w + m, r.y + line + m });
+        const ccr_vec2 pts[5] = { tl, { br.x, tl.y }, br, { tl.x, br.y }, tl };
+        for (int k = 0; k + 1 < 5; ++k)
+            ccr_gui_line(pts[k], pts[k + 1], t, c);
+        for (int k = 0; k < 4; ++k)
+            ccr_gui_circle(pts[k], t * 0.5f, c);
+        /* the badge: "!" or how many */
+        const ccr_vec2 b = ccr_canvas_to_screen(cv, badge_at(r));
+        const float br_ = BADGE_R * z;
+        ccr_gui_circle(b, br_ + 1.5f, 0xFFFFFFFFu);
+        ccr_gui_circle(b, br_, c);
+        char label[8];
+        snprintf(label, sizeof label, count > 1 ? "%d" : "!", count);
+        const float fs = 14.0f * z;
+        ccr_gui_text(label, b.x - ccr_gui_text_width(label, fs) * 0.5f, b.y - fs * 0.5f, fs, 0xFFFFFFFFu);
+    }
 }
 
 /* ---------------------------------------------------------- queries */
@@ -2015,6 +2119,7 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
         ccr_blocks_draw(&s->blocks, cv, viewport, s->pos, alpha);
     }
     draw_jumps(ed, cv);
+    draw_marks(ed, cv);
 
     /* an #include under the mouse: a click opens the file, underlined */
     ccr_rect inc;

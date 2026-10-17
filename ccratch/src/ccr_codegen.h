@@ -25,6 +25,18 @@
  */
 bool ccr_codegen(const ccr_ast *ast, char **out, size_t *out_len, char *err, size_t err_cap);
 
+/* Where a node is in the text saving writes: bytes [b, e), UINT32_MAX if
+ * it is not in it (loose blocks, or text it shares with others). */
+typedef struct ccr_out_range {
+    uint32_t b, e;
+    bool     clean;   /* copied as it was */
+} ccr_out_range;
+
+/* The same, and `map` (ast->node_count entries) gets every node's place:
+ * so a compiler's "file.c:12:5: error" finds its block again. */
+bool ccr_codegen_mapped(const ccr_ast *ast, char **out, size_t *out_len, ccr_out_range *map,
+                        char *err, size_t err_cap);
+
 /*
  * Can expression `id` be taken out of the slot it fills (and something
  * else put there) and the file still be saved safely? Its parent, and

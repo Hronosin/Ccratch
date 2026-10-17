@@ -10,6 +10,7 @@
 #include "ccr_lang.h"
 #include "ccr_parse.h"
 #include "ccr_files.h"
+#include "ccr_job.h"
 #include "ccr_lib.h"
 #include "ccr_palette.h"
 #include "ccr_pie.h"
@@ -84,6 +85,12 @@ typedef struct ccr_document {
     bool       backed_up;      /* the original was copied to FILE~ */
     char       status[512];
     bool       has_errors;
+    /* where every block is in the file as it was last written (or read):
+     * what a compiler's "file.c:12:5" points at */
+    ccr_out_range *place;
+    uint32_t       place_n;
+    uint32_t      *line_at;     /* byte offset of each line */
+    uint32_t       line_n;
 } ccr_document;
 
 /* Blocks glide, menus pop, deleted blocks go poof. Off with
@@ -357,10 +364,52 @@ static const char *base_name(const char *path)
     return slash ? slash + 1 : path;
 }
 
+static void forget_places(ccr_document *doc)
+{
+    free(doc->place);
+    free(doc->line_at);
+    doc->place = NULL;
+    doc->line_at = NULL;
+    doc->place_n = doc->line_n = 0;
+}
+
+/* Where the blocks are in the text saving writes now (the file, when it
+ * was just saved or read). */
+static void remember_places(ccr_document *doc)
+{
+    forget_places(doc);
+    if (!doc->loaded)
+        return;
+    const ccr_ast *a = &doc->ed.ast;
+    char *text = NULL, err[256];
+    size_t len = 0;
+    ccr_out_range *map = malloc((a->node_count ? a->node_count : 1) * sizeof *map);
+    if (!map || !ccr_codegen_mapped(a, &text, &len, map, err, sizeof err)) {
+        free(map);
+        return;
+    }
+    uint32_t lines = 1;
+    for (size_t i = 0; i < len; ++i)
+        lines += text[i] == '\n';
+    doc->line_at = malloc(lines * sizeof *doc->line_at);
+    if (doc->line_at) {
+        uint32_t k = 0;
+        doc->line_at[k++] = 0;
+        for (size_t i = 0; i < len; ++i)
+            if (text[i] == '\n' && k < lines)
+                doc->line_at[k++] = (uint32_t)(i + 1);
+        doc->line_n = k;
+    }
+    free(text);
+    doc->place = map;
+    doc->place_n = a->node_count;
+}
+
 static void document_close(ccr_document *doc)
 {
     if (doc->loaded)
         ccr_editor_free(&doc->ed);
+    forget_places(doc);
     doc->loaded = false;
 }
 
@@ -507,6 +556,7 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
 
     document_close(doc);
     *doc = next;
+    remember_places(doc);
     return true;
 }
 
@@ -759,10 +809,11 @@ static bool write_file(const char *path, const char *data, size_t len)
  * so a crash halfway never leaves half a file. The first save of a
  * session copies the file as it was loaded to FILE~.
  */
-static void document_save(ccr_document *doc, const ccr_options *opt)
+/* Writes the file; false (and why, in the status) if it could not. */
+static bool document_save(ccr_document *doc, const ccr_options *opt)
 {
     if (!doc->loaded)
-        return;
+        return false;
     ccr_editor_settle(&doc->ed);   /* a block still gliding in goes in first */
     const char *name = base_name(doc->path);
 
@@ -772,7 +823,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
         ccr_trf(doc->status, sizeof doc->status, CCR_T_NOT_SAVED, err);
         doc->has_errors = true;
         fprintf(stderr, "[ccratch] %s not saved: %s\n", doc->path, err);
-        return;
+        return false;
     }
 
     char tmp[PATH_MAX_LEN + 32], backup[PATH_MAX_LEN + 8];
@@ -784,7 +835,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
             ccr_trf(doc->status, sizeof doc->status, CCR_T_NO_BACKUP, name);
             doc->has_errors = true;
             free(text);
-            return;
+            return false;
         }
         doc->backed_up = true;
     }
@@ -793,10 +844,11 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
         ccr_trf(doc->status, sizeof doc->status, CCR_T_CANNOT_WRITE, name);
         doc->has_errors = true;
         free(text);
-        return;
+        return false;
     }
     free(text);
     ccr_editor_mark_saved(&doc->ed);
+    remember_places(doc);
 
     /* read it back: did the move make code clang no longer accepts? */
     uint32_t errors = 0;
@@ -825,6 +877,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
         doc->has_errors = false;
     }
     snprintf(doc->status, sizeof doc->status, "%s%s", said, extra);
+    return true;
 }
 
 /* -------------------------------------------------------- drawing */
@@ -1440,11 +1493,440 @@ static void libs_frame(int width, int height, ccr_document *doc, const ccr_optio
         g_libs.open = false;
 }
 
-/* The top bar; true if the CMake button was clicked (the caller has what
- * opening a file takes). */
-static bool draw_topbar(int width, ccr_document *doc, eula_view *ev)
+/* ---------------------------------------------------------- building */
+
+/* The Build button's work, in the background; its log in a panel that
+ * slides up from the bottom; its errors on the blocks they are about. */
+static ccr_job g_job;
+static struct {
+    bool     open;
+    float    t;            /* 0 hidden .. 1 up */
+    float    scroll;       /* first line shown */
+    bool     follow;       /* keep the last line in view */
+    int      hot;          /* log line under the mouse, or -1 */
+    ccr_job_result last;   /* to notice the end */
+} g_bp = { .follow = true, .hot = -1 };
+
+#define BUILD_H   236.0f
+#define LOG_ROW   19.0f
+#define LOG_FONT  14.0f
+
+static ccr_rect build_area(int w, int h)
 {
-    bool cmake = false;
+    const float k = g_bp.t;
+    const float e = 1.0f - (1.0f - k) * (1.0f - k) * (1.0f - k);
+    const float right = g_files_t > 0.0f ? files_area(w, h).x : (float)w;
+    return (ccr_rect){ PALETTE_W, (float)h - STATUSBAR_H - BUILD_H * e, right - PALETTE_W, BUILD_H };
+}
+
+/* Is a diagnostic's file this document's? Compilers give whole paths; the
+ * linker only the name of the file the code came from. */
+static bool diag_is_for(const ccr_build_diag *d, const ccr_document *doc)
+{
+    if (!d->file[0] || !doc->loaded)
+        return false;
+    if (d->file[0] == '/')
+        return ccr_files_same(d->file, doc->path);
+    const size_t n = strlen(d->file), pn = strlen(doc->path);
+    return pn >= n && strcmp(doc->path + pn - n, d->file) == 0 && (pn == n || doc->path[pn - n - 1] == '/');
+}
+
+static bool is_statement(const ccr_ast *a, ccr_node_id id)
+{
+    const ccr_node_id p = a->nodes[id].parent;
+    return p == CCR_NONE || a->nodes[p].kind == CCR_NODE_BLOCK ||
+           a->nodes[p].kind == CCR_NODE_TRANSLATION_UNIT;
+}
+
+/* The block at line:col of the file as written: the smallest thing there;
+ * with no column, the statement the line starts. */
+static ccr_node_id locate(const ccr_document *doc, uint32_t line, uint32_t col)
+{
+    if (!doc->place || line == 0 || line > doc->line_n)
+        return CCR_NONE;
+    const ccr_ast *a = &doc->ed.ast;
+    const uint32_t ls = doc->line_at[line - 1];
+    const uint32_t le = line < doc->line_n ? doc->line_at[line] : UINT32_MAX;
+    ccr_node_id best = CCR_NONE;
+    uint32_t best_size = UINT32_MAX, best_b = UINT32_MAX;
+    for (uint32_t i = 1; i < doc->place_n && i < a->node_count; ++i) {
+        const ccr_out_range r = doc->place[i];
+        const ccr_node_kind k = a->nodes[i].kind;
+        if (r.b == UINT32_MAX || r.e <= r.b || k == CCR_NODE_BLOCK || k == CCR_NODE_TRANSLATION_UNIT)
+            continue;
+        if (col) {
+            uint32_t off = ls + col - 1;
+            if (off >= le)
+                off = le - 1;
+            if (r.b <= off && off < r.e && r.e - r.b < best_size) {
+                best = i;
+                best_size = r.e - r.b;
+            }
+        } else if (r.b >= ls && r.b < le &&
+                   (r.b < best_b || (r.b == best_b && r.e - r.b > best_size))) {
+            best = i;   /* the first thing on the line; of those, the biggest */
+            best_b = r.b;
+            best_size = r.e - r.b;
+        }
+    }
+    if (best == CCR_NONE && !col)
+        return locate(doc, line, 1);   /* inside a statement that began above */
+    if (!col)
+        while (best != CCR_NONE && !is_statement(a, best))
+            best = a->nodes[best].parent;
+    return best;
+}
+
+/* The build's errors and warnings, onto this document's blocks. */
+static void apply_marks(ccr_document *doc)
+{
+    if (!doc->loaded)
+        return;
+    ccr_editor_mark *marks = malloc((size_t)(g_job.diag_count + 1) * 8 * sizeof *marks);
+    uint32_t n = 0;
+    for (int i = 0; i < g_job.diag_count && marks; ++i) {
+        const ccr_build_diag *d = &g_job.diags[i];
+        if (d->kind == CCR_BD_NOTE || !diag_is_for(d, doc))
+            continue;
+        const char *msg = d->message[0] ? d->message : "?";
+        if (d->line) {
+            const ccr_node_id at = locate(doc, d->line, d->col);
+            if (at != CCR_NONE) {
+                marks[n] = (ccr_editor_mark){ .node = at, .warning = d->kind == CCR_BD_WARNING };
+                snprintf(marks[n++].text, sizeof marks[0].text, "%.290s", msg);
+            }
+        } else if (d->symbol[0]) {   /* the linker: every call to it */
+            const ccr_ast *a = &doc->ed.ast;
+            int found = 0;
+            for (uint32_t k = 0; k < a->node_count && found < 8; ++k)
+                if (a->nodes[k].kind == CCR_NODE_CALL && !(a->nodes[k].flags & CCR_FLAG_DEAD) &&
+                    strcmp(ccr_ast_str(a, a->nodes[k].name), d->symbol) == 0) {
+                    marks[n] = (ccr_editor_mark){ .node = k };
+                    snprintf(marks[n++].text, sizeof marks[0].text, "%.290s", msg);
+                    ++found;
+                }
+        }
+    }
+    ccr_editor_set_marks(&doc->ed, marks, n);
+    free(marks);
+}
+
+static void marks_follow(ccr_document *doc)
+{
+    static uint32_t gen;
+    static char path[PATH_MAX_LEN];
+    static const void *ed_marks;
+    /* a new build said something, or another file is on screen, or it was
+     * opened again (its marks went with the old editor) */
+    const bool reopened = doc->loaded && doc->ed.marks == NULL && ed_marks != NULL;
+    if (gen == g_job.generation && strcmp(path, doc->loaded ? doc->path : "") == 0 && !reopened)
+        return;
+    const bool new_build = gen != g_job.generation;
+    gen = g_job.generation;
+    snprintf(path, sizeof path, "%s", doc->loaded ? doc->path : "");
+    apply_marks(doc);
+    if (new_build)
+        for (int i = 0; i < g_stash_n; ++i)
+            apply_marks(g_stash[i].doc);
+    ed_marks = doc->loaded ? (const void *)doc->ed.marks : NULL;
+}
+
+/* Saves what changed (every open file), makes a CMakeLists.txt if the
+ * project has none, and starts the build. */
+static void build_start(ccr_document *doc, bool run, const ccr_options *opt)
+{
+    if (ccr_job_busy(&g_job)) {
+        ccr_job_stop(&g_job);   /* a second press: stop; the next one builds */
+        return;
+    }
+    g_bp.open = true;
+    g_bp.follow = true;
+    char project[CCR_FILES_PATH];
+    if (doc->loaded)
+        ccr_files_project_of(doc->path, project, (int)sizeof project);
+    else if (g_files.root[0])
+        snprintf(project, sizeof project, "%s", g_files.root);
+    else {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_CMAKE_NO_PROJECT);
+        doc->has_errors = true;
+        return;
+    }
+    /* what is on screen is what gets built */
+    ccr_document *all[MAX_OPEN + 1];
+    int n = 0;
+    if (doc->loaded)
+        all[n++] = doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        all[n++] = g_stash[i].doc;
+    for (int i = 0; i < n; ++i) {
+        if (!ccr_editor_modified(&all[i]->ed))
+            continue;
+        if (!document_save(all[i], opt)) {
+            char why[sizeof doc->status];
+            ccr_trf(why, sizeof why, CCR_T_BUILD_NOT_SAVED, base_name(all[i]->path));
+            snprintf(doc->status, sizeof doc->status, "%s", why);
+            doc->has_errors = true;
+            return;
+        }
+    }
+    char cm[CCR_FILES_PATH + 32];
+    int files = 0;
+    const ccr_cmake_made made = ccr_build_make_cmake(project, doc->loaded ? doc->path : NULL, cm,
+                                                     (int)sizeof cm, &files);
+    if (made == CCR_CMAKE_NO_SOURCES || made == CCR_CMAKE_CANNOT) {
+        ccr_trf(doc->status, sizeof doc->status,
+                made == CCR_CMAKE_NO_SOURCES ? CCR_T_CMAKE_NO_SOURCES : CCR_T_CANNOT_WRITE, "CMakeLists.txt");
+        doc->has_errors = true;
+        return;
+    }
+    if (made == CCR_CMAKE_MADE)
+        ccr_files_scan(&g_files, project, cm);
+    for (int i = 0; i < n; ++i)
+        remember_places(all[i]);   /* the files as the compiler will see them */
+    ccr_job_build(&g_job, project, run);
+    g_bp.last = CCR_JOB_RUNNING;
+}
+
+/* "3 errors, 1 warning" */
+static void counts_text(char *out, size_t cap)
+{
+    char e[64] = "", w[64] = "";
+    if (g_job.errors)
+        ccr_trnf(e, sizeof e, CCR_T_BUILD_ERRORS, (unsigned long)g_job.errors, (unsigned)g_job.errors);
+    if (g_job.warnings)
+        ccr_trnf(w, sizeof w, CCR_T_BUILD_WARNINGS, (unsigned long)g_job.warnings, (unsigned)g_job.warnings);
+    snprintf(out, cap, "%s%s%s", e, e[0] && w[0] ? ", " : "", w);
+}
+
+/* What the panel's header says, and its colour. */
+static void build_headline(char *out, size_t cap, ccr_color *c)
+{
+    *c = COL_BAR_TEXT;
+    switch (g_job.step) {
+    case CCR_JOB_CONFIGURE: ccr_trf(out, cap, CCR_T_BUILD_CONFIGURING); return;
+    case CCR_JOB_BUILD:     ccr_trf(out, cap, CCR_T_BUILD_BUILDING); return;
+    case CCR_JOB_RUN:       ccr_trf(out, cap, CCR_T_BUILD_RUNNING, base_name(g_job.exe)); return;
+    case CCR_JOB_IDLE:      break;
+    }
+    char counts[160], secs[32];
+    counts_text(counts, sizeof counts);
+    switch (g_job.result) {
+    case CCR_JOB_RUNNING:
+        ccr_trf(out, cap, CCR_T_BUILD_IDLE);
+        return;
+    case CCR_JOB_BUILT:
+        *c = ccr_th(CCR_C_OK);
+        if (g_job.ran) {
+            ccr_trf(out, cap, CCR_T_BUILD_FINISHED, g_job.run_exit);
+            if (g_job.run_exit)
+                *c = ccr_th(CCR_C_ERROR);
+        } else {
+            snprintf(secs, sizeof secs, "%.1f", g_job.ended - g_job.started);
+            ccr_trf(out, cap, CCR_T_BUILD_BUILT, secs);
+        }
+        if (counts[0]) {
+            const size_t l = strlen(out);
+            snprintf(out + l, cap - l, " (%s)", counts);
+        }
+        return;
+    case CCR_JOB_FAILED:
+        *c = ccr_th(CCR_C_ERROR);
+        ccr_trf(out, cap, CCR_T_BUILD_FAILED, counts[0] ? counts : "...");
+        return;
+    case CCR_JOB_STOPPED:
+        ccr_trf(out, cap, CCR_T_BUILD_STOPPED);
+        return;
+    case CCR_JOB_NO_CMAKE:
+        *c = ccr_th(CCR_C_ERROR);
+        ccr_trf(out, cap, CCR_T_BUILD_NO_CMAKE);
+        return;
+    }
+}
+
+/* Off to the block a diagnostic is about: its file opened if need be. */
+static void go_to_diag(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_build_diag *d,
+                       const ccr_options *opt)
+{
+    char path[PATH_MAX_LEN] = "";
+    if (d->file[0] == '/') {
+        snprintf(path, sizeof path, "%s", d->file);
+    } else if (d->file[0]) {   /* the linker's "main.c": an open file, or one of the project */
+        if (doc->loaded && diag_is_for(d, doc))
+            snprintf(path, sizeof path, "%s", doc->path);
+        for (int i = 0; i < g_stash_n && !path[0]; ++i)
+            if (diag_is_for(d, g_stash[i].doc))
+                snprintf(path, sizeof path, "%s", g_stash[i].doc->path);
+        if (!path[0] && doc->loaded)
+            ccr_files_find_include(&g_files, doc->path, d->file, path, (int)sizeof path);
+    }
+    FILE *f = path[0] ? fopen(path, "rb") : NULL;
+    if (!f)
+        return;
+    fclose(f);
+    if (!switch_to(doc, cv, viewport, path, opt))
+        return;
+    marks_follow(doc);
+    ccr_node_id at = CCR_NONE;
+    if (d->line)
+        at = locate(doc, d->line, d->col);
+    for (uint32_t i = 0; at == CCR_NONE && i < doc->ed.mark_count; ++i)
+        at = doc->ed.marks[i].node;   /* the linker's: the first call */
+    if (at != CCR_NONE)
+        glide_to_node(cv, doc, viewport, at);
+}
+
+static ccr_color log_color(ccr_log_kind k)
+{
+    switch (k) {
+    case CCR_LOG_COMMAND: return ccr_th(CCR_C_ACCENT);
+    case CCR_LOG_ERROR:   return ccr_th(CCR_C_ERROR);
+    case CCR_LOG_WARNING: return 0xD98A1CFFu;
+    case CCR_LOG_NOTE:    return ccr_th(CCR_C_PANEL_HINT);
+    case CCR_LOG_QUIET:   return ccr_th(CCR_C_PANEL_HINT);
+    case CCR_LOG_GOOD:    return ccr_th(CCR_C_OK);
+    case CCR_LOG_BAD:     return ccr_th(CCR_C_ERROR);
+    case CCR_LOG_TEXT:    break;
+    }
+    return ccr_th(CCR_C_PANEL_TEXT);
+}
+
+/* The panel: input and drawing in one go (after the canvas is drawn).
+ * `input`: nothing else has the mouse (no menu, no dialog). */
+static void build_panel(int w, int h, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
+                        const ccr_options *opt, bool input)
+{
+    if (g_bp.t <= 0.0f)
+        return;
+    const ccr_rect r = build_area(w, h);
+    const ccr_vec2 m = ccr_gui_mouse();
+    const bool over = input && point_in(m, r);
+    ccr_gui_rect((ccr_rect){ r.x, r.y - 1.0f, r.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect(r, ccr_th(CCR_C_PANEL) | 0xFFu);
+
+    /* the header: what is going on, and the buttons */
+    const float hh = 38.0f;
+    char head[400];
+    ccr_color hc;
+    build_headline(head, sizeof head, &hc);
+    float x = r.x + 14.0f;
+    if (ccr_job_busy(&g_job)) {   /* a little spinner */
+        const float a = (float)ccr_gui_time() * 6.0f;
+        for (int k = 0; k < 3; ++k) {
+            const float ang = a + (float)k * 2.0944f;
+            ccr_gui_circle((ccr_vec2){ x + 7.0f + cosf(ang) * 5.0f, r.y + hh * 0.5f + sinf(ang) * 5.0f },
+                           2.2f, ccr_th(CCR_C_ACCENT));
+        }
+        x += 22.0f;
+    } else {
+        ccr_gui_circle((ccr_vec2){ x + 6.0f, r.y + hh * 0.5f }, 5.0f, hc == COL_BAR_TEXT ? ccr_th(CCR_C_PANEL_HINT) : hc);
+        x += 18.0f;
+    }
+    ccr_gui_text(ccr_tr(CCR_T_BUILD_PANEL), x, r.y + 9.0f, 17.0f, ccr_th(CCR_C_PANEL_TEXT));
+    x += ccr_gui_text_width(ccr_tr(CCR_T_BUILD_PANEL), 17.0f) + 14.0f;
+    ccr_gui_text(head, x, r.y + 11.0f, 15.0f, hc == COL_BAR_TEXT ? ccr_th(CCR_C_PANEL_HINT) : hc);
+    if (g_job.errors && !ccr_job_busy(&g_job)) {
+        const float hx = x + ccr_gui_text_width(head, 15.0f) + 12.0f;
+        ccr_gui_text(ccr_tr(CCR_T_BUILD_CLICK), hx, r.y + 12.0f, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+    }
+
+    float bx = r.x + r.w - 10.0f;
+    const ccr_button_style plain = *button_style(false);
+    if (ccr_gui_button((ccr_rect){ bx - 28.0f, r.y + 7.0f, 28.0f, 24.0f }, "x", &plain) && input)
+        g_bp.open = false;
+    bx -= 36.0f;
+    const bool busy = ccr_job_busy(&g_job);
+    const char *bl = ccr_tr(busy ? CCR_T_BUILD_STOP : CCR_T_BUILD_RUN);
+    const float bw = ccr_gui_text_width(bl, 15.0f) + 26.0f;
+    if (ccr_gui_button((ccr_rect){ bx - bw, r.y + 7.0f, bw, 24.0f }, bl, busy ? &plain : button_style(true)) &&
+        input) {
+        if (busy)
+            ccr_job_stop(&g_job);
+        else
+            build_start(doc, true, opt);
+    }
+
+    /* the log */
+    const ccr_rect body = { r.x + 8.0f, r.y + hh, r.w - 16.0f, r.h - hh - 6.0f };
+    const int rows = (int)(body.h / LOG_ROW);
+    const float max_scroll = (float)(g_job.line_count > rows ? g_job.line_count - rows : 0);
+    if (over && point_in(m, body)) {
+        const float wheel = ccr_gui_wheel();
+        if (wheel != 0.0f) {
+            g_bp.scroll -= wheel * 3.0f;
+            g_bp.follow = g_bp.scroll >= max_scroll;
+        }
+    }
+    if (g_bp.follow)
+        g_bp.scroll = max_scroll;
+    if (g_bp.scroll > max_scroll) g_bp.scroll = max_scroll;
+    if (g_bp.scroll < 0.0f) g_bp.scroll = 0.0f;
+
+    g_bp.hot = -1;
+    ccr_gui_clip_begin(body);
+    const int first = (int)g_bp.scroll;
+    for (int i = first; i < g_job.line_count && i < first + rows + 1; ++i) {
+        const ccr_log_line *L = &g_job.lines[i];
+        const float y = body.y + (float)(i - first) * LOG_ROW;
+        const ccr_rect row = { body.x, y, body.w, LOG_ROW };
+        const bool can_go = L->diag >= 0 && (g_job.diags[L->diag].file[0]);
+        if (can_go && over && point_in(m, row)) {
+            g_bp.hot = i;
+            ccr_gui_rect_rounded(row, 0.3f, (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0x90u);
+        }
+        ccr_gui_text(L->text, body.x + 6.0f, y + 2.0f, LOG_FONT, log_color(L->kind));
+    }
+    if (g_job.line_count == 0)
+        ccr_gui_text(ccr_tr(CCR_T_BUILD_IDLE), body.x + 6.0f, body.y + 4.0f, LOG_FONT, ccr_th(CCR_C_PANEL_HINT));
+    ccr_gui_clip_end();
+    if (max_scroll > 0.0f) {   /* a thin scroll bar */
+        const float bh = body.h * (float)rows / (float)g_job.line_count;
+        const float by = body.y + (body.h - bh) * (g_bp.scroll / max_scroll);
+        ccr_gui_rect_rounded((ccr_rect){ body.x + body.w - 4.0f, by, 4.0f, bh }, 1.0f, ccr_th(CCR_C_PANEL_EDGE));
+    }
+
+    if (g_bp.hot >= 0 && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && (!doc->loaded || doc->ed.drag == CCR_DRAG_IDLE)) {
+        const ccr_build_diag d = g_job.diags[g_job.lines[g_bp.hot].diag];   /* a copy: switching files */
+        ccr_rect seen = viewport;   /* the part of the canvas the panel leaves */
+        seen.h = r.y - viewport.y;
+        go_to_diag(doc, cv, seen, &d, opt);
+    }
+}
+
+/* A mark under the mouse: what the compiler said, next to it. */
+static void mark_tooltip(const ccr_document *doc, const ccr_canvas *cv, ccr_rect viewport)
+{
+    if (!doc->loaded || doc->ed.mark_count == 0 || doc->ed.drag != CCR_DRAG_IDLE)
+        return;
+    const ccr_vec2 m = ccr_gui_mouse();
+    if (!point_in(m, viewport) || (g_bp.t > 0.0f && point_in(m, build_area(ccr_gui_width(), ccr_gui_height()))))
+        return;
+    const int i = ccr_editor_mark_at(&doc->ed, ccr_canvas_to_world(cv, m));
+    if (i < 0)
+        return;
+    const ccr_editor_mark *mk = &doc->ed.marks[i];
+    const float fs = 15.0f, pad = 10.0f;
+    float tw = ccr_gui_text_width(mk->text, fs);
+    const float maxw = 520.0f;
+    const float wrap_w = tw > maxw ? maxw : tw;
+    const float th = wrap_text(mk->text, 0, 0, wrap_w, fs, 0, false);
+    ccr_rect box = { m.x + 16.0f, m.y + 18.0f, wrap_w + pad * 2.0f, th + pad * 2.0f - 4.0f };
+    if (box.x + box.w > viewport.x + viewport.w)
+        box.x = viewport.x + viewport.w - box.w - 4.0f;
+    if (box.y + box.h > viewport.y + viewport.h)
+        box.y = m.y - box.h - 10.0f;
+    const ccr_color edge = mk->warning ? 0xD98A1CFFu : ccr_th(CCR_C_ERROR);
+    ccr_gui_rect_rounded((ccr_rect){ box.x - 2, box.y - 2, box.w + 4, box.h + 4 }, 0.2f, edge);
+    ccr_gui_rect_rounded(box, 0.2f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    wrap_text(mk->text, box.x + pad, box.y + pad - 2.0f, wrap_w, fs, ccr_th(CCR_C_PANEL_TEXT), true);
+}
+
+/* What was clicked in the top bar that the caller does (it has what
+ * opening a file and building take). */
+enum { TOP_CMAKE = 1, TOP_BUILD = 2 };
+
+static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
+{
+    int clicked = 0;
     const bool modal = ev->open;
     ccr_gui_rect((ccr_rect){ 0, 0, (float)width, TOPBAR_H }, COL_BAR);
     ccr_gui_circle((ccr_vec2){ 22.0f, TOPBAR_H * 0.5f }, 8.0f, COL_ACCENT);
@@ -1483,7 +1965,7 @@ static bool draw_topbar(int width, ccr_document *doc, eula_view *ev)
     const bool on_cmake = doc->loaded && doc->ed.ast.lang == CCR_LANG_CMAKE;
     if (ccr_gui_button((ccr_rect){ (float)width - 238.0f - tw - fw - lw - cw, 7.0f, cw, 26.0f },
                        "CMake", on_cmake ? button_style(true) : bs) && !modal && !g_libs.open)
-        cmake = true;
+        clicked |= TOP_CMAKE;
     if (ccr_gui_button((ccr_rect){ (float)width - 214.0f - tw, 7.0f, 32.0f, 26.0f }, "?", bs) &&
         !modal) {
         ev->open = true;   /* the agreement again, to read it at leisure */
@@ -1491,10 +1973,12 @@ static bool draw_topbar(int width, ccr_document *doc, eula_view *ev)
     }
 
     float x = (float)width - 110.0f;
-    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(CCR_T_BUILD), button_style(true)) &&
-        !modal)
-        printf("[ccratch] build: nothing to build yet. Go do some shrine work.\n");
-    return cmake;
+    const bool busy = ccr_job_busy(&g_job);
+    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(busy ? CCR_T_BUILD_STOP : CCR_T_BUILD),
+                       busy ? bs : button_style(true)) &&
+        !modal && !g_libs.open)
+        clicked |= TOP_BUILD;
+    return clicked;
 }
 
 static void draw_statusbar(int width, int height, const ccr_canvas *cv, const ccr_document *doc)
@@ -1817,9 +2301,30 @@ int ccr_run(int argc, char **argv)
             te.node = CCR_NONE;
         }
 
+        /* the build: its output read, its errors onto the blocks */
+        ccr_job_poll(&g_job);
+        marks_follow(&doc);
+        if (g_bp.last == CCR_JOB_RUNNING && g_job.result != CCR_JOB_RUNNING && !ccr_job_busy(&g_job)) {
+            ccr_color unused;
+            build_headline(doc.status, sizeof doc.status, &unused);
+            doc.has_errors = g_job.result != CCR_JOB_BUILT || (g_job.ran && g_job.run_exit != 0);
+            g_bp.last = g_job.result;
+        } else if (ccr_job_busy(&g_job)) {
+            g_bp.last = CCR_JOB_RUNNING;
+        }
+        {
+            const float target = g_bp.open ? 1.0f : 0.0f;
+            const float step = g_animate ? dt / 0.18f : 1.0f;
+            g_bp.t += g_bp.t < target ? step : -step;
+            if ((g_bp.t > target) == (target > 0.5f) || !g_animate)
+                g_bp.t = target;
+            if (g_bp.t < 0.0f) g_bp.t = 0.0f;
+        }
+
         const ccr_vec2 m = ccr_gui_mouse();
         const ccr_vec2 world = ccr_canvas_to_world(&canvas, m);
-        const bool inside = point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h)));
+        const bool inside = point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h))) &&
+                            !(g_bp.t > 0.0f && point_in(m, build_area(w, h)));
         const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
         palette_follow(&doc);
         const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
@@ -1898,6 +2403,8 @@ int ccr_run(int argc, char **argv)
         if (can_act && !pie.open && !was_open && ccr_gui_ctrl_down()) {
             if (ccr_gui_key_pressed(CCR_KEY_S))
                 document_save(&doc, &opt);
+            if (ccr_gui_key_pressed(CCR_KEY_B) || ccr_gui_key_pressed(CCR_KEY_R))
+                build_start(&doc, ccr_gui_key_pressed(CCR_KEY_R), &opt);
             /* Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo */
             if (ccr_gui_key_pressed(CCR_KEY_Z)) {
                 if (ccr_gui_shift_down())
@@ -2003,6 +2510,9 @@ int ccr_run(int argc, char **argv)
                 }
             }
         }
+        mark_tooltip(&doc, &canvas, viewport);
+        build_panel(w, h, &doc, &canvas, viewport, &opt,
+                    !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         if (g_files_t > 0.0f) {
             ccr_open_file of[MAX_OPEN + 1];
             const int nof = open_files(&doc, of);
@@ -2017,9 +2527,14 @@ int ccr_run(int argc, char **argv)
                 g_fpanel.naming = CCR_NAMING_NONE;
             }
         }
-        if (draw_topbar(w, &doc, &eula) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
+        const int top = draw_topbar(w, &doc, &eula);
+        if ((top & TOP_CMAKE) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             cmake_open(&doc, &canvas, viewport, &opt);
             te.node = CCR_NONE;
+        }
+        if ((top & TOP_BUILD) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
+            te.node = CCR_NONE;
+            build_start(&doc, false, &opt);
         }
         draw_statusbar(w, h, &canvas, &doc);
         ccr_pie_draw(&pie);
@@ -2039,6 +2554,7 @@ int ccr_run(int argc, char **argv)
             break;
     }
 
+    ccr_job_free(&g_job);   /* a program still running goes too */
     document_close(&doc);
     for (int i = 0; i < g_stash_n; ++i) {
         document_close(g_stash[i].doc);

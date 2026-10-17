@@ -14,6 +14,7 @@ typedef struct gen {
     char    *err;
     size_t   err_cap;
     uint8_t *dirty;     /* per node: 0 unknown, 1 clean, 2 something below changed */
+    ccr_out_range *map; /* per node: where it went in the output (may be NULL) */
 } gen;
 
 static const ccr_node *N(const gen *g, ccr_node_id id) { return &g->ast->nodes[id]; }
@@ -622,7 +623,27 @@ static void print_new_cmake(gen *g, ccr_node_id id, unsigned depth)
     }
 }
 
+static void print_new_inner(gen *g, ccr_node_id id, unsigned depth);
+
+/* Where node `id` went: [b, e) of the output; `clean` when its own text was
+ * copied as it was, so its children's places follow from their source. */
+static void mark_out(gen *g, ccr_node_id id, size_t b, bool clean)
+{
+    if (!g->map || !g->ok)
+        return;
+    g->map[id].b = (uint32_t)b;
+    g->map[id].e = (uint32_t)g->len;
+    g->map[id].clean = clean;
+}
+
 static void print_new(gen *g, ccr_node_id id, unsigned depth)
+{
+    const size_t b = g->len;
+    print_new_inner(g, id, depth);
+    mark_out(g, id, b, false);
+}
+
+static void print_new_inner(gen *g, ccr_node_id id, unsigned depth)
 {
     const ccr_node *n = N(g, id);
     if (g->ast->lang == CCR_LANG_CMAKE) {
@@ -955,16 +976,26 @@ static ccr_node_id *sorted_children(gen *g, ccr_node_id id, uint32_t *count)
     return v;
 }
 
+static void emit_inner(gen *g, ccr_node_id id, unsigned depth);
+
 static void emit(gen *g, ccr_node_id id, unsigned depth)
 {
     if (!g->ok)
         return;
-    const ccr_node *n = N(g, id);
-
+    const size_t b = g->len;
     if (!has_dirty(g, id, 0)) {
-        put_src(g, n->src_b, n->src_e);
+        put_src(g, N(g, id)->src_b, N(g, id)->src_e);
+        mark_out(g, id, b, true);
         return;
     }
+    emit_inner(g, id, depth);
+    if (g->map && g->map[id].b == UINT32_MAX)   /* print_new marked it already otherwise */
+        mark_out(g, id, b, false);
+}
+
+static void emit_inner(gen *g, ccr_node_id id, unsigned depth)
+{
+    const ccr_node *n = N(g, id);
     if (depth > 4000) {
         fail(g, "code nested too deeply");
         return;
@@ -1147,7 +1178,31 @@ static bool chain_ok(const ccr_ast *ast, ccr_node_id first)
     return true;
 }
 
+/* Nodes copied with their parent's text: where they are follows from it. */
+static void derive_map(const ccr_ast *ast, ccr_out_range *map, ccr_node_id id, unsigned depth)
+{
+    if (depth > 4000)
+        return;
+    const ccr_node *n = &ast->nodes[id];
+    for (ccr_node_id c = n->first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling) {
+        const ccr_node *k = &ast->nodes[c];
+        if (map[c].b == UINT32_MAX && map[id].clean && map[id].b != UINT32_MAX &&
+            k->src_b >= n->src_b && k->src_e <= n->src_e && k->src_e >= k->src_b) {
+            map[c].b = map[id].b + (k->src_b - n->src_b);
+            map[c].e = map[id].b + (k->src_e - n->src_b);
+            map[c].clean = true;
+        }
+        derive_map(ast, map, c, depth + 1);
+    }
+}
+
 bool ccr_codegen(const ccr_ast *ast, char **out, size_t *out_len, char *err, size_t err_cap)
+{
+    return ccr_codegen_mapped(ast, out, out_len, NULL, err, err_cap);
+}
+
+bool ccr_codegen_mapped(const ccr_ast *ast, char **out, size_t *out_len, ccr_out_range *map,
+                        char *err, size_t err_cap)
 {
     *out = NULL;
     *out_len = 0;
@@ -1158,7 +1213,9 @@ bool ccr_codegen(const ccr_ast *ast, char **out, size_t *out_len, char *err, siz
         return false;
     }
 
-    gen g = { .ast = ast, .ok = true, .err = err, .err_cap = err_cap };
+    gen g = { .ast = ast, .ok = true, .err = err, .err_cap = err_cap, .map = map };
+    for (uint32_t i = 0; map && i < ast->node_count; ++i)
+        map[i] = (ccr_out_range){ UINT32_MAX, UINT32_MAX, false };
     g.dirty = calloc(ast->node_count, 1);
     if (!g.dirty) {
         snprintf(err, err_cap, "out of memory");
@@ -1167,6 +1224,8 @@ bool ccr_codegen(const ccr_ast *ast, char **out, size_t *out_len, char *err, siz
 
     emit(&g, 0, 0);   /* node 0 is the translation unit: the whole file */
     free(g.dirty);
+    if (g.ok && map)
+        derive_map(ast, map, 0, 0);
     if (!g.ok) {
         free(g.buf);
         return false;

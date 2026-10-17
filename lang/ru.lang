@@ -130,3 +130,21 @@ libs.not_found = %s нет ни рядом с файлом, ни в проект
 libs.failed = Блоки для %s: %s
 libs.made = %s: %u блок, в %s|%s: %u блока, в %s|%s: %u блоков, в %s
 libs.included = #include %s добавлен
+
+# сборка
+build.panel = Сборка
+build.run = Запустить
+build.stop = Стоп
+build.idle = Ctrl+B — собрать, Ctrl+R — собрать и запустить
+build.configuring = CMake готовит сборку...
+build.building = Собираю...
+build.running = Работает %s
+build.built = Собрано за %s с
+build.failed = Не собралось: %s
+build.errors = %u ошибка|%u ошибки|%u ошибок
+build.warnings = %u предупреждение|%u предупреждения|%u предупреждений
+build.stopped = Остановлено
+build.no_cmake = CMake не установлен: dnf install cmake (или apt install cmake)
+build.not_saved = Не собрано: %s не удалось сохранить
+build.finished = Программа завершилась (код %d)
+build.click = щёлкни по ошибке — покажу её блок

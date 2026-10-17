@@ -27,6 +27,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 16: folding, and libraries as blocks from YAML packs (raylib to start with).
 - Step 17: any library made into blocks from inside Ccratch: its headers read for the API, its .so/.a for the ABI.
 - Step 18: CMake as blocks: CMakeLists.txt opened, edited and saved like C, or made for a project that has none.
+- Step 19: the Build button: CMake builds in the background, the program runs, errors land on their blocks.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -261,6 +262,34 @@ If there is none, it makes one first, from what is there:
 
 It is plain CMake: `ccratch --make-cmake DIR` prints the same for a
 look first, and `cmake -S . -B build && cmake --build build` builds it.
+
+## Building
+
+**Build** (Ctrl+B) builds the project; **Run** in the panel (Ctrl+R)
+builds it and starts the program. Before anything, every open file with
+changes is saved, and a project with no `CMakeLists.txt` gets one (above).
+Then CMake does the work in the background, while the window stays live:
+
+- configure, the first time (`.ccratch/build` in the project: Debug, Ninja
+  when it is installed, `compile_commands.json` for other tools), then
+  `cmake --build`; later builds only build, and CMake configures again
+  by itself when `CMakeLists.txt` changed;
+- the log slides up from the bottom, paths short, errors red, warnings
+  orange; a second press of Build, or Stop, stops it (and everything it
+  started);
+- every error and warning that names a place lands on its block: a red or
+  orange outline and a badge, the compiler's words under the mouse. GCC
+  and Clang (`main.c:12:5: error`), CMake (`CMake Error at
+  CMakeLists.txt:8`), and the linker: `undefined reference to 'draw_sky'`
+  marks every call to `draw_sky`. A click on the line in the log opens
+  the file and glides to the block.
+
+Saving remembers where every block went in the text it wrote, so a line
+number from the compiler finds its block even after blocks were moved,
+until the next build. Code clang itself could not read stays text, not
+blocks, so its error lands on the block around it.
+
+![a build that failed: the log at the bottom, an unused variable outlined in orange, the if with the misspelled name in red, the compiler's message under the mouse](docs/build.png)
 
 ## Expressions
 
@@ -535,6 +564,8 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_api     a library's public functions: headers (API) and .so/.a (ELF ABI)
   ccr_cmake   CMake files into the same syntax tree, as blocks
   ccr_build   the project as something to build: a first CMakeLists.txt
+  ccr_job     the Build button: configure, build, run; output read for errors
+  ccr_proc    a program in the background, its output read line by line
   ccr_yaml    the bit of YAML block packs are written in
   ccr_pie     the pie menu: picks an action by direction, knows no editor
   ccr_lang    every text the window shows, and the language packs
@@ -637,6 +668,7 @@ ccratch --list-blocks                    block packs found, and where
 - Right click: the pie menu (above)
 - Del, Ctrl+D, Ctrl+/: delete, duplicate, comment out the block under the mouse
 - Ctrl+S: save (Esc no longer quits, so it cannot eat unsaved work)
+- Ctrl+B: build; Ctrl+R: build and run; again while it builds: stop
 - Ctrl+Z: undo one drag; Ctrl+Y or Ctrl+Shift+Z: redo. Undoing back to
   the saved state clears the `*`, and an undone change is gone from the
   file too: undo everything and the file saves byte for byte as it was

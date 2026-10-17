@@ -73,6 +73,22 @@
       "|CMakeLists.txt made: %u .c files, the libraries they include linked")           \
     X(CMAKE_NO_SOURCES, "cmake.no_sources",      0, "No .c files in this project: nothing for CMake to build yet") \
     X(CMAKE_NO_PROJECT, "cmake.no_project",      0, "Open a .c file first: its project gets the CMakeLists.txt") \
+    X(BUILD_PANEL,      "build.panel",           0, "Build")                             \
+    X(BUILD_RUN,        "build.run",             0, "Run")                               \
+    X(BUILD_STOP,       "build.stop",            0, "Stop")                              \
+    X(BUILD_IDLE,       "build.idle",            0, "Ctrl+B builds, Ctrl+R builds and runs") \
+    X(BUILD_CONFIGURING, "build.configuring",    0, "CMake is setting up the build...")  \
+    X(BUILD_BUILDING,   "build.building",        0, "Building...")                       \
+    X(BUILD_RUNNING,    "build.running",         0, "Running %s")                        \
+    X(BUILD_BUILT,      "build.built",           0, "Built in %s s")                     \
+    X(BUILD_FAILED,     "build.failed",          0, "Did not build: %s")                 \
+    X(BUILD_ERRORS,     "build.errors",          1, "%u error|%u errors")                \
+    X(BUILD_WARNINGS,   "build.warnings",        1, "%u warning|%u warnings")            \
+    X(BUILD_STOPPED,    "build.stopped",         0, "Stopped")                           \
+    X(BUILD_NO_CMAKE,   "build.no_cmake",        0, "CMake is not installed: dnf install cmake (or apt install cmake)") \
+    X(BUILD_NOT_SAVED,  "build.not_saved",       0, "Not built: %s could not be saved")  \
+    X(BUILD_FINISHED,   "build.finished",        0, "The program finished (code %d)")    \
+    X(BUILD_CLICK,      "build.click",           0, "click an error to go to its block") \
     X(CAT_CONTROL,      "palette.control",       0, "Control")                           \
     X(CAT_OPERATORS,    "palette.operators",     0, "Operators")                         \
     X(CAT_VARIABLES,    "palette.variables",     0, "Variables")                         \

@@ -231,3 +231,10 @@ add_test(NAME cmake_blocks COMMAND test_cmake ${CCR_CMAKE_CORPUS})
 set_tests_properties(cmake_blocks PROPERTIES
     ENVIRONMENT "CCRATCH_BLOCKS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/blocks")
 add_test(NAME roundtrip_cmake COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/CMakeLists.txt)
+
+# The Build button: compiler, linker and CMake output read for places;
+# a real project configured, built, run and stopped.
+add_executable(test_job test_job.c)
+target_link_libraries(test_job PRIVATE ccratch_core)
+add_test(NAME build_job COMMAND test_job)
+set_tests_properties(build_job PROPERTIES TIMEOUT 240)
