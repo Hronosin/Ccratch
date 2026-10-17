@@ -918,6 +918,7 @@ typedef struct api_ctx {
     unsigned pending_hash;
     int      pending_enum;
     bool     main_only;
+    bool     no_static;   /* a project's own file: what is static is its own */
 } api_ctx;
 
 static void copy_str(char *dst, size_t cap, CXString s)
@@ -997,7 +998,7 @@ static enum CXChildVisitResult api_visit(CXCursor c, CXCursor parent, CXClientDa
         copy_str(name, sizeof name, clang_getCursorSpelling(c));
         const bool body = has_body(c);
         const bool is_static = clang_Cursor_getStorageClass(c) == CX_SC_Static;
-        if (!name[0] || name[0] == '_' || (is_static && !body))
+        if (!name[0] || name[0] == '_' || (is_static && (!body || ctx->no_static)))
             return CXChildVisit_Continue;
         ccr_api_func *f = ccr_api_add_func(ctx->api, name);
         if (!f)
@@ -1044,7 +1045,7 @@ static enum CXChildVisitResult api_visit(CXCursor c, CXCursor parent, CXClientDa
     return CXChildVisit_Continue;
 }
 
-bool ccr_parse_api(const char *header, const char *const *args, int arg_count, ccr_api *out)
+static bool parse_api(const char *header, const char *const *args, int arg_count, ccr_api *out, bool own_file)
 {
     const char *base[CCR_API_MAX_PARAMS * 4 + 8];
     int n = 0;
@@ -1082,11 +1083,22 @@ bool ccr_parse_api(const char *header, const char *const *args, int arg_count, c
         *slash = '\0';
     snprintf(ctx.dir, sizeof ctx.dir, "%s", real);
     ctx.dir_len = strlen(ctx.dir);
-    ctx.main_only = strcmp(ctx.dir, "/usr/include") == 0 || strcmp(ctx.dir, "/usr/local/include") == 0;
+    ctx.main_only = own_file || strcmp(ctx.dir, "/usr/include") == 0 || strcmp(ctx.dir, "/usr/local/include") == 0;
+    ctx.no_static = own_file;
     snprintf(out->dir, sizeof out->dir, "%s", ctx.dir);
 
     clang_visitChildren(clang_getTranslationUnitCursor(tu), api_visit, &ctx);
     clang_disposeTranslationUnit(tu);
     clang_disposeIndex(index);
     return true;
+}
+
+bool ccr_parse_api(const char *header, const char *const *args, int arg_count, ccr_api *out)
+{
+    return parse_api(header, args, arg_count, out, false);
+}
+
+bool ccr_parse_file_api(const char *path, const char *const *args, int arg_count, ccr_api *out)
+{
+    return parse_api(path, args, arg_count, out, true);
 }

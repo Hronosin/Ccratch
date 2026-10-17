@@ -1839,6 +1839,36 @@ static bool file_includes(const ccr_editor *ed, const ccr_lib_pack *pk)
     return false;
 }
 
+/* Does the file include `spelled` ("util.h" with its quotes, or <x.h>), or
+ * is it that header itself? Compared by its last part: "src/util.h" is
+ * "../src/util.h" too. */
+static bool file_includes_spelled(const ccr_editor *ed, const char *spelled)
+{
+    char want[256];
+    snprintf(want, sizeof want, "%s", spelled + (spelled[0] == '<' || spelled[0] == '"'));
+    size_t n = strlen(want);
+    if (n && (want[n - 1] == '>' || want[n - 1] == '"'))
+        want[--n] = '\0';
+    const char *wb = strrchr(want, '/');
+    wb = wb ? wb + 1 : want;
+    if (ed->ast.node_count == 0)
+        return false;
+    /* the header's own blocks: a file does not include itself */
+    const char *path = ccr_ast_str(&ed->ast, ed->ast.source_path);
+    const char *self = strrchr(path, '/');
+    if (strcmp(self ? self + 1 : path, wb) == 0)
+        return true;
+    for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling) {
+        if (N(ed, c)->kind != CCR_NODE_INCLUDE || (N(ed, c)->flags & CCR_FLAG_DEAD))
+            continue;
+        const char *have = ccr_ast_str(&ed->ast, N(ed, c)->name);
+        const char *hb = strrchr(have, '/');
+        if (strcmp(hb ? hb + 1 : have, wb) == 0)
+            return true;
+    }
+    return false;
+}
+
 /* Adds `#include <x>` or `#include "x"` to the file (inside a change). */
 static bool add_include(ccr_editor *ed, const char *spelled)
 {
@@ -1923,8 +1953,12 @@ static void include_libraries(ccr_editor *ed, ccr_node_id id)
         }
         const ccr_lib_block *b = word ? NULL : ccr_lib_find(ccr_ast_str(&ed->ast, n->name), args);
         const ccr_lib_pack *pk = b ? ccr_lib_pack_at(b->pack) : NULL;
-        if (pk && pk->include[0] && !file_includes(ed, pk))
+        if (b && b->include[0]) {   /* a function of the project: its own header */
+            if (!file_includes_spelled(ed, b->include))
+                add_include(ed, b->include);
+        } else if (pk && pk->include[0] && !file_includes(ed, pk)) {
             add_include(ed, pk->include);
+        }
     }
     for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
         include_libraries(ed, c);

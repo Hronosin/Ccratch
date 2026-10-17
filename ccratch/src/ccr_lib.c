@@ -20,6 +20,7 @@ static int            g_pack_count;
 static ccr_lib_block *g_blocks;
 static int            g_block_count, g_block_cap;
 static int           *g_sorted;   /* block indexes by (call, nparams) */
+static int            g_project_pack = -1;   /* ccr_lib_set_project's, the last one */
 
 /* the packs' enums: name, and its values in g_values */
 typedef struct lib_enum {
@@ -408,6 +409,17 @@ static int compare_names(const void *a, const void *b)
     return strcmp((const char *)a, (const char *)b);
 }
 
+static void sort_blocks(void)
+{
+    free(g_sorted);
+    g_sorted = malloc((size_t)(g_block_count ? g_block_count : 1) * sizeof *g_sorted);
+    if (g_sorted) {
+        for (int i = 0; i < g_block_count; ++i)
+            g_sorted[i] = i;
+        qsort(g_sorted, (size_t)g_block_count, sizeof *g_sorted, compare_sorted);
+    }
+}
+
 void ccr_lib_unload(void)
 {
     free(g_blocks);
@@ -419,6 +431,7 @@ void ccr_lib_unload(void)
     g_enums = NULL;
     g_values = NULL;
     g_block_count = g_block_cap = g_pack_count = 0;
+    g_project_pack = -1;
     g_enum_count = g_enum_cap = g_value_count = g_value_cap = 0;
 }
 
@@ -478,12 +491,60 @@ void ccr_lib_load_project(const char *project, FILE *log)
                         problems, problems == 1 ? "" : "s", path);
         }
     }
-    g_sorted = malloc((size_t)(g_block_count ? g_block_count : 1) * sizeof *g_sorted);
-    if (g_sorted) {
-        for (int i = 0; i < g_block_count; ++i)
-            g_sorted[i] = i;
-        qsort(g_sorted, (size_t)g_block_count, sizeof *g_sorted, compare_sorted);
+    g_project_pack = -1;
+    sort_blocks();
+}
+
+int ccr_lib_project_pack(void) { return g_project_pack; }
+
+
+bool ccr_lib_set_project(const char *name, const ccr_lib_block *blocks, int count)
+{
+    /* the last time's go first: they are the last pack, and its blocks the last */
+    if (g_project_pack >= 0 && g_project_pack == g_pack_count - 1) {
+        g_block_count = g_packs[g_project_pack].first;
+        --g_pack_count;
     }
+    g_project_pack = -1;
+    if (count <= 0 || g_pack_count == CCR_LIB_MAX_PACKS) {
+        sort_blocks();
+        return count <= 0;
+    }
+    ccr_lib_pack pack;
+    memset(&pack, 0, sizeof pack);
+    snprintf(pack.code, sizeof pack.code, "project");
+    snprintf(pack.name, sizeof pack.name, "%s", name);
+    pack.category = CCR_CAT_CALL;   /* drawn as calls are: they are the project's own */
+    pack.first = g_block_count;
+    for (int i = 0; i < count; ++i) {
+        ccr_lib_block b = blocks[i];
+        b.pack = g_pack_count;
+        if (!push_block(&b))
+            break;
+    }
+    pack.count = g_block_count - pack.first;
+    g_project_pack = g_pack_count;
+    g_packs[g_pack_count++] = pack;
+    sort_blocks();
+    return true;
+}
+
+void ccr_lib_add_enum(const char *name, const char *const *values, int count)
+{
+    /* through the YAML path's own helper: a list made by hand */
+    ccr_yaml_node seq, *items = calloc((size_t)(count ? count : 1), sizeof *items);
+    if (!items)
+        return;
+    memset(&seq, 0, sizeof seq);
+    seq.kind = CCR_YAML_SEQ;
+    for (int i = 0; i < count; ++i) {
+        items[i].kind = CCR_YAML_SCALAR;
+        items[i].value = (char *)values[i];
+        items[i].next = i + 1 < count ? &items[i + 1] : NULL;
+    }
+    seq.first = count ? &items[0] : NULL;
+    add_enum(name, &seq);
+    free(items);
 }
 
 const ccr_lib_block *ccr_lib_find(const char *name, int nargs)

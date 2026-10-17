@@ -45,6 +45,7 @@ typedef struct ccr_lib_block {
     char defaults[CCR_LIB_MAX_PARAMS][128];
     char types[CCR_LIB_MAX_PARAMS][64];     /* C types, if the pack says (`types:`) */
     char choices[CCR_LIB_MAX_PARAMS][64];   /* the enum a slot picks from (`choices:`) */
+    char include[160];    /* its own header, if not the pack's (the project's functions) */
     int  pack;
 } ccr_lib_block;
 
@@ -93,6 +94,15 @@ int ccr_lib_enum_values(const char *type, const char **out, int cap);
  * enum its type names. 0 if nothing. `name` gets the list's name. */
 int ccr_lib_param_choices(const ccr_lib_block *b, int param, const char **out, int cap,
                           char *name, int name_cap);
+
+/* The project's own functions, as a pack of their own (shown with every
+ * file): `blocks` are copied, and replace those of the last call. Their
+ * `include` says which header declares each. */
+bool ccr_lib_set_project(const char *name, const ccr_lib_block *blocks, int count);
+/* An enum the project's headers declare, for the slots that take it. */
+void ccr_lib_add_enum(const char *name, const char *const *values, int count);
+/* The pack ccr_lib_set_project made, or -1. */
+int  ccr_lib_project_pack(void);
 
 /* --check-blocks: the problems found, 0 if none. */
 int  ccr_lib_check(const char *path, FILE *out);

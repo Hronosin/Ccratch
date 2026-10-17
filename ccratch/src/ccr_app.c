@@ -18,6 +18,7 @@
 #include "ccr_lib.h"
 #include "ccr_palette.h"
 #include "ccr_paste.h"
+#include "ccr_project.h"
 #include "ccr_pie.h"
 #include "ccr_theme.h"
 
@@ -638,9 +639,14 @@ static bool same_file(const char *a, const char *b) { return ccr_files_same(a, b
 
 /* Block packs again (the project's own first), and everything that shows
  * them laid out again: a pack came, went, or speaks another language. */
+static ccr_project_result g_proj;      /* the project's own functions, last read */
+static bool               g_proj_dirty = true;   /* read them again */
+static char               g_proj_root[CCR_FILES_PATH];
+
 static void libs_reload(ccr_document *doc)
 {
     ccr_lib_load_project(g_files.root[0] ? g_files.root : NULL, stderr);
+    ccr_project_apply(&g_proj, ccr_tr(CCR_T_PROJECT_BLOCKS));
     relayout_everything(doc);
     for (int k = 0; k < g_stash_n; ++k)
         ccr_editor_relayout_all(&g_stash[k].doc->ed);
@@ -911,6 +917,7 @@ static bool document_save(ccr_document *doc, const ccr_options *opt)
     free(text);
     ccr_editor_mark_saved(&doc->ed);
     remember_places(doc);
+    g_proj_dirty = true;   /* a function may have come or gone */
 
     /* read it back: did the move make code clang no longer accepts? */
     uint32_t errors = 0;
@@ -2637,6 +2644,37 @@ static void debug_panel(ccr_rect r, ccr_document *doc, ccr_canvas *cv, ccr_rect 
     ccr_gui_clip_end();
     (void)cv;
     (void)viewport;
+}
+
+/* ------------------------------------------- the project's functions */
+
+/* Reads the project's functions again when it changed (another project,
+ * a save), in the background; puts them in the palette when read. */
+static void project_follow_scan(ccr_document *doc, const ccr_options *opt)
+{
+    if (strcmp(g_proj_root, g_files.root) != 0)
+        g_proj_dirty = true;
+    if (g_proj_dirty && doc->loaded && g_files.root[0] && doc->ed.ast.lang == CCR_LANG_C) {
+        g_proj_dirty = false;
+        if (strcmp(g_proj_root, g_files.root) != 0) {   /* another project: not its functions */
+            ccr_project_result_free(&g_proj);
+            snprintf(g_proj_root, sizeof g_proj_root, "%s", g_files.root);
+        }
+        const char *args[CLANG_ARGS_MAX];
+        const int nargs = clang_args_for(doc->path, opt, args);
+        ccr_project_scan_start(g_files.root, args, nargs);
+    }
+    ccr_project_result r;
+    if (ccr_project_scan_take(&r)) {
+        /* the same as before (a save that changed no function): nothing to do */
+        bool same = r.count == g_proj.count && r.enum_count == g_proj.enum_count;
+        for (int i = 0; same && i < r.count; ++i)
+            same = memcmp(&r.blocks[i], &g_proj.blocks[i], sizeof r.blocks[i]) == 0;
+        ccr_project_result_free(&g_proj);
+        g_proj = r;
+        if (!same)
+            libs_reload(doc);
+    }
 }
 
 /* ---------------------------------------------------------------- git */
@@ -5302,6 +5340,7 @@ int ccr_run(int argc, char **argv)
         marks_follow(&doc);
         dbg_follow(&doc, &canvas, viewport, &opt);
         git_follow(&doc, &opt);
+        project_follow_scan(&doc, &opt);
         if (g_bp.last == CCR_JOB_RUNNING && g_job.result != CCR_JOB_RUNNING && !ccr_job_busy(&g_job)) {
             ccr_color unused;
             build_headline(doc.status, sizeof doc.status, &unused);
@@ -5722,6 +5761,8 @@ int ccr_run(int argc, char **argv)
 
     ccr_job_free(&g_job);   /* a program still running goes too */
     ccr_gdb_free(&g_gdb);
+    ccr_project_shutdown();
+    ccr_project_result_free(&g_proj);
     free(g_copied);
     g_copied = NULL;
     document_close(&doc);

@@ -53,6 +53,7 @@
     X(INCLUDE_NOT_FOUND, "include.not_found",    0, "%s is neither next to this file nor in the project") \
     X(INCLUDE_SYSTEM,   "include.system",        0, "%s is a system header, not opening it") \
     X(LIBS_TITLE,       "libs.title",            0, "Libraries")                         \
+    X(PROJECT_BLOCKS,   "palette.project",       0, "This project")                      \
     X(LIBS_HEADING,     "libs.heading",          0, "A library, as blocks")              \
     X(LIBS_EXPLAIN,     "libs.explain",          0,                                      \
       "Its header is read for the public functions (and its .so or .a, if found, for what it really exports). They become a block pack, the file includes the header, the blocks show in the palette.") \

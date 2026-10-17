@@ -46,5 +46,8 @@ void ccr_parse_clang_version(char *out, unsigned int cap);
  * function bodies. False if clang could not read it at all.
  */
 bool ccr_parse_api(const char *header, const char *const *args, int arg_count, ccr_api *out);
+/* The same for one file of a project: only what that file itself
+ * declares (not its includes), and nothing static (it is its own). */
+bool ccr_parse_file_api(const char *path, const char *const *args, int arg_count, ccr_api *out);
 
 #endif /* CCR_PARSE_H */

@@ -36,6 +36,7 @@ add_library(ccratch_core OBJECT
     src/ccr_choice.c
     src/ccr_mi.c
     src/ccr_gdb.c
+    src/ccr_project.c
     src/ccr_git.c
     src/ccr_app.c
     src/ccr_ast.c
@@ -64,8 +65,9 @@ if(LIBCLANG_RESOURCE_DIR)
     target_compile_definitions(ccratch_core PRIVATE
         CCR_CLANG_RESOURCE_DIR="${LIBCLANG_RESOURCE_DIR}")
 endif()
+find_package(Threads REQUIRED)   # the project's functions are read in the background
 target_link_libraries(ccratch_core
-    PUBLIC ccr_gui ccr_warnings LibClang::LibClang m ${CMAKE_DL_LIBS})
+    PUBLIC ccr_gui ccr_warnings LibClang::LibClang Threads::Threads m ${CMAKE_DL_LIBS})
 set_target_properties(ccratch_core PROPERTIES C_VISIBILITY_PRESET hidden)
 
 add_library(ccratch SHARED $<TARGET_OBJECTS:ccratch_core>)

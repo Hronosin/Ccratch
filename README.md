@@ -185,6 +185,18 @@ it always was.
 
 ![raylib's own example as blocks: open a window, aim for 60 frames a second, circle at x](docs/library.png)
 
+### The project's own functions
+
+Every function the project's files declare (not `static`, not `main`)
+is a block too, in the palette's **This project** section, for every file
+of the project: `add ( a , b )`, as its call reads. Ccratch reads the
+project's `.c` and `.h` with clang in the background (bodies skipped,
+`build/` and hidden folders left alone) and again after a save; a file
+that did not change is not read twice. A function a header declares
+brings that header along: dropped into `main.c`, `paint` adds
+`#include "util.h"`. And the header's enums give its slots their lists,
+from any file.
+
 ### Slots with a list
 
 A slot that takes one of a few values has a little ▾: a click drops a
