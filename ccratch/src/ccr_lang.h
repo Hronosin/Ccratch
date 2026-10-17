@@ -134,6 +134,8 @@
     X(SELECTED,         "sel.count",             1, "%u selected: Del deletes, Ctrl+C copies|%u selected: Del deletes, Ctrl+C copies") \
     X(DELETED,          "sel.deleted",           1, "%u block deleted (Ctrl+Z brings it back)|%u blocks deleted (Ctrl+Z brings them back)") \
     X(DBG_TITLE,        "dbg.title",             0, "Debugger")                          \
+    X(DBG_INPUT,        "dbg.input",             0, "Type to the program (Enter sends)") \
+    X(DBG_EOF,          "dbg.eof",               0, "The end of its input (Ctrl+D)")     \
     X(DBG_CONTINUE,     "dbg.continue",          0, "Continue")                          \
     X(DBG_NEXT,         "dbg.next",              0, "Step")                              \
     X(DBG_STEP,         "dbg.step",              0, "Into")                              \

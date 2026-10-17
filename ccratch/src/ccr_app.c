@@ -1606,6 +1606,8 @@ static struct {
     float    out_scroll;
     bool     out_follow;
     float    var_scroll;
+    bool     in_focus;     /* typing to the program */
+    char     in_buf[256];
 } g_dbg = { .out_follow = true };
 
 #define BUILD_H   (g_lay.build_h)
@@ -2430,11 +2432,51 @@ static void debug_panel(ccr_rect r, ccr_document *doc, ccr_canvas *cv, ccr_rect 
     }
     ccr_gui_clip_end();
 
-    /* what the program printed */
+    /* what the program printed; and under it, a line to type to it */
     column_title(ccr_tr(CCR_T_DBG_OUTPUT), outp.x + 4.0f, outp.y);
-    const ccr_rect olist = { outp.x, outp.y + top, outp.w, outp.h - top };
+    const bool can_type = ccr_gdb_active(&g_gdb);
+    const float in_h = can_type ? 32.0f : 0.0f;
+    const ccr_rect olist = { outp.x, outp.y + top, outp.w, outp.h - top - in_h };
+    const char *partial = ccr_gdb_partial(&g_gdb);
+    const int nout = g_gdb.out_count + (partial[0] ? 1 : 0);
     const int orows = (int)(olist.h / row);
-    const float omax = (float)(g_gdb.out_count > orows ? g_gdb.out_count - orows : 0);
+    const float omax = (float)(nout > orows ? nout - orows : 0);
+    if (can_type) {
+        const ccr_rect ib = { outp.x + 4.0f, outp.y + outp.h - in_h + 2.0f, outp.w - 64.0f, 28.0f };
+        const ccr_rect eof = { ib.x + ib.w + 6.0f, ib.y, 50.0f, 28.0f };
+        if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+            const bool in = point_in(m, ib);
+            if (in && !g_dbg.in_focus)
+                ccr_gui_textbox_reset();
+            g_dbg.in_focus = in;
+        }
+        if (g_dbg.in_focus) {
+            ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+            if (ccr_gui_textbox(ib, g_dbg.in_buf, (int)sizeof g_dbg.in_buf, 15.0f)) {
+                ccr_gdb_input(&g_gdb, g_dbg.in_buf);
+                g_dbg.in_buf[0] = '\0';
+                ccr_gui_textbox_reset();
+                g_dbg.out_follow = true;
+            }
+            if (ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+                g_dbg.in_focus = false;
+        } else {
+            ccr_gui_rect_rounded(ib, 0.2f, ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_rect_rounded((ccr_rect){ ib.x + 1, ib.y + 1, ib.w - 2, ib.h - 2 }, 0.2f, ccr_th(CCR_C_FIELD));
+            ccr_gui_clip_begin(ib);
+            ccr_gui_text(g_dbg.in_buf[0] ? g_dbg.in_buf : ccr_tr(CCR_T_DBG_INPUT), ib.x + 8.0f, ib.y + 6.0f, 14.0f,
+                         g_dbg.in_buf[0] ? ccr_th(CCR_C_FIELD_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+            ccr_gui_clip_end();
+        }
+        if (ccr_gui_button(eof, "EOF", &plain) && input) {
+            ccr_gdb_input_end(&g_gdb);
+            g_dbg.out_follow = true;
+        }
+        if (input)
+            tip(eof, ccr_tr(CCR_T_DBG_EOF));
+    } else {
+        g_dbg.in_focus = false;
+    }
     if (over && point_in(m, olist)) {
         const float wheel = ccr_gui_wheel();
         if (wheel != 0.0f) {
@@ -2446,9 +2488,19 @@ static void debug_panel(ccr_rect r, ccr_document *doc, ccr_canvas *cv, ccr_rect 
         g_dbg.out_scroll = omax;
     g_dbg.out_scroll = g_dbg.out_scroll < 0.0f ? 0.0f : g_dbg.out_scroll > omax ? omax : g_dbg.out_scroll;
     ccr_gui_clip_begin(olist);
-    for (int i = (int)g_dbg.out_scroll; i < g_gdb.out_count && i < (int)g_dbg.out_scroll + orows + 1; ++i) {
-        const ccr_gdb_out *o = &g_gdb.out[i];
+    for (int i = (int)g_dbg.out_scroll; i < nout && i < (int)g_dbg.out_scroll + orows + 1; ++i) {
         const float y = olist.y + (float)(i - (int)g_dbg.out_scroll) * row;
+        if (i == g_gdb.out_count) {   /* a prompt waiting for an answer */
+            ccr_gui_text(partial, olist.x + 6.0f, y + 2.0f, LOG_FONT, ccr_th(CCR_C_PANEL_TEXT));
+            continue;
+        }
+        const ccr_gdb_out *o = &g_gdb.out[i];
+        if (o->kind == CCR_GDB_OUT_INPUT) {   /* typed: "> what", in the accent */
+            char t[300];
+            snprintf(t, sizeof t, "> %.290s", o->text);
+            ccr_gui_text(t, olist.x + 6.0f, y + 2.0f, LOG_FONT, ccr_th(CCR_C_ACCENT));
+            continue;
+        }
         ccr_gui_text(o->text, olist.x + 6.0f, y + 2.0f, LOG_FONT,
                      o->kind == CCR_GDB_OUT_ERROR ? ccr_th(CCR_C_ERROR)
                      : o->kind == CCR_GDB_OUT_INFO ? ccr_th(CCR_C_PANEL_HINT) : ccr_th(CCR_C_PANEL_TEXT));
@@ -5131,7 +5183,8 @@ int ccr_run(int argc, char **argv)
                               point_in(m, minimap_area(visible_view(viewport, w, h))));
         const bool over_palette = !on_split && m.x < PALETTE_W && m.y > TOPBAR_H;
         palette_follow(&doc);
-        const bool git_typing = g_files_open && g_git.tab && (g_git.msg_focus || g_git.new_focus);
+        const bool git_typing = (g_files_open && g_git.tab && (g_git.msg_focus || g_git.new_focus)) ||
+                                (g_dbg.in_focus && g_dbg.view && g_bp.t > 0.0f);   /* or to the program */
         const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
                              g_fpanel.naming == CCR_NAMING_NONE && !git_typing;   /* typing a new file's name */
 

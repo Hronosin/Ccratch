@@ -61,7 +61,8 @@ typedef struct ccr_gdb_ask {
 typedef enum ccr_gdb_out_kind {
     CCR_GDB_OUT_PROGRAM,   /* what the program printed */
     CCR_GDB_OUT_INFO,      /* Ccratch's own notes: stopped at..., exited with... */
-    CCR_GDB_OUT_ERROR      /* gdb said no */
+    CCR_GDB_OUT_ERROR,     /* gdb said no */
+    CCR_GDB_OUT_INPUT      /* what was typed to the program */
 } ccr_gdb_out_kind;
 
 typedef struct ccr_gdb_out {
@@ -125,6 +126,14 @@ void ccr_gdb_step(ccr_gdb *g);      /* a line, into calls */
 void ccr_gdb_finish(ccr_gdb *g);    /* out of this function */
 void ccr_gdb_pause(ccr_gdb *g);     /* stop it where it is */
 void ccr_gdb_stop(ccr_gdb *g);      /* end it all */
+
+/* A line typed to the program (its stdin is its terminal): sent with a
+ * newline, and shown in the output after what it printed before. */
+void ccr_gdb_input(ccr_gdb *g, const char *line);
+/* Ctrl+D: the end of its input. */
+void ccr_gdb_input_end(ccr_gdb *g);
+/* What it printed last with no newline yet (a prompt), or "". */
+const char *ccr_gdb_partial(const ccr_gdb *g);
 
 /* The variables of frame `i` (0: where it stopped). */
 void ccr_gdb_select_frame(ccr_gdb *g, int i);

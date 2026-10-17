@@ -509,6 +509,45 @@ void ccr_gdb_free(ccr_gdb *g)
     g_pty_slave = -1;
 }
 
+static void write_pty(ccr_gdb *g, const char *s, size_t n)
+{
+    while (n > 0 && g->pty >= 0) {
+        const ssize_t put = write(g->pty, s, n);
+        if (put < 0 && errno == EINTR)
+            continue;
+        if (put <= 0)
+            return;
+        s += put;
+        n -= (size_t)put;
+    }
+}
+
+void ccr_gdb_input(ccr_gdb *g, const char *line)
+{
+    if (g->pty < 0 || !ccr_gdb_active(g))
+        return;
+    read_pty(g, true);   /* the prompt it is answering, first */
+    out_add(g, CCR_GDB_OUT_INPUT, line);
+    write_pty(g, line, strlen(line));
+    write_pty(g, "\n", 1);
+}
+
+void ccr_gdb_input_end(ccr_gdb *g)
+{
+    if (g->pty < 0 || !ccr_gdb_active(g))
+        return;
+    read_pty(g, true);
+    out_add(g, CCR_GDB_OUT_INPUT, "^D");
+    write_pty(g, "\x04", 1);
+}
+
+const char *ccr_gdb_partial(const ccr_gdb *g)
+{
+    static char buf[sizeof g->pty_partial];
+    snprintf(buf, sizeof buf, "%.*s", g->pty_partial_len, g->pty_partial);
+    return buf;
+}
+
 void ccr_gdb_select_frame(ccr_gdb *g, int i)
 {
     if (g->state != CCR_GDB_STOPPED || i < 0 || i >= g->frame_count)

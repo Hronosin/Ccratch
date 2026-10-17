@@ -384,7 +384,11 @@ breakpoint. The program stops there, before that block runs:
 - the panel at the bottom has every variable of the function, the call
   stack (a click on a function shows its variables and glides to its
   block), and what the program printed; the program has a terminal of
-  its own, so its lines come as it prints them, not when it ends;
+  its own, so its lines come as it prints them, not when it ends, and a
+  prompt (`name? `) shows before its newline;
+- a field under the output types to the program: Enter sends the line
+  to its `scanf`, **EOF** ends its input (Ctrl+D); what was typed shows
+  in the output as `> Ann`;
 - **Continue** (F8), **Step** over a block (F10), **Into** the function
   it calls (F11), **Out** of this one (Shift+F11, and what it gave back
   is printed), **Pause** while it runs, **Stop** (Shift+F8);

@@ -170,11 +170,48 @@ static void test_run(const char *exe, const char *src)
     ccr_gdb_free(&g);
 }
 
+static bool printed_kind(const ccr_gdb *gd, ccr_gdb_out_kind k, const char *text)
+{
+    for (int i = 0; i < gd->out_count; ++i)
+        if (gd->out[i].kind == k && strcmp(gd->out[i].text, text) == 0)
+            return true;
+    return false;
+}
+
+/* A program that asks: its prompt is seen before the newline, the
+ * answer typed goes to its stdin, Ctrl+D ends its input. */
+static void test_input(const char *exe)
+{
+    ccr_gdb_init(&g);
+    char err[256];
+    CHECK(ccr_gdb_start(&g, exe, NULL, err, (int)sizeof err), "start: %s", err);
+    bool asked = false;
+    for (int i = 0; i < 1500 && !asked; ++i) {
+        ccr_gdb_poll(&g);
+        asked = strcmp(ccr_gdb_partial(&g), "name? ") == 0;
+        struct timespec ts = { 0, 10 * 1000 * 1000 };
+        nanosleep(&ts, NULL);
+    }
+    CHECK(asked, "the prompt, with no newline yet: [%s]", ccr_gdb_partial(&g));
+    ccr_gdb_input(&g, "Ann");
+    ccr_gdb_input(&g, "7");
+    ccr_gdb_input_end(&g);
+    wait_stop(&g);
+    CHECK(g.state == CCR_GDB_EXITED && g.exit_code == 0, "ended: %d %d", g.state, g.exit_code);
+    CHECK(printed_kind(&g, CCR_GDB_OUT_PROGRAM, "name? ") && printed_kind(&g, CCR_GDB_OUT_INPUT, "Ann") &&
+          printed(&g, "hi Ann") && printed(&g, "got 7") && printed(&g, "the end"), "the conversation");
+    for (int i = 0; g_failures && i < g.out_count; ++i)
+        fprintf(stderr, "  %d| %s\n", g.out[i].kind, g.out[i].text);
+    ccr_gdb_free(&g);
+}
+
 int main(int argc, char **argv)
 {
     test_mi();
     if (argc >= 3 && ccr_gdb_available())
         test_run(argv[1], argv[2]);
+    if (argc >= 4 && ccr_gdb_available())
+        test_input(argv[3]);
     else
         printf("gdb: no gdb, the live part skipped\n");
     if (g_failures)
