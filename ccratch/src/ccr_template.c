@@ -1,5 +1,8 @@
 #include "ccr_template.h"
+#include "ccr_cmake.h"
 #include "ccr_lib.h"
+
+#include <stdio.h>
 
 #include <string.h>
 
@@ -17,25 +20,55 @@ static const ccr_tcat g_cats[CCR_TEMPLATE_COUNT] = {
 
 int ccr_template_total(void)
 {
-    return CCR_TEMPLATE_COUNT + ccr_lib_block_count();
+    return CCR_TEMPLATE_COUNT + ccr_lib_block_count() + 2 * ccr_lib_pack_count();
+}
+
+bool ccr_tcat_is_cmake(ccr_tcat c)
+{
+    return c >= CCR_TCAT_CM_PROJECT && c < CCR_TCAT_COUNT;
+}
+
+ccr_template ccr_template_pack_link(int pack)
+{
+    return (ccr_template)(CCR_TEMPLATE_COUNT + ccr_lib_block_count() + 2 * pack);
+}
+
+ccr_template ccr_template_pack_find(int pack)
+{
+    return (ccr_template)(CCR_TEMPLATE_COUNT + ccr_lib_block_count() + 2 * pack + 1);
 }
 
 /* The pack block a template stands for, or NULL. */
 static const ccr_lib_block *lib_block(ccr_template t)
 {
-    return (int)t >= CCR_TEMPLATE_COUNT ? ccr_lib_block_at((int)t - CCR_TEMPLATE_COUNT) : NULL;
+    const int i = (int)t - CCR_TEMPLATE_COUNT;
+    return i >= 0 && i < ccr_lib_block_count() ? ccr_lib_block_at(i) : NULL;
+}
+
+/* A pack's CMake template: its pack, and whether it finds (or links). */
+static const ccr_lib_pack *pack_of(ccr_template t, bool *find)
+{
+    const int i = (int)t - CCR_TEMPLATE_COUNT - ccr_lib_block_count();
+    *find = i >= 0 && (i & 1);
+    return i >= 0 ? ccr_lib_pack_at(i / 2) : NULL;
 }
 
 const char *ccr_template_label(ccr_template t)
 {
+    bool find;
     if (lib_block(t))
         return lib_block(t)->call;
+    if (pack_of(t, &find))
+        return find ? "find_package" : "target_link_libraries";
     return (unsigned)t < CCR_TEMPLATE_COUNT ? g_labels[t] : "?";
 }
 
 ccr_tcat ccr_template_category(ccr_template t)
 {
-    return (unsigned)t < CCR_TEMPLATE_COUNT ? g_cats[t] : CCR_TCAT_COUNT;   /* a pack's */
+    bool find;
+    if ((unsigned)t < CCR_TEMPLATE_COUNT)
+        return g_cats[t];
+    return pack_of(t, &find) ? CCR_TCAT_CM_LIBS : CCR_TCAT_COUNT;   /* a pack's */
 }
 
 ccr_node_id ccr_template_node(ccr_ast *ast, ccr_node_kind kind, ccr_node_id parent)
@@ -157,6 +190,31 @@ bool ccr_template_is_reporter(ccr_template t)
 ccr_node_id ccr_template_build(ccr_ast *ast, ccr_template t, ccr_node_id parent)
 {
     ccr_node_id s = CCR_NONE;
+    bool find;
+    const ccr_lib_pack *pk = pack_of(t, &find);
+    if (pk) {
+        char spec[400];
+        if (find)
+            snprintf(spec, sizeof spec, "find_package(%s)", pk->find);
+        else
+            snprintf(spec, sizeof spec, "target_link_libraries(${PROJECT_NAME} PRIVATE %s)", pk->link);
+        return ccr_cmake_build_command(ast, parent, spec);
+    }
+    if (ccr_tcat_is_cmake(ccr_template_category(t))) {
+        const char *spec = g_labels[t];
+        if (t == CCR_TEMPLATE_CM_LINE)
+            return ccr_template_text(ast, parent, "");
+        static const char *const scopes[] = { "if", "foreach", "while", "function", "macro" };
+        for (size_t i = 0; i < sizeof scopes / sizeof scopes[0]; ++i) {
+            const size_t n = strlen(scopes[i]);
+            if (strncmp(spec, scopes[i], n) == 0 && spec[n] == '(') {
+                char args[200];
+                snprintf(args, sizeof args, "%.*s", (int)(strlen(spec) - n - 2), spec + n + 1);
+                return ccr_cmake_build_scope(ast, parent, scopes[i], args, t == CCR_TEMPLATE_CM_IF_ELSE);
+            }
+        }
+        return ccr_cmake_build_command(ast, parent, spec);
+    }
     const ccr_lib_block *lb = lib_block(t);
     if (lb) {
         /* a library call: its name fixed, its arguments slots with defaults */
@@ -364,7 +422,7 @@ ccr_node_id ccr_template_build(ccr_ast *ast, ccr_template t, ccr_node_id parent)
         ccr_template_text(ast, s, "64");
         break;
 
-    case CCR_TEMPLATE_COUNT:
+    default:   /* CMake's and CCR_TEMPLATE_COUNT: above */
         break;
     }
     return s;

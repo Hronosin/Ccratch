@@ -26,6 +26,12 @@ typedef enum ccr_tcat {
     CCR_TCAT_FUNCTIONS,
     CCR_TCAT_TYPES,
     CCR_TCAT_DECLS,          /* the file's own: functions, structs, #include */
+    /* CMake */
+    CCR_TCAT_CM_PROJECT,     /* project, targets */
+    CCR_TCAT_CM_TARGETS,     /* what a target is built with */
+    CCR_TCAT_CM_LIBS,        /* find_package, and the block packs' libraries */
+    CCR_TCAT_CM_VARS,
+    CCR_TCAT_CM_CONTROL,
     CCR_TCAT_COUNT
 } ccr_tcat;
 
@@ -97,7 +103,36 @@ typedef enum ccr_tcat {
     X(GLOBAL_VAR,  DECLS,     "int x = 0; (global)")       \
     X(INCLUDE_SYS, DECLS,     "#include <...>")            \
     X(INCLUDE_LOC, DECLS,     "#include \"...\"")          \
-    X(DEFINE,      DECLS,     "#define NAME value")
+    X(DEFINE,      DECLS,     "#define NAME value")     \
+    /* CMake: the label is the command itself */       \
+    X(CM_MINIMUM,  CM_PROJECT, "cmake_minimum_required(VERSION 3.16)") \
+    X(CM_PROJECT,  CM_PROJECT, "project(game LANGUAGES C)") \
+    X(CM_EXE,      CM_PROJECT, "add_executable(${PROJECT_NAME} main.c)") \
+    X(CM_LIB,      CM_PROJECT, "add_library(engine STATIC engine.c)") \
+    X(CM_SUBDIR,   CM_PROJECT, "add_subdirectory(src)")   \
+    X(CM_INSTALL,  CM_PROJECT, "install(TARGETS ${PROJECT_NAME})") \
+    X(CM_SOURCES,  CM_TARGETS, "target_sources(${PROJECT_NAME} PRIVATE util.c)") \
+    X(CM_INCDIRS,  CM_TARGETS, "target_include_directories(${PROJECT_NAME} PRIVATE include)") \
+    X(CM_OPTIONS,  CM_TARGETS, "target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)") \
+    X(CM_DEFINES,  CM_TARGETS, "target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG=1)") \
+    X(CM_LINK,     CM_TARGETS, "target_link_libraries(${PROJECT_NAME} PRIVATE m)") \
+    X(CM_PROPS,    CM_TARGETS, "set_target_properties(${PROJECT_NAME} PROPERTIES C_STANDARD 11)") \
+    X(CM_FIND,     CM_LIBS,    "find_package(Threads REQUIRED)") \
+    X(CM_THREADS,  CM_LIBS,    "target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)") \
+    X(CM_PKG,      CM_LIBS,    "pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4)") \
+    X(CM_STD,      CM_VARS,    "set(CMAKE_C_STANDARD 11)") \
+    X(CM_SET,      CM_VARS,    "set(NAME value)")         \
+    X(CM_OPTION,   CM_VARS,    "option(USE_SOUND \"Play sounds\" ON)") \
+    X(CM_APPEND,   CM_VARS,    "list(APPEND SOURCES extra.c)") \
+    X(CM_GLOB,     CM_VARS,    "file(GLOB SOURCES CONFIGURE_DEPENDS src/*.c)") \
+    X(CM_MESSAGE,  CM_VARS,    "message(STATUS \"Hello from CMake\")") \
+    X(CM_IF,       CM_CONTROL, "if(WIN32)")               \
+    X(CM_IF_ELSE,  CM_CONTROL, "if(MSVC)")                \
+    X(CM_FOREACH,  CM_CONTROL, "foreach(file IN LISTS SOURCES)") \
+    X(CM_WHILE,    CM_CONTROL, "while(n LESS 10)")        \
+    X(CM_FUNCTION, CM_CONTROL, "function(add_game name)") \
+    X(CM_RETURN,   CM_CONTROL, "return()")                \
+    X(CM_LINE,     CM_CONTROL, "code line")
 
 typedef enum ccr_template {
 #define X(id, cat, label) CCR_TEMPLATE_##id,
@@ -107,8 +142,13 @@ typedef enum ccr_template {
 } ccr_template;
 
 /* Blocks from block packs come after the built-in ones: template
- * CCR_TEMPLATE_LIB(i) is ccr_lib_block_at(i). */
+ * CCR_TEMPLATE_LIB(i) is ccr_lib_block_at(i). Then, for CMake, two per
+ * pack: linking with its library, and finding it (find_package). */
 #define CCR_TEMPLATE_LIB(i) ((ccr_template)(CCR_TEMPLATE_COUNT + (i)))
+ccr_template ccr_template_pack_link(int pack);
+ccr_template ccr_template_pack_find(int pack);
+/* Is section `c` for CMake files (or for C)? */
+bool        ccr_tcat_is_cmake(ccr_tcat c);
 /* How many templates there are, packs included. */
 int         ccr_template_total(void);
 

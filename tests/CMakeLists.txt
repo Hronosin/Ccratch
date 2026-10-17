@@ -218,3 +218,16 @@ foreach(f rshapes rtextures rtext rmodels raudio rcore utils)
                      ${RAYLIB_SRC}/${f}.c -- -std=c99 -I${RAYLIB_SRC}
                      -I${RAYLIB_SRC}/external/glfw/include -DPLATFORM_DESKTOP)
 endforeach()
+
+# CMake as blocks: read, saved untouched, every body rebuilt. The corpus:
+# this project's own CMake, raylib's, and the modules of the CMake at hand.
+add_executable(test_cmake test_cmake.c)
+target_link_libraries(test_cmake PRIVATE ccratch_core)
+file(GLOB_RECURSE CCR_CMAKE_CORPUS ${PROJECT_SOURCE_DIR}/CMakeLists.txt
+     ${PROJECT_SOURCE_DIR}/ccratch/CMakeLists.txt ${PROJECT_SOURCE_DIR}/tests/CMakeLists.txt
+     ${PROJECT_SOURCE_DIR}/cmake/*.cmake ${raylib_SOURCE_DIR}/CMakeLists.txt
+     ${CMAKE_ROOT}/Modules/*.cmake)
+add_test(NAME cmake_blocks COMMAND test_cmake ${CCR_CMAKE_CORPUS})
+set_tests_properties(cmake_blocks PROPERTIES
+    ENVIRONMENT "CCRATCH_BLOCKS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/blocks")
+add_test(NAME roundtrip_cmake COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/CMakeLists.txt)

@@ -48,6 +48,7 @@ typedef struct ccr_lib_pack {
     char header[128];     /* "raylib.h"; empty: always shown */
     char include[140];    /* how a file includes it: "raylib.h" or <SDL2/SDL.h> */
     char link[64];        /* the library to link, if the pack says */
+    char find[96];        /* CMake's find_package() for it ("raylib REQUIRED") */
     int  category;        /* a ccr_theme_cat */
     int  first, count;    /* its blocks */
     char path[1024];

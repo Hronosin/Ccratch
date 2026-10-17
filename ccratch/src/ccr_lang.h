@@ -68,6 +68,11 @@
     X(LIBS_MADE,        "libs.made",             1,                                      \
       "%s: %u block, in %s|%s: %u blocks, in %s")                                        \
     X(LIBS_INCLUDED,    "libs.included",         0, "#include %s added")                 \
+    X(CMAKE_MADE,       "cmake.made",            1,                                      \
+      "CMakeLists.txt made: %u .c file, the libraries it includes linked"               \
+      "|CMakeLists.txt made: %u .c files, the libraries they include linked")           \
+    X(CMAKE_NO_SOURCES, "cmake.no_sources",      0, "No .c files in this project: nothing for CMake to build yet") \
+    X(CMAKE_NO_PROJECT, "cmake.no_project",      0, "Open a .c file first: its project gets the CMakeLists.txt") \
     X(CAT_CONTROL,      "palette.control",       0, "Control")                           \
     X(CAT_OPERATORS,    "palette.operators",     0, "Operators")                         \
     X(CAT_VARIABLES,    "palette.variables",     0, "Variables")                         \
@@ -75,6 +80,8 @@
     X(CAT_FUNCTIONS,    "palette.functions",     0, "Functions")                         \
     X(CAT_TYPES,        "palette.types",         0, "Types")                             \
     X(CAT_DECLS,        "palette.declarations",  0, "File")                              \
+    X(CAT_CM_PROJECT,   "palette.cm_project",    0, "Project")                           \
+    X(CAT_CM_TARGETS,   "palette.cm_targets",    0, "Targets")                           \
     X(EMPTY_TITLE,      "empty.title",           0, "Drop a .c file here")               \
     X(EMPTY_HINT,       "empty.hint",            0, "(or: ccratch file.c)")              \
     /* status bar, left: what just happened */                                           \

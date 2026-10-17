@@ -1,6 +1,8 @@
 #include "ccratch/ccratch.h"
 #include "ccr_ast.h"
+#include "ccr_build.h"
 #include "ccr_canvas.h"
+#include "ccr_cmake.h"
 #include "ccr_codegen.h"
 #include "ccr_config.h"
 #include "ccr_editor.h"
@@ -68,6 +70,7 @@ typedef struct ccr_options {
     const char *theme;          /* --theme NAME, NULL: the saved one */
     bool        no_animations;  /* --no-animations */
     const char *make_blocks;    /* --make-blocks HEADER: a draft pack, exit */
+    const char *make_cmake;     /* --make-cmake DIR: a first CMakeLists.txt, printed */
     const char *const *clang_args;  /* everything after "--" */
     int         clang_arg_count;
 } ccr_options;
@@ -129,6 +132,7 @@ static void print_usage(const char *argv0)
            "  --check-lang FILE      check a language pack for missing or broken text\n"
            "  --make-blocks HEADER   print a draft block pack for a library's header\n"
            "                         (save it as blocks/NAME.yaml and make it read well)\n"
+           "  --make-cmake DIR       print the CMakeLists.txt Ccratch would make for a project\n"
            "  --check-blocks FILE    check a block pack\n"
            "  --list-blocks          show the block packs found, and where\n"
            "  --no-animations        blocks just jump into place (for good: put\n"
@@ -189,6 +193,16 @@ static void dump_ranges(const ccr_ast *a, ccr_node_id id, int depth)
             dump_ranges(a, c, depth + 1);
 }
 
+/* C through clang; CMakeLists.txt and *.cmake through Ccratch's own reader. */
+static bool parse_any(const char *path, const char *const *args, int nargs, ccr_ast *out)
+{
+    if (ccr_cmake_is_cmake(path)) {
+        ccr_cmake_parse_file(path, out);   /* its problems are in out->diags */
+        return out->source != NULL;
+    }
+    return ccr_parse_file(path, args, nargs, out);
+}
+
 static int run_dump_ast(const ccr_options *opt)
 {
     ccr_ast ast;
@@ -197,7 +211,7 @@ static int run_dump_ast(const ccr_options *opt)
         return 2;
     }
 
-    if (!ccr_parse_file(opt->dump_ast, opt->clang_args, opt->clang_arg_count, &ast)) {
+    if (!parse_any(opt->dump_ast, opt->clang_args, opt->clang_arg_count, &ast)) {
         fprintf(stderr, "ccratch: clang could not read '%s'. Opyat' rabotat'...\n", opt->dump_ast);
         ccr_ast_free(&ast);
         return 2;
@@ -219,7 +233,9 @@ static int run_roundtrip(const ccr_options *opt)
     ccr_ast ast;
     if (!ccr_ast_init(&ast))
         return 2;
-    if (!ccr_parse_file(opt->roundtrip, opt->clang_args, opt->clang_arg_count, &ast)) {
+    if (!parse_any(opt->roundtrip, opt->clang_args, opt->clang_arg_count, &ast) ||
+        ccr_ast_count_diags(&ast, CCR_DIAG_ERROR) > (ccr_cmake_is_cmake(opt->roundtrip) ? 0u : ~0u)) {
+        ccr_ast_dump_diags(&ast, stderr);
         fprintf(stderr, "ccratch: clang could not read '%s'\n", opt->roundtrip);
         ccr_ast_free(&ast);
         return 2;
@@ -303,6 +319,8 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
         } else if (strcmp(a, "--lang-template") == 0) {
             ccr_lang_write_template(stdout);
             return 0;
+        } else if (strcmp(a, "--make-cmake") == 0 && i + 1 < argc) {
+            opt->make_cmake = argv[++i];
         } else if (strcmp(a, "--make-blocks") == 0 && i + 1 < argc) {
             opt->make_blocks = argv[++i];
         } else if (strcmp(a, "--check-blocks") == 0 && i + 1 < argc) {
@@ -454,7 +472,10 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     const char *args[CLANG_ARGS_MAX];
     const int nargs = clang_args_for(path, opt, args);
 
-    if (!ccr_parse_file(path, args, nargs, &ast)) {
+    if (!parse_any(path, args, nargs, &ast) ||
+        (ast.lang == CCR_LANG_CMAKE && ccr_ast_count_diags(&ast, CCR_DIAG_ERROR))) {
+        if (ast.diag_count)
+            ccr_ast_dump_diags(&ast, stderr);
         ccr_ast_free(&ast);
         ccr_trf(doc->status, sizeof doc->status, CCR_T_CANNOT_READ, base_name(path));
         doc->has_errors = true;
@@ -657,6 +678,9 @@ static void open_include(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, c
 /* The packs in the palette follow what the file on screen includes. */
 static void palette_follow(const ccr_document *doc)
 {
+    if (g_palette.ready &&
+        !ccr_palette_set_lang(&g_palette, doc->loaded ? doc->ed.ast.lang : CCR_LANG_C))
+        fprintf(stderr, "ccratch: out of memory laying out the palette\n");
     static char last_path[sizeof doc->path];
     static uint32_t last_nodes, last_history;
     const uint32_t nodes = doc->loaded ? doc->ed.ast.node_count : 0;
@@ -778,7 +802,7 @@ static void document_save(ccr_document *doc, const ccr_options *opt)
     uint32_t errors = 0;
     ccr_ast check;
     if (ccr_ast_init(&check)) {
-        if (ccr_parse_file(doc->path, opt->clang_args, opt->clang_arg_count, &check))
+        if (parse_any(doc->path, opt->clang_args, opt->clang_arg_count, &check))
             errors = ccr_ast_count_diags(&check, CCR_DIAG_ERROR);
         if (errors > doc->errors_at_load) {
             fprintf(stderr, "[ccratch] after saving %s:\n", doc->path);
@@ -1269,6 +1293,48 @@ static void libs_make(ccr_document *doc, const ccr_options *opt, const char *spe
     g_libs.name[0] = '\0';
 }
 
+/* -------------------------------------------------------- CMake */
+
+/* The CMake button: the project's CMakeLists.txt, made first if missing. */
+static void cmake_open(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt)
+{
+    char project[CCR_FILES_PATH];
+    if (doc->loaded) {
+        ccr_files_project_of(doc->path, project, (int)sizeof project);
+    } else if (g_files.root[0]) {
+        snprintf(project, sizeof project, "%s", g_files.root);
+    } else {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_CMAKE_NO_PROJECT);
+        doc->has_errors = true;
+        return;
+    }
+    char path[CCR_FILES_PATH + 32];
+    int files = 0;
+    const ccr_cmake_made r = ccr_build_make_cmake(project, doc->loaded ? doc->path : NULL, path,
+                                                  (int)sizeof path, &files);
+    char said[sizeof doc->status];
+    switch (r) {
+    case CCR_CMAKE_THERE:
+        switch_to(doc, cv, viewport, path, opt);
+        return;
+    case CCR_CMAKE_MADE:
+        ccr_files_scan(&g_files, project, path);   /* the panel shows it, the project is it */
+        if (switch_to(doc, cv, viewport, path, opt)) {
+            ccr_trnf(said, sizeof said, CCR_T_CMAKE_MADE, (unsigned long)files, (unsigned)files);
+            snprintf(doc->status, sizeof doc->status, "%s", said);
+            doc->has_errors = false;
+        }
+        return;
+    case CCR_CMAKE_NO_SOURCES:
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_CMAKE_NO_SOURCES);
+        break;
+    case CCR_CMAKE_CANNOT:
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_CANNOT_WRITE, "CMakeLists.txt");
+        break;
+    }
+    doc->has_errors = true;
+}
+
 #define LIBS_W 640.0f
 
 static void libs_frame(int width, int height, ccr_document *doc, const ccr_options *opt)
@@ -1374,8 +1440,11 @@ static void libs_frame(int width, int height, ccr_document *doc, const ccr_optio
         g_libs.open = false;
 }
 
-static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
+/* The top bar; true if the CMake button was clicked (the caller has what
+ * opening a file takes). */
+static bool draw_topbar(int width, ccr_document *doc, eula_view *ev)
 {
+    bool cmake = false;
     const bool modal = ev->open;
     ccr_gui_rect((ccr_rect){ 0, 0, (float)width, TOPBAR_H }, COL_BAR);
     ccr_gui_circle((ccr_vec2){ 22.0f, TOPBAR_H * 0.5f }, 8.0f, COL_ACCENT);
@@ -1410,6 +1479,11 @@ static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
         if (g_libs.open) g_libs.open = false;
         else libs_open(doc);
     }
+    const float cw = ccr_gui_text_width("CMake", 16.0f) + 24.0f;
+    const bool on_cmake = doc->loaded && doc->ed.ast.lang == CCR_LANG_CMAKE;
+    if (ccr_gui_button((ccr_rect){ (float)width - 238.0f - tw - fw - lw - cw, 7.0f, cw, 26.0f },
+                       "CMake", on_cmake ? button_style(true) : bs) && !modal && !g_libs.open)
+        cmake = true;
     if (ccr_gui_button((ccr_rect){ (float)width - 214.0f - tw, 7.0f, 32.0f, 26.0f }, "?", bs) &&
         !modal) {
         ev->open = true;   /* the agreement again, to read it at leisure */
@@ -1420,6 +1494,7 @@ static void draw_topbar(int width, ccr_document *doc, eula_view *ev)
     if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(CCR_T_BUILD), button_style(true)) &&
         !modal)
         printf("[ccratch] build: nothing to build yet. Go do some shrine work.\n");
+    return cmake;
 }
 
 static void draw_statusbar(int width, int height, const ccr_canvas *cv, const ccr_document *doc)
@@ -1640,6 +1715,18 @@ int ccr_run(int argc, char **argv)
     }
     if (opt.dump_ast)
         return run_dump_ast(&opt);
+    if (opt.make_cmake) {
+        ccr_lib_load_project(opt.make_cmake, stderr);   /* what packs know about linking */
+        char *text = ccr_build_cmake_text(opt.make_cmake, NULL, NULL);
+        ccr_lib_unload();
+        if (!text) {
+            fprintf(stderr, "ccratch: no .c files in '%s'\n", opt.make_cmake);
+            return 1;
+        }
+        fputs(text, stdout);
+        free(text);
+        return 0;
+    }
     if (opt.make_blocks) {
         char project[CCR_FILES_PATH];
         ccr_files_project_of(opt.make_blocks, project, (int)sizeof project);
@@ -1930,7 +2017,10 @@ int ccr_run(int argc, char **argv)
                 g_fpanel.naming = CCR_NAMING_NONE;
             }
         }
-        draw_topbar(w, &doc, &eula);
+        if (draw_topbar(w, &doc, &eula) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
+            cmake_open(&doc, &canvas, viewport, &opt);
+            te.node = CCR_NONE;
+        }
         draw_statusbar(w, h, &canvas, &doc);
         ccr_pie_draw(&pie);
         if (doc.loaded)

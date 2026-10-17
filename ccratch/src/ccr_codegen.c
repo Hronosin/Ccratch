@@ -120,6 +120,8 @@ static void reindent(gen *g, size_t from, const char *old, size_t old_n, const c
  * statement's own indent), so the slashes line up like an editor's. */
 static void comment_out(gen *g, size_t from, size_t keep)
 {
+    const char *mark = g->ast->lang == CCR_LANG_CMAKE ? "# " : "// ";
+    const char *bare = g->ast->lang == CCR_LANG_CMAKE ? "#" : "//";
     if (!g->ok)
         return;
     size_t n = g->len - from;
@@ -130,22 +132,78 @@ static void comment_out(gen *g, size_t from, size_t keep)
     }
     memcpy(copy, g->buf + from, n);
     g->len = from;
-    puts_(g, "// ");
+    puts_(g, mark);
     for (size_t i = 0; i < n; ++i) {
         put(g, copy + i, 1);
         if (copy[i] != '\n')
             continue;
         for (size_t k = 0; k < keep && i + 1 < n && (copy[i + 1] == ' ' || copy[i + 1] == '\t'); ++k)
             put(g, copy + ++i, 1);
-        puts_(g, (i + 1 < n && copy[i + 1] != '\n') ? "// " : "//");
+        puts_(g, (i + 1 < n && copy[i + 1] != '\n') ? mark : bare);
     }
     free(copy);
+}
+
+/* CMake has no braces: a body is its commands, one per line, and the
+ * end*() line after them; the file's own commands start at column 0. */
+static void rebuild_cmake(gen *g, ccr_node_id id, unsigned depth)
+{
+    const ccr_node *b = N(g, id);
+    const bool top = b->parent != CCR_NONE && N(g, b->parent)->kind == CCR_NODE_FUNCTION;
+    const char *indent = ccr_ast_str(g->ast, b->indent);
+    const char *close = ccr_ast_str(g->ast, b->close_indent);
+    bool first = true;
+    for (ccr_node_id c = b->first_child; c != CCR_NONE && g->ok; c = N(g, c)->next_sibling) {
+        const ccr_node *k = N(g, c);
+        uint32_t eb = k->ext_b, ee = k->ext_e;
+        if (ee <= eb || eb > k->src_b || ee < k->src_e) {
+            eb = k->src_b;
+            ee = k->src_e;
+        }
+        char line_indent[512];
+        snprintf(line_indent, sizeof line_indent, "%s%s", indent, ccr_ast_str(g->ast, k->extra_indent));
+        if (top && first) {
+            if (g->len > 0 && g->buf[g->len - 1] != '\n')
+                puts_(g, "\n");   /* a file that did not end its last line */
+        } else {
+            if ((k->flags & CCR_FLAG_BLANK_BEFORE) && !first)
+                puts_(g, "\n");
+            puts_(g, "\n");
+            puts_(g, line_indent);
+        }
+        first = false;
+        size_t start = g->len;
+        put_src(g, eb, k->src_b);
+        emit(g, c, depth + 1);
+        put_src(g, k->src_e, ee);
+        /* the command's own indent is what moves; a comment above it that
+         * sat elsewhere keeps its place relative to the line */
+        uint32_t ib, ie;
+        if (indent_before(g->ast, k->src_b, &ib, &ie) || indent_before(g->ast, eb, &ib, &ie))
+            reindent(g, start, g->ast->source + ib, ie - ib, line_indent, strlen(line_indent));
+        if (k->flags & CCR_FLAG_COMMENTED)
+            comment_out(g, start, strlen(line_indent));
+    }
+    const char *tail = ccr_ast_str(g->ast, b->aux);
+    if (*tail) {
+        puts_(g, "\n");
+        puts_(g, indent);
+        puts_(g, tail);
+    }
+    if (!top) {
+        puts_(g, "\n");
+        puts_(g, close);
+    }
 }
 
 /* A Block whose statements moved: written anew from their original text. */
 static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
 {
     const ccr_node *b = N(g, id);
+    if (g->ast->lang == CCR_LANG_CMAKE) {
+        rebuild_cmake(g, id, depth);
+        return;
+    }
     if (b->flags & CCR_FLAG_UNSAFE_GAP) {
         fail(g, ccr_tr(CCR_T_GEN_UNSAFE_GAP), b->line);
         return;
@@ -429,6 +487,10 @@ static int operand_need(const gen *g, ccr_node_id parent, uint32_t index)
  * not parsed there get parentheses if C would otherwise bind them wrong. */
 static void emit_operand(gen *g, ccr_node_id id, unsigned depth)
 {
+    if (g->ast->lang == CCR_LANG_CMAKE) {   /* words, no precedence */
+        emit(g, id, depth);
+        return;
+    }
     const ccr_node *n = N(g, id);
     uint32_t index = 0;
     if (n->parent != CCR_NONE)
@@ -493,9 +555,80 @@ static void body(gen *g, ccr_node_id id, unsigned depth)
  * are relative (the first line starts at column 0, nested blocks add 4
  * spaces); the block it is dropped into shifts the whole thing into place.
  */
+static void print_new_cmake(gen *g, ccr_node_id id, unsigned depth)
+{
+    const ccr_node *n = N(g, id);
+    const char *name = ccr_ast_str(g->ast, n->name);
+    switch (n->kind) {
+    case CCR_NODE_TEXT:
+        puts_(g, name);   /* an empty slot is no argument at all */
+        break;
+    case CCR_NODE_BLOCK:
+        rebuild_cmake(g, id, depth);
+        break;
+    case CCR_NODE_CALL: {
+        if (!filled(g, id, name))
+            break;
+        puts_(g, name);
+        puts_(g, "(");
+        bool first = true;
+        for (ccr_node_id a = n->first_child; a != CCR_NONE; a = N(g, a)->next_sibling) {
+            if (N(g, a)->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, a)->name))
+                continue;
+            if (!first)
+                puts_(g, " ");
+            first = false;
+            slot(g, a, depth);
+        }
+        puts_(g, ")");
+        break;
+    }
+    case CCR_NODE_IF:
+    case CCR_NODE_SCOPE: {
+        const bool is_if = n->kind == CCR_NODE_IF;
+        const char *head = is_if ? ((n->flags & CCR_FLAG_ELSEIF) ? "elseif" : "if") : name;
+        puts_(g, head);
+        puts_(g, "(");
+        slot(g, kid(g, id, 0), depth);
+        puts_(g, ")");
+        const ccr_node_id b1 = kid(g, id, 1), b2 = kid(g, id, 2);
+        if (b1 != CCR_NONE)
+            emit(g, b1, depth + 1);
+        else
+            puts_(g, "\n");
+        if (is_if && b2 != CCR_NONE) {
+            const ccr_node_id e = N(g, b2)->first_child;
+            if (e != CCR_NONE && (N(g, e)->flags & CCR_FLAG_ELSEIF)) {
+                emit(g, e, depth + 1);   /* elseif(...) ...: its own end is ours */
+                break;
+            }
+            puts_(g, "else()");
+            emit(g, b2, depth + 1);
+        }
+        if (n->flags & CCR_FLAG_ELSEIF)
+            break;
+        if (is_if) {
+            puts_(g, "endif()");
+        } else {
+            puts_(g, "end");
+            puts_(g, name);
+            puts_(g, "()");
+        }
+        break;
+    }
+    default:
+        fail(g, "internal: cannot print a new %s block in CMake", ccr_node_kind_name(n->kind));
+        break;
+    }
+}
+
 static void print_new(gen *g, ccr_node_id id, unsigned depth)
 {
     const ccr_node *n = N(g, id);
+    if (g->ast->lang == CCR_LANG_CMAKE) {
+        print_new_cmake(g, id, depth);
+        return;
+    }
     const ccr_node_id p = n->parent;
     const bool statement = p != CCR_NONE && N(g, p)->kind == CCR_NODE_BLOCK;
 
@@ -867,7 +1000,8 @@ static void emit(gen *g, ccr_node_id id, unsigned depth)
             puts_(g, "\n");
             continue;
         }
-        if (lives_in_gaps(k->kind) || k->place_e <= k->place_b) {
+        if (lives_in_gaps(k->kind) ||
+            (k->place_e <= k->place_b && !(g->ast->lang == CCR_LANG_CMAKE && k->place_b >= cur))) {
             if (dirty)
                 fail(g, ccr_tr(CCR_T_GEN_LOST), k->line);
             continue;
@@ -934,7 +1068,8 @@ static bool spliceable(const ccr_ast *ast, ccr_node_id id)
         /* a child that is all of its parent: the parent has no text of its
          * own (a macro), unless it is the Block around a braceless body */
         if (n->kind != CCR_NODE_BLOCK && !(k->flags & CCR_FLAG_NEW) &&
-            k->place_b == n->src_b && k->place_e == n->src_e)
+            k->place_b == n->src_b && k->place_e == n->src_e &&
+            !(ast->lang == CCR_LANG_CMAKE && n->kind == CCR_NODE_FUNCTION))   /* a file of commands only */
             return false;
         cur = k->place_e;
     }

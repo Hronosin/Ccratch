@@ -194,7 +194,9 @@ static int read_pack(const char *path, bool keep, FILE *log)
     else if (pack.header[0])
         snprintf(pack.include, sizeof pack.include, "\"%s\"", pack.header);
     snprintf(pack.link, sizeof pack.link, "%s", ccr_yaml_str(r, "link", ""));
-    static const char *const known[] = { "name", "header", "include", "link", "color", "blocks", "enums" };
+    snprintf(pack.find, sizeof pack.find, "%s", ccr_yaml_str(r, "find_package", ""));
+    static const char *const known[] = { "name", "header", "include", "link", "find_package", "color",
+                                         "blocks", "enums" };
     for (const ccr_yaml_node *k = r->first; k; k = k->next) {
         bool ok = strncmp(k->key, "name.", 5) == 0;
         for (size_t i = 0; i < sizeof known / sizeof known[0] && !ok; ++i)

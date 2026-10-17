@@ -26,6 +26,11 @@ static const ccr_text g_cat_names[CCR_TCAT_COUNT] = {
     [CCR_TCAT_FUNCTIONS] = CCR_T_CAT_FUNCTIONS,
     [CCR_TCAT_TYPES]     = CCR_T_CAT_TYPES,
     [CCR_TCAT_DECLS]     = CCR_T_CAT_DECLS,
+    [CCR_TCAT_CM_PROJECT] = CCR_T_CAT_CM_PROJECT,
+    [CCR_TCAT_CM_TARGETS] = CCR_T_CAT_CM_TARGETS,
+    [CCR_TCAT_CM_LIBS]    = CCR_T_LIBS_TITLE,
+    [CCR_TCAT_CM_VARS]    = CCR_T_CAT_VARIABLES,
+    [CCR_TCAT_CM_CONTROL] = CCR_T_CAT_CONTROL,
 };
 
 static const ccr_theme_cat g_cat_colors[CCR_TCAT_COUNT] = {
@@ -36,6 +41,11 @@ static const ccr_theme_cat g_cat_colors[CCR_TCAT_COUNT] = {
     [CCR_TCAT_FUNCTIONS] = CCR_CAT_CALL,
     [CCR_TCAT_TYPES]     = CCR_CAT_TYPE,
     [CCR_TCAT_DECLS]     = CCR_CAT_EVENT,   /* the hat's colour: where code starts */
+    [CCR_TCAT_CM_PROJECT] = CCR_CAT_TYPE,
+    [CCR_TCAT_CM_TARGETS] = CCR_CAT_PREPROC,
+    [CCR_TCAT_CM_LIBS]    = CCR_CAT_LIBRARY,
+    [CCR_TCAT_CM_VARS]    = CCR_CAT_VARIABLE,
+    [CCR_TCAT_CM_CONTROL] = CCR_CAT_CONTROL,
 };
 
 /* Halfway between two colours (the flyout: between palette and canvas). */
@@ -111,7 +121,7 @@ static bool add_item(ccr_palette *p, ccr_template t, float *y)
     ccr_node_id made = ccr_template_build(&p->ast, t, root);
     if (made == CCR_NONE)
         return false;
-    if (t == CCR_TEMPLATE_CODE)   /* an empty white bar says nothing: name it */
+    if (t == CCR_TEMPLATE_CODE || t == CCR_TEMPLATE_CM_LINE)   /* an empty white bar says nothing: name it */
         p->ast.nodes[made].name = ccr_ast_intern(&p->ast, ccr_tr(CCR_T_TEMPLATE_CODE));
 
     ccr_palette_item *it = &p->items[p->item_count];
@@ -153,6 +163,7 @@ static void heading(ccr_palette *p, const char *name, int color, float *y)
 bool ccr_palette_init(ccr_palette *p)
 {
     const float scroll = p->ready ? p->scroll : 0.0f;
+    const ccr_lang_kind lang = p->lang;
     /* the includes survive: they say which packs show */
     char (*keep)[128] = malloc(sizeof p->includes);
     const int keep_n = p->include_count;
@@ -165,19 +176,32 @@ bool ccr_palette_init(ccr_palette *p)
         free(keep);
     }
     p->hot = -1;
+    p->lang = lang;
     if (!ccr_ast_init(&p->ast))
         return false;
+    p->ast.lang = lang;   /* blocks drawn the way the file on screen speaks */
 
+    const bool cmake = lang == CCR_LANG_CMAKE;
     float y = PAD_TOP;
     for (int c = 0; c < CCR_TCAT_COUNT; ++c) {
+        if (ccr_tcat_is_cmake((ccr_tcat)c) != cmake)
+            continue;
         heading(p, ccr_tr(g_cat_names[c]), g_cat_colors[c], &y);
         for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t)
             if (ccr_template_category((ccr_template)t) == (ccr_tcat)c && !add_item(p, (ccr_template)t, &y))
                 goto oom;
+        /* CMake: every pack that says how to link its library */
+        for (int k = 0; c == CCR_TCAT_CM_LIBS && k < ccr_lib_pack_count(); ++k) {
+            const ccr_lib_pack *pk = ccr_lib_pack_at(k);
+            if (pk->find[0] && !add_item(p, ccr_template_pack_find(k), &y))
+                goto oom;
+            if (pk->link[0] && !add_item(p, ccr_template_pack_link(k), &y))
+                goto oom;
+        }
         y += CAT_GAP;
     }
     /* then a section per block pack the file can use */
-    for (int k = 0; k < ccr_lib_pack_count(); ++k) {
+    for (int k = 0; k < ccr_lib_pack_count() && !cmake; ++k) {
         const ccr_lib_pack *pk = ccr_lib_pack_at(k);
         if (!pack_shown(p, pk) || pk->count == 0 || p->cat_count == CCR_PALETTE_MAX_CATS)
             continue;
@@ -216,6 +240,15 @@ void ccr_palette_free(ccr_palette *p)
 {
     free_items(p);
     p->ready = false;
+}
+
+bool ccr_palette_set_lang(ccr_palette *p, ccr_lang_kind lang)
+{
+    if (p->lang == lang)
+        return true;
+    p->lang = lang;
+    p->scroll = p->scroll_to = 0.0f;
+    return !p->ready || ccr_palette_relayout(p);
 }
 
 bool ccr_palette_relayout(ccr_palette *p)

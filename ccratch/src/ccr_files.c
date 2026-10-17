@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE   /* realpath */
 #include "ccr_files.h"
+#include "ccr_cmake.h"
 #include "ccr_lang.h"
 #include "ccr_theme.h"
 
@@ -16,7 +17,7 @@
 static bool is_source(const char *name)
 {
     const char *dot = strrchr(name, '.');
-    return dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0);
+    return (dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0)) || ccr_cmake_is_cmake(name);
 }
 
 /* Folders nobody wants to see code in. */
@@ -310,6 +311,14 @@ void ccr_files_project_of(const char *path, char *out, int cap)
             break;
         *slash = '\0';
     }
+    /* nothing says where it starts: src/main.c is in a project above src */
+    static const char *const inner[] = { "src", "source", "sources", "include", "inc" };
+    const char *base = strrchr(dir, '/');
+    for (size_t i = 0; base && base != dir && i < sizeof inner / sizeof inner[0]; ++i)
+        if (strcmp(base + 1, inner[i]) == 0) {
+            snprintf(out, (size_t)cap, "%.*s", (int)(base - dir), dir);
+            return;
+        }
     snprintf(out, (size_t)cap, "%s", dir);
 }
 

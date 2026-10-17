@@ -50,6 +50,7 @@ typedef struct ccr_palette {
     int               include_count;
     float             scroll, scroll_to;   /* unscaled units from the top */
     int               hot;                 /* item under the mouse, or -1 */
+    ccr_lang_kind     lang;                /* C's blocks, or CMake's */
     bool              ready;
 } ccr_palette;
 
@@ -61,6 +62,9 @@ bool ccr_palette_relayout(ccr_palette *p);
 /* The headers the file on screen includes: packs for them show (packs
  * that name no header always do). Lays out again if that changes. */
 bool ccr_palette_set_includes(ccr_palette *p, const char *const *includes, int count);
+
+/* C or CMake: the blocks for the file on screen. */
+bool ccr_palette_set_lang(ccr_palette *p, ccr_lang_kind lang);
 
 /* Wheel scrolling, category clicks, the glide. `area` is the whole palette
  * (strip and flyout), screen coordinates. */

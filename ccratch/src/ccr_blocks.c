@@ -1,4 +1,5 @@
 #include "ccr_blocks.h"
+#include "ccr_cmake.h"
 #include "ccr_lib.h"
 #include "ccr_theme.h"
 
@@ -232,7 +233,7 @@ static bool op_is_bool(const char *op)
 static const ccr_lib_block *lib_of(const layout *L, ccr_node_id id)
 {
     const ccr_node *n = N(L, id);
-    if (n->kind != CCR_NODE_CALL)
+    if (n->kind != CCR_NODE_CALL || L->ast->lang == CCR_LANG_CMAKE)
         return NULL;
     int args = 0;
     for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling) {
@@ -826,8 +827,91 @@ static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w
     return h;
 }
 
+/* A CMake command: its name, then its arguments: keywords (PRIVATE,
+ * REQUIRED...) as words, everything else a slot. */
+static void cmake_items(const layout *L, ccr_node_id id, items *it)
+{
+    const ccr_node *n = N(L, id);
+    it_text(it, S(L, n->name));
+    for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling) {
+        const ccr_node *k = N(L, c);
+        if (k->kind == CCR_NODE_TEXT && ccr_cmake_is_keyword(S(L, k->name)))
+            it_text(it, S(L, k->name));
+        else
+            it_expr(it, c);
+    }
+}
+
+static float emit_cmake_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w)
+{
+    const ccr_node *n = N(L, id);
+    items head = { .n = 0, .used = 0 };
+    size2 sz = { 0, 0 };
+    switch (n->kind) {
+    case CCR_NODE_IF: {
+        /* if(), then each elseif() and else() under its mouth, one block */
+        enum { MAX_ARMS = 16 };
+        items labels[MAX_ARMS];
+        mouth m[MAX_ARMS];
+        int count = 0;
+        it_text(&head, "if");
+        it_expr(&head, child_at(L, id, 0));
+        ccr_node_id cur = id;
+        while (cur != CCR_NONE && count < MAX_ARMS) {
+            m[count] = (mouth){ child_at(L, cur, 1), NULL };
+            const ccr_node_id other = child_at(L, cur, 2);
+            if (other == CCR_NONE)
+                break;
+            labels[count] = (items){ .n = 0, .used = 0 };
+            const ccr_node_id e = N(L, other)->first_child;
+            if (e != CCR_NONE && (N(L, e)->flags & CCR_FLAG_ELSEIF)) {
+                it_text(&labels[count], "elseif");
+                it_expr(&labels[count], child_at(L, e, 0));
+                m[count].label_after = &labels[count];
+                ++count;
+                cur = e;
+                continue;
+            }
+            it_text(&labels[count], "else");
+            m[count].label_after = &labels[count];
+            ++count;
+            if (count < MAX_ARMS)
+                m[count] = (mouth){ other, NULL };
+            break;
+        }
+        sz = emit_c_block(L, &head, m, count + 1 > MAX_ARMS ? MAX_ARMS : count + 1, CAT_CONTROL,
+                          x, y, id, max_w);
+        break;
+    }
+    case CCR_NODE_SCOPE: {
+        it_text(&head, S(L, n->name));
+        it_expr(&head, child_at(L, id, 0));
+        mouth m = { child_at(L, id, 1), NULL };
+        sz = emit_c_block(L, &head, &m, 1, CAT_CONTROL, x, y, id, max_w);
+        break;
+    }
+    case CCR_NODE_CALL:
+        cmake_items(L, id, &head);
+        sz = emit_line_block(L, &head, (category)ccr_cmake_category(S(L, n->name)), x, y, id);
+        break;
+    case CCR_NODE_TEXT:
+        it_expr(&head, id);
+        sz = emit_line_block(L, &head, CAT_CALL, x, y, id);
+        break;
+    default:
+        it_text(&head, ccr_node_kind_name(n->kind));
+        sz = emit_line_block(L, &head, CAT_DRAGON, x, y, id);
+        break;
+    }
+    if (sz.w > *max_w)
+        *max_w = sz.w;
+    return sz.h;
+}
+
 static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *max_w)
 {
+    if (L->ast->lang == CCR_LANG_CMAKE)
+        return emit_cmake_stmt(L, id, x, y, max_w);
     const ccr_node *n = N(L, id);
     const uint32_t kids = child_count(L, id);
     items head = { .n = 0, .used = 0 };
@@ -1073,7 +1157,9 @@ static void new_signature(const layout *L, ccr_node_id fn, items *it)
 static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
 {
     items head = { .n = 0, .used = 0 };
-    if (N(L, fn)->flags & CCR_FLAG_NEW)
+    if (L->ast->lang == CCR_LANG_CMAKE)
+        it_text(&head, S(L, N(L, fn)->name));   /* the file: CMake runs it top to bottom */
+    else if (N(L, fn)->flags & CCR_FLAG_NEW)
         new_signature(L, fn, &head);
     else
         signature(L, fn, &head);

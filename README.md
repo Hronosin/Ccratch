@@ -26,6 +26,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 15: whole files from blocks: functions, structs, headers with guards, new files and folders.
 - Step 16: folding, and libraries as blocks from YAML packs (raylib to start with).
 - Step 17: any library made into blocks from inside Ccratch: its headers read for the API, its .so/.a for the ABI.
+- Step 18: CMake as blocks: CMakeLists.txt opened, edited and saved like C, or made for a project that has none.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -225,6 +226,41 @@ ccratch --list-blocks
 YAML because packs are written by hand: comments, no quotes around every
 word, no commas to forget. Ccratch reads the part of YAML packs need
 itself, no library pulled in for it.
+
+## CMake as blocks
+
+Building comes in two steps: what to build (CMake), then building it.
+Ccratch does the first with blocks too. `CMakeLists.txt` and `*.cmake`
+open like any C file, read by Ccratch's own CMake reader (no clang
+involved): a hat with the file's name, a command per block, arguments as
+slots, `PRIVATE`, `REQUIRED`, `VERSION` and the like as words. `if()` /
+`elseif()` / `else()` are C-shaped blocks, and so are `foreach`, `while`,
+`function`, `macro` and `block`. Saving works as for C: text nobody
+touched is copied byte for byte (comments, a long `add_executable` broken
+over lines), what changed is written in the file's own indentation. The
+tests read, save and rebuild every module of the CMake installed, a good
+thousand files.
+
+![a CMakeLists.txt as blocks: project, add_executable, an if/else for compiler warnings, and the Libraries section](docs/cmake.png)
+
+The palette follows the file on screen: C's blocks for C, and for CMake
+**Project** (`project`, `add_executable`, `add_library`...), **Targets**
+(include folders, options, definitions, linking), **Libraries**,
+**Variables** and **Control**. Libraries has a `find_package` and a
+`target_link_libraries` for every block pack that says how its library
+is linked (`link: z`, `find_package: raylib REQUIRED` in the pack).
+
+The **CMake** button in the top bar opens the project's `CMakeLists.txt`.
+If there is none, it makes one first, from what is there:
+
+- every `.c` file goes into one program (a second `main()` is left out);
+- `include/` is searched for headers;
+- what the code includes decides what is linked: packs' `link:` and
+  `find_package:`, `math.h` brings `libm`, `pthread.h` brings threads;
+- warnings on, for GCC/Clang and for MSVC alike.
+
+It is plain CMake: `ccratch --make-cmake DIR` prints the same for a
+look first, and `cmake -S . -B build && cmake --build build` builds it.
 
 ## Expressions
 
@@ -497,6 +533,8 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_files   the project tree, and the files panel
   ccr_lib     block packs: libraries as blocks
   ccr_api     a library's public functions: headers (API) and .so/.a (ELF ABI)
+  ccr_cmake   CMake files into the same syntax tree, as blocks
+  ccr_build   the project as something to build: a first CMakeLists.txt
   ccr_yaml    the bit of YAML block packs are written in
   ccr_pie     the pie menu: picks an action by direction, knows no editor
   ccr_lang    every text the window shows, and the language packs
@@ -584,6 +622,7 @@ ccratch --lang-template                  English text as a pack to translate
 ccratch --check-lang uk.lang             check a pack before sharing it
 ccratch file.c --no-animations           blocks just jump into place
 ccratch --make-blocks lib.h              a draft block pack for a library
+ccratch --make-cmake DIR                 the CMakeLists.txt Ccratch would make for a project
 ccratch --check-blocks pack.yaml         check a block pack
 ccratch --list-blocks                    block packs found, and where
 ```

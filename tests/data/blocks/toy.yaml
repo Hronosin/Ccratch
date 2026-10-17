@@ -2,6 +2,8 @@
 name: toy
 name.ru: игрушка
 header: toy.h
+link: toy
+find_package: Toy REQUIRED
 blocks:
   - call: draw_dot
     text: dot at {x} {y}

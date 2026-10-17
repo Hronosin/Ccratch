@@ -148,8 +148,8 @@ static ccr_node_id stack_item_of(const ccr_editor *ed, ccr_node_id id)
         ccr_node_id p = N(ed, id)->parent;
         if (p == CCR_NONE || N(ed, p)->kind == CCR_NODE_TRANSLATION_UNIT)
             return CCR_NONE;
-        if (N(ed, p)->kind == CCR_NODE_BLOCK)
-            return id;
+        if (N(ed, p)->kind == CCR_NODE_BLOCK && !(N(ed, id)->flags & CCR_FLAG_ELSEIF))
+            return id;   /* an elseif() is part of its if(): that moves */
         id = p;
     }
     return CCR_NONE;
@@ -637,6 +637,8 @@ bool ccr_editor_set_text(ccr_editor *ed, ccr_node_id slot, const char *text)
     begin_change(ed);
     ccr_ast_touch(&ed->ast, slot);
     ed->ast.nodes[slot].name = ccr_ast_intern(&ed->ast, text);
+    /* a word read from the file (CMake's arguments): printed from now on */
+    ed->ast.nodes[slot].flags |= CCR_FLAG_NEW;
     /* the block it sits in changes, so saving rebuilds that part */
     ccr_node_id p = N(ed, slot)->parent;
     const uint32_t word = N(ed, slot)->flags & CCR_FLAG_WORD;
@@ -755,7 +757,9 @@ bool ccr_editor_can_fold(const ccr_editor *ed, ccr_node_id node)
         return false;
     const ccr_node *n = N(ed, node);
     switch (n->kind) {
-    case CCR_NODE_IF: case CCR_NODE_WHILE: case CCR_NODE_DO_WHILE: case CCR_NODE_FOR:
+    case CCR_NODE_IF:
+        return !(n->flags & CCR_FLAG_ELSEIF);   /* the if() it is part of folds */
+    case CCR_NODE_WHILE: case CCR_NODE_DO_WHILE: case CCR_NODE_FOR: case CCR_NODE_SCOPE:
     case CCR_NODE_SWITCH: case CCR_NODE_CASE: case CCR_NODE_DEFAULT:
         return true;
     case CCR_NODE_BLOCK:   /* a bare { } in a stack; not a body, not a loose root */

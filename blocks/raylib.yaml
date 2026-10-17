@@ -2,6 +2,8 @@
 # The whole library, as a draft: ccratch --make-blocks raylib.h
 name: raylib
 header: raylib.h
+link: raylib
+find_package: raylib REQUIRED   # CMake finds it; the program links it
 color: library
 blocks:
   # --- the window

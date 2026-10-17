@@ -58,6 +58,8 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(GOTO,             "Goto")               \
     X(LABEL,            "Label")              \
     X(EMPTY,            "Empty")              \
+    /* CMake: foreach / while / function / macro / block ... end*() */ \
+    X(SCOPE,            "Scope")              \
     /* expressions */                         \
     X(CALL,             "Call")               \
     X(BINARY_OP,        "BinaryOp")           \
@@ -161,6 +163,8 @@ typedef struct ccr_node {
 #define CCR_FLAG_WORD        (CCR_FLAG_WORD_NAME | CCR_FLAG_WORD_TYPE)
 #define CCR_FLAG_COLLAPSED   (1u << 18)  /* folded to one line on the canvas:
                                             a view, not an edit (undo keeps it) */
+#define CCR_FLAG_ELSEIF      (1u << 19)  /* CMake: an If that is the elseif()
+                                            of the If around it */
 #define CCR_FLAG_TOPLEVEL    (1u << 17)  /* loose root holding one declaration
                                             for the file itself (a function,
                                             a struct, an #include...) */
@@ -202,7 +206,11 @@ typedef struct ccr_journal {
     bool            oom;
 } ccr_journal;
 
+/* What the tree was read from: saving and drawing speak its language. */
+typedef enum ccr_lang_kind { CCR_LANG_C, CCR_LANG_CMAKE } ccr_lang_kind;
+
 typedef struct ccr_ast {
+    ccr_lang_kind lang;
     ccr_node *nodes;
     uint32_t  node_count, node_cap;
 
