@@ -2,6 +2,7 @@
 #include "ccr_ast.h"
 #include "ccr_build.h"
 #include "ccr_canvas.h"
+#include "ccr_ccdb.h"
 #include "ccr_cmake.h"
 #include "ccr_codegen.h"
 #include "ccr_config.h"
@@ -65,6 +66,8 @@ typedef struct ccr_options {
     bool        ranges;         /* --ranges: with the source text of each node */
     const char *roundtrip;      /* parse, write back unchanged, compare */
     const char *open;           /* file to open in the editor */
+    const char *also[8];        /* more files, waiting behind it (Ctrl+Tab) */
+    int         also_n;
     int         zoom_percent;   /* initial zoom, 0 = 100% */
     const char *lang;           /* --lang CODE, NULL: pick one */
     bool        eula;           /* --eula: print the agreement, exit */
@@ -117,8 +120,9 @@ const char *ccr_version(void)
 static void print_usage(const char *argv0)
 {
     printf("Ccratch %s - Scratch for raw C\n\n"
-           "usage: %s [options] [FILE.c]\n\n"
-           "  FILE.c                 open this file as blocks (or drop it on the window)\n"
+           "usage: %s [options] [FILE.c...]\n\n"
+           "  FILE.c                 open this file as blocks (or drop it on the window);\n"
+           "                         more files open too, behind it (Ctrl+Tab)\n"
            "  --help                 show this and leave\n"
            "  --version              print version\n"
            "  --about                show which libclang and headers are used\n"
@@ -174,6 +178,17 @@ static void hint_missing_headers(const ccr_ast *ast)
             fprintf(stderr,
                     "[ccratch] hint: clang's own headers were not found; your code is probably fine.\n"
                     "          Run 'ccratch --about' to see where Ccratch looked.\n");
+            return;
+        }
+    }
+    for (uint32_t i = 0; i < ast->diag_count; ++i) {
+        const char *msg = ccr_ast_str(ast, ast->diags[i].message);
+        if (strstr(msg, "' file not found")) {
+            fflush(stdout);
+            fprintf(stderr,
+                    "[ccratch] hint: a header was not found. Ccratch reads the flags a file is built\n"
+                    "          with from the project's compile_commands.json: build it once (Build,\n"
+                    "          Ctrl+B, or CMake with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON) and reopen (F5).\n");
             return;
         }
     }
@@ -348,6 +363,8 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             opt->zoom_percent = atoi(argv[++i]);
         } else if (a[0] != '-' && !opt->open) {
             opt->open = a;
+        } else if (a[0] != '-' && opt->also_n < 8) {
+            opt->also[opt->also_n++] = a;
         } else {
             fprintf(stderr, "ccratch: unknown option '%s' (try --help)\n", a);
             return 2;
@@ -491,15 +508,24 @@ static bool glide_step(ccr_canvas *cv, float dt)
 /* What clang gets for a file of the project around `path`: the command
  * line's flags, then the project's root and its include/ (so its own
  * headers are found without -I). `args` holds CLANG_ARGS_MAX. */
-#define CLANG_ARGS_MAX 66
+#define CLANG_ARGS_MAX (66 + CCR_CCDB_MAX_ARGS)
 static int clang_args_for(const char *path, const ccr_options *opt, const char **args)
 {
     int nargs = 0;
-    for (int i = 0; i < opt->clang_arg_count && nargs < CLANG_ARGS_MAX - 2; ++i)
+    for (int i = 0; i < opt->clang_arg_count && nargs < 64; ++i)
         args[nargs++] = opt->clang_args[i];
     static char inc_root[CCR_FILES_PATH + 3], inc_dir[CCR_FILES_PATH + 11];
     char project[CCR_FILES_PATH];
     ccr_files_project_of(path, project, (int)sizeof project);
+    /* the flags the project's own build uses for it, if it says
+     * (compile_commands.json): libraries fetched into build/_deps... */
+    static ccr_ccdb_args cc;
+    ccr_ccdb_args_free(&cc);
+    char db[CCR_FILES_PATH];
+    if (!ccr_cmake_is_cmake(path) && ccr_ccdb_find(project, db, (int)sizeof db) &&
+        ccr_ccdb_args_for(db, path, &cc))
+        for (int i = 0; i < cc.n && nargs < CLANG_ARGS_MAX - 2; ++i)
+            args[nargs++] = cc.v[i];
     snprintf(inc_root, sizeof inc_root, "-I%s", project);
     snprintf(inc_dir, sizeof inc_dir, "-I%s/include", project);
     args[nargs++] = inc_root;
@@ -644,7 +670,11 @@ static bool switch_to(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, cons
             return false;
         *waiting = *doc;
         g_stash[g_stash_n++] = (stashed_doc){ waiting, *cv };
-        doc->loaded = false;   /* its editor belongs to the stash now */
+        /* its editor and its block places belong to the stash now */
+        doc->loaded = false;
+        doc->place = NULL;
+        doc->line_at = NULL;
+        doc->place_n = doc->line_n = 0;
     }
     if (!document_open(doc, path, opt)) {
         if (waiting) {   /* could not read it: the old one comes back */
@@ -854,7 +884,9 @@ static bool document_save(ccr_document *doc, const ccr_options *opt)
     uint32_t errors = 0;
     ccr_ast check;
     if (ccr_ast_init(&check)) {
-        if (parse_any(doc->path, opt->clang_args, opt->clang_arg_count, &check))
+        const char *cargs[CLANG_ARGS_MAX];
+        const int cn = clang_args_for(doc->path, opt, cargs);
+        if (parse_any(doc->path, cargs, cn, &check))
             errors = ccr_ast_count_diags(&check, CCR_DIAG_ERROR);
         if (errors > doc->errors_at_load) {
             fprintf(stderr, "[ccratch] after saving %s:\n", doc->path);
@@ -2252,6 +2284,9 @@ int ccr_run(int argc, char **argv)
     ccr_rect viewport = { PALETTE_W, TOPBAR_H, (float)ccr_gui_width() - PALETTE_W,
                           (float)ccr_gui_height() - TOPBAR_H - STATUSBAR_H };
     const float start_zoom = opt.zoom_percent > 0 ? (float)opt.zoom_percent / 100.0f : 1.0f;
+    /* the first file named is the one on screen: the others open first */
+    for (int i = opt.also_n - 1; i >= 0; --i)
+        switch_to(&doc, &canvas, viewport, opt.also[i], &opt);
     if (opt.open && switch_to(&doc, &canvas, viewport, opt.open, &opt))
         fit_view(&canvas, &doc, viewport, start_zoom);
     else

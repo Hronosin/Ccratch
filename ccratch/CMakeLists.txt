@@ -31,6 +31,7 @@ add_library(ccratch_core OBJECT
     src/ccr_build.c
     src/ccr_proc.c
     src/ccr_job.c
+    src/ccr_ccdb.c
     src/ccr_app.c
     src/ccr_ast.c
     src/ccr_blocks.c

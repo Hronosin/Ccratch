@@ -284,6 +284,14 @@ Then CMake does the work in the background, while the window stays live:
   marks every call to `draw_sky`. A click on the line in the log opens
   the file and glides to the block.
 
+Files are read with the flags the project's own build uses: Ccratch
+looks for `compile_commands.json` (in the project, `build/`,
+`build/<preset>/`, `.ccratch/build`, `cmake-build-*/`) and takes each
+file's `-I`, `-isystem`, `-D` and `-std` from it, a header those of the
+nearest file. So a library CMake fetched into `build/_deps` is found,
+and its calls read as calls, not errors. No database yet: build once.
+A `CMakeLists.txt` in a subfolder belongs to the project above it.
+
 Saving remembers where every block went in the text it wrote, so a line
 number from the compiler finds its block even after blocks were moved,
 until the next build. Code clang itself could not read stays text, not

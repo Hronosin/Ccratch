@@ -295,16 +295,37 @@ void ccr_files_project_of(const char *path, char *out, int cap)
                                          "meson.build", "compile_commands.json" };
     char dir[FULL_PATH];
     ccr_files_dir_of(path, dir, (int)sizeof dir);
+    char whole[FULL_PATH];   /* gui/src/x.c from the shell: walk up from where it really is */
+    if (realpath(dir, whole) && strlen(whole) < sizeof dir)
+        memcpy(dir, whole, strlen(whole) + 1);
     char d[FULL_PATH];
     snprintf(d, sizeof d, "%s", dir);
     for (int up = 0; up < 6 && d[0]; ++up) {
         for (size_t i = 0; i < sizeof marks / sizeof marks[0]; ++i) {
             char probe[FULL_PATH + 32];
             snprintf(probe, sizeof probe, "%s/%s", d, marks[i]);
-            if (exists(probe)) {
-                snprintf(out, (size_t)cap, "%s", d);
-                return;
+            if (!exists(probe))
+                continue;
+            /* a CMakeLists.txt with one above it is a subdirectory of that
+             * project (add_subdirectory): the project is further up */
+            if (i == 1) {
+                snprintf(probe, sizeof probe, "%s/.git", d);
+                while (!exists(probe)) {
+                    char parent[FULL_PATH];
+                    snprintf(parent, sizeof parent, "%s", d);
+                    char *ps = strrchr(parent, '/');
+                    if (!ps || ps == parent)
+                        break;
+                    *ps = '\0';
+                    snprintf(probe, sizeof probe, "%s/CMakeLists.txt", parent);
+                    if (!exists(probe))
+                        break;
+                    snprintf(d, sizeof d, "%s", parent);
+                    snprintf(probe, sizeof probe, "%s/.git", d);
+                }
             }
+            snprintf(out, (size_t)cap, "%s", d);
+            return;
         }
         char *slash = strrchr(d, '/');
         if (!slash || slash == d)

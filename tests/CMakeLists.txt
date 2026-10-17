@@ -71,6 +71,12 @@ if(XVFB_RUN)
     add_test(NAME gui_blocks_tour
              COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
                      ${CCR_BIN} ${PROJECT_SOURCE_DIR}/examples/tour.c --smoke-frames 3)
+    # several files open: the ones behind are kept, then all closed (under
+    # the sanitizers, a file's memory freed twice shows here)
+    add_test(NAME gui_several_files
+             COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
+                     ${CCR_BIN} ${PROJECT_SOURCE_DIR}/examples/tour.c ${PROJECT_SOURCE_DIR}/examples/goto.c
+                     ${PROJECT_SOURCE_DIR}/tests/data/save.c --smoke-frames 3)
 endif()
 
 # Dragging blocks around edits the program correctly.
@@ -238,3 +244,8 @@ add_executable(test_job test_job.c)
 target_link_libraries(test_job PRIVATE ccratch_core)
 add_test(NAME build_job COMMAND test_job)
 set_tests_properties(build_job PROPERTIES TIMEOUT 240)
+
+# The flags of the project's own build, from compile_commands.json.
+add_executable(test_ccdb test_ccdb.c)
+target_link_libraries(test_ccdb PRIVATE ccratch_core)
+add_test(NAME compile_commands COMMAND test_ccdb)
