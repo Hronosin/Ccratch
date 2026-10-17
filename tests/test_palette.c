@@ -73,13 +73,36 @@ int main(void)
 
     /* a click on a category scrolls its heading to the top (a short window) */
     const ccr_rect small = { 0, 40, CCR_PALETTE_W, 500 };
-    ccr_palette_update(&p, small, (ccr_vec2){ 40.0f, 40.0f + 6.0f + 3.5f * 60.0f }, 0.0f, true, 0.0f);
+    ccr_palette_update(&p, small, (ccr_vec2){ 40.0f, 40.0f + 6.0f + 3.5f * 60.0f }, 0.0f, true, false, 0.0f);
     CHECK(p.scroll > p.cats[CCR_TCAT_POINTERS].heading_y - 20.0f && p.scroll < p.cats[CCR_TCAT_POINTERS].heading_y,
           "Pointers: scrolled to %.0f, heading at %.0f", p.scroll, p.cats[CCR_TCAT_POINTERS].heading_y);
     /* the wheel goes back up, not past the top */
     for (int i = 0; i < 200; ++i)
-        ccr_palette_update(&p, small, (ccr_vec2){ 200.0f, 200.0f }, 3.0f, false, 0.0f);
+        ccr_palette_update(&p, small, (ccr_vec2){ 200.0f, 200.0f }, 3.0f, false, false, 0.0f);
     CHECK(p.scroll == 0.0f, "scrolled past the top: %.0f", p.scroll);
+
+    /* the scroll bar: held at the top and dragged to the bottom, the
+     * palette follows straight away; pressing on it takes no block */
+    {
+        const ccr_rect fly = { small.x + CCR_PALETTE_STRIP_W, small.y, small.w - CCR_PALETTE_STRIP_W, small.h };
+        const ccr_vec2 at_bar = { fly.x + fly.w - 5.0f, fly.y + 10.0f };
+        CHECK(ccr_palette_on_bar(&p, small, at_bar), "the scroll bar is not where it is drawn");
+        ccr_vec2 held;
+        CHECK(ccr_palette_hit(&p, small, at_bar, &held) < 0, "the scroll bar gave a block");
+        ccr_palette_update(&p, small, at_bar, 0.0f, true, true, 0.016f);
+        CHECK(p.bar_drag, "the scroll bar was not taken");
+        ccr_palette_update(&p, small, (ccr_vec2){ at_bar.x, fly.y + fly.h + 50.0f }, 0.0f, false, true, 0.016f);
+        CHECK(p.scroll > 100.0f && p.scroll == p.scroll_to, "dragged to the bottom: scroll %.0f", p.scroll);
+        const float bottom = p.scroll;
+        ccr_palette_update(&p, small, (ccr_vec2){ at_bar.x + 100.0f, fly.y }, 0.0f, false, true, 0.016f);
+        CHECK(p.scroll == 0.0f, "dragged back up (the mouse wandered off the bar): %.0f", p.scroll);
+        ccr_palette_update(&p, small, (ccr_vec2){ at_bar.x, fly.y }, 0.0f, false, false, 0.016f);
+        CHECK(!p.bar_drag, "let go, still held");
+        /* a press low on the bar jumps there */
+        ccr_palette_update(&p, small, (ccr_vec2){ at_bar.x, fly.y + fly.h - 2.0f }, 0.0f, true, true, 0.016f);
+        CHECK(p.scroll > bottom * 0.8f, "a press at the bottom of the bar: %.0f", p.scroll);
+        ccr_palette_update(&p, small, (ccr_vec2){ at_bar.x, fly.y }, 0.0f, false, false, 0.016f);
+    }
 
     CHECK(ccr_palette_relayout(&p), "relayout failed");
     CHECK(p.item_count == expected(false), "relayout lost blocks");

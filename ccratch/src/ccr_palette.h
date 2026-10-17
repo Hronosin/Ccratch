@@ -50,6 +50,8 @@ typedef struct ccr_palette {
     int               include_count;
     float             scroll, scroll_to;   /* unscaled units from the top */
     int               hot;                 /* item under the mouse, or -1 */
+    bool              bar_hot, bar_drag;   /* the scroll bar: under the mouse, held */
+    float             bar_grab;            /* where on it it was held (screen) */
     char              filter[96];          /* typed into the search: only blocks saying it */
     float             zoom;                /* how big its blocks are drawn (0: CCR_PALETTE_ZOOM) */
     ccr_lang_kind     lang;                /* C's blocks, or CMake's */
@@ -78,10 +80,14 @@ void ccr_palette_set_zoom(ccr_palette *p, float zoom);
 #define CCR_PALETTE_ZOOM_MIN 0.5f
 #define CCR_PALETTE_ZOOM_MAX 1.3f
 
-/* Wheel scrolling, category clicks, the glide. `area` is the whole palette
- * (strip and flyout), screen coordinates. */
-void ccr_palette_update(ccr_palette *p, ccr_rect area, ccr_vec2 mouse, float wheel,
-                        bool click, float dt);
+/* Wheel scrolling, category clicks, the scroll bar dragged, the glide.
+ * `area` is the whole palette (strip and flyout), screen coordinates;
+ * `click`: the left button went down now, `down`: it is held. */
+void ccr_palette_update(ccr_palette *p, ccr_rect area, ccr_vec2 mouse, float wheel, bool click,
+                        bool down, float dt);
+
+/* Is the mouse on the scroll bar (or holding it)? Then it is not on a block. */
+bool ccr_palette_on_bar(const ccr_palette *p, ccr_rect area, ccr_vec2 mouse);
 
 /* The template under the mouse, or -1; `grab` gets where in the block it
  * was hit, in block units (what a drag out of the palette holds it by). */

@@ -349,7 +349,31 @@ static bool inside(ccr_vec2 m, ccr_rect r)
     return m.x >= r.x && m.y >= r.y && m.x < r.x + r.w && m.y < r.y + r.h;
 }
 
-void ccr_palette_update(ccr_palette *p, ccr_rect area, ccr_vec2 mouse, float wheel, bool click,
+/* The scroll bar: where it is drawn, and the strip it can be grabbed in
+ * (wider than it looks). False if everything fits (no bar). */
+static bool scroll_bar(const ccr_palette *p, ccr_rect area, ccr_rect *thumb, ccr_rect *zone)
+{
+    const ccr_rect fly = fly_of(area);
+    const float top = max_scroll(p, area);
+    if (top <= 0.0f)
+        return false;
+    const float view = fly.h / (p->content_h * ZOOM(p));
+    float bar_h = fly.h * (view > 1.0f ? 1.0f : view);
+    if (bar_h < 32.0f)
+        bar_h = 32.0f;   /* a long palette: still something to hold */
+    const float bar_y = fly.y + (fly.h - bar_h) * (p->scroll / top);
+    *thumb = (ccr_rect){ fly.x + fly.w - 12.0f, bar_y, 12.0f, bar_h };
+    *zone = (ccr_rect){ fly.x + fly.w - 14.0f, fly.y, 14.0f, fly.h };
+    return true;
+}
+
+bool ccr_palette_on_bar(const ccr_palette *p, ccr_rect area, ccr_vec2 mouse)
+{
+    ccr_rect thumb, zone;
+    return p->ready && (p->bar_drag || (scroll_bar(p, area, &thumb, &zone) && inside(mouse, zone)));
+}
+
+void ccr_palette_update(ccr_palette *p, ccr_rect area, ccr_vec2 mouse, float wheel, bool click, bool down,
                         float dt)
 {
     if (!p->ready)
@@ -357,6 +381,24 @@ void ccr_palette_update(ccr_palette *p, ccr_rect area, ccr_vec2 mouse, float whe
     const ccr_rect strip = strip_of(area), fly = fly_of(area);
     if (inside(mouse, area) && wheel != 0.0f)
         p->scroll_to -= wheel * 70.0f;
+
+    /* the scroll bar, held and dragged; a press beside the thumb jumps there */
+    ccr_rect thumb, zone;
+    const bool bar = scroll_bar(p, area, &thumb, &zone);
+    p->bar_hot = bar && inside(mouse, zone);
+    if (bar && click && p->bar_hot) {
+        p->bar_drag = true;
+        p->bar_grab = inside(mouse, thumb) ? mouse.y - thumb.y : thumb.h * 0.5f;
+    }
+    if (p->bar_drag && (!down || !bar))
+        p->bar_drag = false;
+    if (p->bar_drag) {
+        const float travel = fly.h - thumb.h;
+        float k = travel > 0.0f ? (mouse.y - p->bar_grab - fly.y) / travel : 0.0f;
+        if (k < 0.0f) k = 0.0f;
+        if (k > 1.0f) k = 1.0f;
+        p->scroll = p->scroll_to = k * max_scroll(p, area);   /* with the hand: no glide */
+    }
     if (click && inside(mouse, strip))
         for (int c = 0; c < p->cat_count; ++c)
             if (inside(mouse, strip_row(p, strip, c)))
@@ -377,14 +419,14 @@ void ccr_palette_update(ccr_palette *p, ccr_rect area, ccr_vec2 mouse, float whe
     }
 
     ccr_vec2 grab;
-    p->hot = inside(mouse, fly) ? ccr_palette_hit(p, area, mouse, &grab) : -1;
+    p->hot = inside(mouse, fly) && !p->bar_hot && !p->bar_drag ? ccr_palette_hit(p, area, mouse, &grab) : -1;
 }
 
 int ccr_palette_hit(const ccr_palette *p, ccr_rect area, ccr_vec2 mouse, ccr_vec2 *grab)
 {
     const ccr_rect fly = fly_of(area);
-    if (!p->ready || !inside(mouse, fly))
-        return -1;
+    if (!p->ready || !inside(mouse, fly) || ccr_palette_on_bar(p, area, mouse))
+        return -1;   /* the scroll bar is not a block */
     const ccr_canvas cv = fly_canvas(p, fly);
     const ccr_vec2 w = ccr_canvas_to_world(&cv, mouse);
     for (uint32_t i = 0; i < p->item_count; ++i) {
@@ -450,13 +492,16 @@ void ccr_palette_draw(const ccr_palette *p, ccr_rect area, bool trash)
     }
     ccr_gui_clip_end();
 
-    /* a thin scroll bar, when there is more than fits */
-    const float top = max_scroll(p, area);
-    if (top > 0.0f) {
-        const float view = fly.h / (p->content_h * ZOOM(p));
-        const float bar_h = fly.h * (view > 1.0f ? 1.0f : view);
-        const float bar_y = fly.y + (fly.h - bar_h) * (p->scroll / top);
-        ccr_gui_rect_rounded((ccr_rect){ fly.x + fly.w - 6.0f, bar_y + 2.0f, 4.0f, bar_h - 4.0f }, 1.0f,
-                             (ccr_th(CCR_C_HINT) & 0xFFFFFF00u) | 0x90u);
+    /* the scroll bar, when there is more than fits: thin, wider under
+     * the mouse and while held */
+    ccr_rect thumb, zone;
+    if (scroll_bar(p, area, &thumb, &zone)) {
+        const bool big = p->bar_hot || p->bar_drag;
+        const float w = big ? 9.0f : 4.0f;
+        if (big)
+            ccr_gui_rect_rounded((ccr_rect){ zone.x + 2.0f, zone.y + 2.0f, zone.w - 4.0f, zone.h - 4.0f }, 1.0f,
+                                 (ccr_th(CCR_C_HINT) & 0xFFFFFF00u) | 0x20u);
+        ccr_gui_rect_rounded((ccr_rect){ fly.x + fly.w - w - 3.0f, thumb.y + 2.0f, w, thumb.h - 4.0f }, 1.0f,
+                             (ccr_th(CCR_C_HINT) & 0xFFFFFF00u) | (p->bar_drag ? 0xE0u : 0x90u));
     }
 }

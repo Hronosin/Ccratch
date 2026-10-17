@@ -391,6 +391,17 @@ static const char *base_name(const char *path)
     return slash ? slash + 1 : path;
 }
 
+/* `t` a step nearer `target`, and there it stays (a panel sliding in:
+ * once out, it must not wobble a step back and forth every frame) */
+static float approach(float t, float target, float step)
+{
+    if (t < target)
+        return t + step >= target ? target : t + step;
+    if (t > target)
+        return t - step <= target ? target : t - step;
+    return target;
+}
+
 static void forget_places(ccr_document *doc)
 {
     free(doc->place);
@@ -2500,7 +2511,8 @@ static ccr_rect build_area(int w, int h);
 static int split_at(ccr_vec2 m, int w, int h)
 {
     const float top = TOPBAR_H, bottom = (float)h - STATUSBAR_H, grip = 4.0f;
-    if (m.y > top && m.y < bottom && fabsf(m.x - PALETTE_W) <= grip)
+    /* the palette's edge: grabbed just outside it, its scroll bar is inside */
+    if (m.y > top && m.y < bottom && m.x >= PALETTE_W - 1.0f && m.x <= PALETTE_W + grip + 1.0f)
         return SPLIT_PALETTE;
     if (g_files_open && g_files_t >= 1.0f) {
         const ccr_rect f = files_area(w, h);
@@ -3566,10 +3578,7 @@ int ccr_run(int argc, char **argv)
         {
             const float target = g_bp.open ? 1.0f : 0.0f;
             const float step = g_animate ? dt / 0.18f : 1.0f;
-            g_bp.t += g_bp.t < target ? step : -step;
-            if ((g_bp.t > target) == (target > 0.5f) || !g_animate)
-                g_bp.t = target;
-            if (g_bp.t < 0.0f) g_bp.t = 0.0f;
+            g_bp.t = approach(g_bp.t, target, step);
         }
 
         const ccr_vec2 m = ccr_gui_mouse();
@@ -3603,10 +3612,7 @@ int ccr_run(int argc, char **argv)
         {
             const float target = g_files_open ? 1.0f : 0.0f;
             const float step = g_animate ? dt / 0.18f : 1.0f;
-            g_files_t += g_files_t < target ? step : -step;
-            if ((g_files_t > target) == (target > 0.5f) || !g_animate)
-                g_files_t = target;
-            if (g_files_t < 0.0f) g_files_t = 0.0f;
+            g_files_t = approach(g_files_t, target, step);
         }
         const ccr_rect files_r = files_area(w, h);
         const bool over_files = !on_split && g_files_t > 0.0f && point_in(m, files_r);
@@ -3634,7 +3640,8 @@ int ccr_run(int argc, char **argv)
         }
         if (!pie.open && !modal)
             ccr_palette_update(&g_palette, palette_area(h), m, pal_wheel,
-                               over_palette && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), dt);
+                               over_palette && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT),
+                               ccr_gui_mouse_down(CCR_MOUSE_LEFT), dt);
 
         /* the pie, while it is open, gets the mouse and Esc to itself */
         if (pie.open) {
