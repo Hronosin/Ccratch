@@ -2674,9 +2674,10 @@ static void copy_blocks(ccr_document *doc, ccr_node_id under)
     ccr_node_id one = under;
     const ccr_node_id *nodes = g_sel.n ? g_sel.nodes : &one;
     const int n = g_sel.n ? g_sel.n : (under != CCR_NONE ? 1 : 0);
-    char *text = n ? ccr_copy_text(&doc->ed.ast, nodes, n) : NULL;
+    char why[sizeof doc->status];
+    char *text = n ? ccr_copy_text(&doc->ed.ast, nodes, n, why, sizeof why) : NULL;
     if (!text) {
-        ccr_trf(doc->status, sizeof doc->status, CCR_T_COPY_NONE);
+        ccr_trf(doc->status, sizeof doc->status, n && why[0] ? CCR_T_COPY_HOLE : CCR_T_COPY_NONE);
         doc->has_errors = true;
         return;
     }

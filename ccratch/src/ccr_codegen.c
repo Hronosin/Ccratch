@@ -1246,3 +1246,32 @@ bool ccr_codegen_mapped(const ccr_ast *ast, char **out, size_t *out_len, ccr_out
     *out_len = g.len;
     return true;
 }
+
+bool ccr_codegen_node(const ccr_ast *ast, ccr_node_id id, char **out, size_t *out_len, char *err, size_t err_cap)
+{
+    *out = NULL;
+    *out_len = 0;
+    if (err_cap)
+        err[0] = '\0';
+    if (!ast->source || id >= ast->node_count) {
+        snprintf(err, err_cap, "nothing loaded");
+        return false;
+    }
+    gen g = { .ast = ast, .ok = true, .err = err, .err_cap = err_cap };
+    g.dirty = calloc(ast->node_count, 1);
+    if (!g.dirty) {
+        snprintf(err, err_cap, "out of memory");
+        return false;
+    }
+    emit(&g, id, 1);
+    free(g.dirty);
+    if (!g.ok || !g.buf) {
+        free(g.buf);
+        if (g.ok)
+            snprintf(err, err_cap, "nothing to print");
+        return false;
+    }
+    *out = g.buf;
+    *out_len = g.len;
+    return true;
+}

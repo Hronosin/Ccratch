@@ -125,7 +125,8 @@
     X(TIP_STOP,         "tip.stop",              0, "Stop")                              \
     X(TIP_FIT,          "tip.fit",               0, "Whole file in view (Home)")         \
     X(COPIED,           "clip.copied",           1, "Copied: %u block|Copied: %u blocks") \
-    X(COPY_NONE,        "clip.none",             0, "Nothing to copy here (blocks made on the canvas and never saved have no code yet)") \
+    X(COPY_NONE,        "clip.none",             0, "Nothing to copy here")              \
+    X(COPY_HOLE,        "clip.hole",             0, "Not copied: a slot is empty, put something in it first") \
     X(PASTED,           "clip.pasted",           1, "Pasted: %u block, click where it goes|Pasted: %u blocks, click where they go") \
     X(PASTED_DECLS,     "clip.pasted_decls",     1, "Pasted into the file: %u declaration|Pasted into the file: %u declarations") \
     X(PASTED_TEXT,      "clip.as_text",          1, "(%u as a code line: clang could not read it here)|(%u as code lines: clang could not read them here)") \

@@ -111,15 +111,26 @@ static bool has_code(const char *src, uint32_t b, uint32_t e)
     return false;
 }
 
-static ccr_node_id find_fn_body(const ccr_snippet *s)
+static ccr_node_id block_of(const ccr_snippet *s, ccr_node_id id)
+{
+    for (ccr_node_id c = id == CCR_NONE ? CCR_NONE : N(s, id)->first_child; c != CCR_NONE; c = N(s, c)->next_sibling)
+        if (N(s, c)->kind == CCR_NODE_BLOCK)
+            return c;
+    return CCR_NONE;
+}
+
+/* The made-up function's body; `in_loop`: the body of the for (;;) in it. */
+static ccr_node_id find_fn_body(const ccr_snippet *s, bool in_loop)
 {
     for (ccr_node_id i = 0; i < s->ast.node_count; ++i) {
         const ccr_node *n = N(s, i);
         if (n->kind != CCR_NODE_FUNCTION || strcmp(ccr_ast_str(&s->ast, n->name), PASTE_FN) != 0)
             continue;
-        for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(s, c)->next_sibling)
-            if (N(s, c)->kind == CCR_NODE_BLOCK)
-                return c;
+        const ccr_node_id body = block_of(s, i);
+        if (!in_loop)
+            return body;
+        const ccr_node_id loop = body == CCR_NONE ? CCR_NONE : N(s, body)->first_child;
+        return loop != CCR_NONE && N(s, loop)->kind == CCR_NODE_FOR ? block_of(s, loop) : CCR_NONE;
     }
     return CCR_NONE;
 }
@@ -138,12 +149,14 @@ static bool is_expr(ccr_node_kind k)
 }
 
 /* The file, then the code as the body of a function at its end. */
-static bool read_c(const char *code, size_t code_len, bool as_expr, const char *context, size_t context_len,
-                   const char *path, const char *const *args, int nargs, ccr_snippet *out)
+static bool read_c(const char *code, size_t code_len, bool as_expr, bool in_loop, const char *context,
+                   size_t context_len, const char *path, const char *const *args, int nargs, ccr_snippet *out)
 {
-    static const char head[] = "\nvoid " PASTE_FN "(void)\n{\n";
-    static const char tail[] = "\n}\n";
-    const size_t n = context_len + sizeof head - 1 + code_len + 1 + sizeof tail - 1;
+    /* `break;` and `continue;` read only in a loop: in_loop puts them in one */
+    const char *head = in_loop ? "\nvoid " PASTE_FN "(void)\n{\nfor (;;) {\n" : "\nvoid " PASTE_FN "(void)\n{\n";
+    const char *tail = in_loop ? "\n}\n}\n" : "\n}\n";
+    const size_t head_n = strlen(head), tail_n = strlen(tail);
+    const size_t n = context_len + head_n + code_len + 1 + tail_n;
     char *text = malloc(n + 1);
     if (!text)
         return false;
@@ -152,22 +165,22 @@ static bool read_c(const char *code, size_t code_len, bool as_expr, const char *
         memcpy(text, context, context_len);
         k = context_len;
     }
-    memcpy(text + k, head, sizeof head - 1);
-    k += sizeof head - 1;
+    memcpy(text + k, head, head_n);
+    k += head_n;
     const uint32_t code_b = (uint32_t)k;
     memcpy(text + k, code, code_len);
     k += code_len;
     if (as_expr)
         text[k++] = ';';
     const uint32_t code_e = (uint32_t)k;
-    memcpy(text + k, tail, sizeof tail - 1);
-    k += sizeof tail - 1;
+    memcpy(text + k, tail, tail_n);
+    k += tail_n;
     text[k] = '\0';
 
     memset(out, 0, sizeof *out);
     bool ok = ccr_ast_init(&out->ast) && ccr_parse_text(path, text, k, args, nargs, &out->ast);
     free(text);
-    const ccr_node_id body = ok ? find_fn_body(out) : CCR_NONE;
+    const ccr_node_id body = ok ? find_fn_body(out, in_loop) : CCR_NONE;
     if (body == CCR_NONE)
         return false;
     const char *src = out->ast.source;
@@ -237,6 +250,17 @@ static bool read_toplevel(const char *code, size_t code_len, const char *context
     return true;
 }
 
+/* Is `w` in code[0, n) as a word of its own? */
+static bool has_word(const char *code, size_t n, const char *w)
+{
+    const size_t wn = strlen(w);
+    for (size_t i = 0; i + wn <= n; ++i)
+        if (memcmp(code + i, w, wn) == 0 && (i == 0 || !(isalnum((unsigned char)code[i - 1]) || code[i - 1] == '_')) &&
+            (i + wn == n || !(isalnum((unsigned char)code[i + wn]) || code[i + wn] == '_')))
+            return true;
+    return false;
+}
+
 bool ccr_snippet_parse(const char *code, const char *context, size_t context_len, const char *path, bool cmake,
                        const char *const *args, int nargs, ccr_snippet *out)
 {
@@ -275,7 +299,7 @@ bool ccr_snippet_parse(const char *code, const char *context, size_t context_len
     const bool looks_expr = !memchr(code, ';', n) && !memchr(code, '{', n) && !memchr(code, '}', n) &&
                             code[0] != '#';
     if (looks_expr) {
-        if (read_c(code, n, true, context, context_len, path, args, nargs, out) && out->count == 1 &&
+        if (read_c(code, n, true, false, context, context_len, path, args, nargs, out) && out->count == 1 &&
             out->as_text == 0 && is_expr(N(out, out->items[0])->kind)) {
             out->reporter = true;
             return true;
@@ -283,7 +307,18 @@ bool ccr_snippet_parse(const char *code, const char *context, size_t context_len
         ccr_snippet_free(out);
     }
     /* statements, for a function's body */
-    const bool body = read_c(code, n, false, context, context_len, path, args, nargs, out);
+    bool body = read_c(code, n, false, false, context, context_len, path, args, nargs, out);
+    if (body && out->as_text > 0 && (has_word(code, n, "break") || has_word(code, n, "continue"))) {
+        static ccr_snippet looped;   /* big: off the stack */
+        if (read_c(code, n, false, true, context, context_len, path, args, nargs, &looped) &&
+            looped.as_text < out->as_text) {
+            ccr_snippet_free(out);
+            *out = looped;
+            memset(&looped, 0, sizeof looped);
+        } else {
+            ccr_snippet_free(&looped);
+        }
+    }
     if (body && out->as_text == 0)
         return true;
     /* not all of it reads as statements: maybe it is a function, a type */
@@ -343,8 +378,65 @@ static void put_dedented(char **out, size_t *len, size_t *cap, const char *text,
     }
 }
 
-char *ccr_copy_text(const ccr_ast *ast, const ccr_node_id *nodes, int count)
+/* The indent of the line `at` is on, if only blanks are before it there. */
+static uint32_t line_indent_at(const char *text, uint32_t at)
 {
+    uint32_t ls = at;
+    while (ls > 0 && text[ls - 1] != '\n')
+        --ls;
+    uint32_t ind = 0;
+    while (ls + ind < at && (text[ls + ind] == ' ' || text[ls + ind] == '\t'))
+        ++ind;
+    return ls + ind == at ? ind : 0;
+}
+
+/* The least indent of the lines after the first (blank ones aside). */
+static uint32_t later_lines_indent(const char *t, size_t n)
+{
+    uint32_t least = UINT32_MAX;
+    for (size_t i = 0; i < n; ++i) {
+        if (t[i] != '\n')
+            continue;
+        uint32_t k = 0;
+        while (i + 1 + k < n && (t[i + 1 + k] == ' ' || t[i + 1 + k] == '\t'))
+            ++k;
+        if (i + 1 + k < n && t[i + 1 + k] != '\n' && k < least)
+            least = k;
+    }
+    return least == UINT32_MAX ? 0 : least;
+}
+
+/* `text` with up to `ind` blanks taken off every line after the first. */
+static void put_less_indented(char **out, size_t *len, size_t *cap, const char *text, size_t n, uint32_t ind)
+{
+    for (size_t i = 0; i < n; ++i) {
+        if (*len + 2 > *cap) {
+            *cap = *cap ? *cap * 2 : 256;
+            char *g = realloc(*out, *cap);
+            if (!g)
+                return;
+            *out = g;
+        }
+        (*out)[(*len)++] = text[i];
+        if (text[i] == '\n')
+            for (uint32_t k = 0; k < ind && i + 1 < n && (text[i + 1] == ' ' || text[i + 1] == '\t'); ++k)
+                ++i;
+    }
+}
+
+static bool has_ancestor_in(const ccr_ast *ast, ccr_node_id id, const ccr_node_id *set, int n)
+{
+    for (ccr_node_id a = ast->nodes[id].parent; a != CCR_NONE; a = ast->nodes[a].parent)
+        for (int i = 0; i < n; ++i)
+            if (set[i] == a)
+                return true;
+    return false;
+}
+
+char *ccr_copy_text(const ccr_ast *ast, const ccr_node_id *nodes, int count, char *why, size_t why_cap)
+{
+    if (why_cap)
+        why[0] = '\0';
     if (count <= 0 || ast->node_count == 0)
         return NULL;
     ccr_out_range *map = malloc(ast->node_count * sizeof *map);
@@ -354,11 +446,26 @@ char *ccr_copy_text(const ccr_ast *ast, const ccr_node_id *nodes, int count)
         free(map);
         return NULL;
     }
-    piece *ps = malloc((size_t)count * sizeof *ps);
+    /* a loose stack stands for its statements */
+    ccr_node_id *want = malloc(((size_t)count + ast->node_count) * sizeof *want);
+    int nw = 0;
+    for (int i = 0; want && i < count; ++i) {
+        const ccr_node_id id = nodes[i];
+        if (id >= ast->node_count || (ast->nodes[id].flags & CCR_FLAG_DEAD))
+            continue;
+        const ccr_node *n = &ast->nodes[id];
+        if (n->kind == CCR_NODE_BLOCK && n->parent == CCR_NONE && (n->flags & CCR_FLAG_LOOSE)) {
+            for (ccr_node_id c = n->first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling)
+                want[nw++] = c;
+        } else {
+            want[nw++] = id;
+        }
+    }
+    piece *ps = malloc(((size_t)nw + 1) * sizeof *ps);
     int n = 0;
-    for (int i = 0; ps && i < count; ++i)
-        if (nodes[i] < ast->node_count && map[nodes[i]].b != UINT32_MAX && map[nodes[i]].e > map[nodes[i]].b)
-            ps[n++] = (piece){ map[nodes[i]].b, map[nodes[i]].e };
+    for (int i = 0; ps && i < nw; ++i)
+        if (map[want[i]].b != UINT32_MAX && map[want[i]].e > map[want[i]].b)
+            ps[n++] = (piece){ map[want[i]].b, map[want[i]].e };
     char *out = NULL;
     size_t len = 0, cap = 0;
     if (ps && n) {
@@ -371,9 +478,34 @@ char *ccr_copy_text(const ccr_ast *ast, const ccr_node_id *nodes, int count)
             }
             put_dedented(&out, &len, &cap, text, ps[i].b, ps[i].e);
         }
-        if (out)
-            out[len] = '\0';
     }
+    /* blocks not in the file (never saved, or pasted and not put in yet):
+     * printed on their own, in the order they were picked */
+    for (int i = 0; want && i < nw; ++i) {
+        const ccr_node_id id = want[i];
+        if (map[id].b != UINT32_MAX || has_ancestor_in(ast, id, want, nw))
+            continue;
+        char *one = NULL;
+        size_t olen = 0;
+        if (!ccr_codegen_node(ast, id, &one, &olen, err, sizeof err) || olen == 0) {
+            if (why_cap && !why[0] && err[0])
+                snprintf(why, why_cap, "%s", err);
+            free(one);
+            continue;
+        }
+        const ccr_node *k = &ast->nodes[id];
+        uint32_t ind = (k->flags & CCR_FLAG_NEW) || k->src_b >= ast->source_len
+                     ? 0 : line_indent_at(ast->source, k->src_b);
+        if (ind == 0)
+            ind = later_lines_indent(one, olen);   /* copied from the middle of a line */
+        if (len > 0)
+            put_less_indented(&out, &len, &cap, "\n", 1, 0);
+        put_less_indented(&out, &len, &cap, one, olen, ind);
+        free(one);
+    }
+    if (out)
+        out[len] = '\0';
+    free(want);
     free(ps);
     free(map);
     free(text);

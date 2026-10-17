@@ -1351,6 +1351,7 @@ static void test_fold(void)
  * pack's block. */
 /* Code from the clipboard, as blocks; and back to the clipboard. */
 static ccr_snippet g_snip;   /* big: off the stack */
+static const ccr_node *N2(const ccr_ast *a, ccr_node_id id) { return &a->nodes[id]; }
 
 static bool read_snippet(const ccr_editor *ed, const char *code)
 {
@@ -1397,10 +1398,49 @@ static void test_paste(void)
     /* and copied back out: the same code */
     const ccr_node_id added = N(&ed, hello)->next_sibling;
     const ccr_node_id two[2] = { N(&ed, added)->next_sibling, added };   /* out of order on purpose */
-    char *copied = ccr_copy_text(&ed.ast, two, 2);
+    char *copied = ccr_copy_text(&ed.ast, two, 2, err, sizeof err);
     CHECK(copied && strcmp(copied, "counter += 2;\nprintf(\"%d\\n\", counter);") == 0, "copied: [%s]",
           copied ? copied : "(null)");
     free(copied);
+
+    /* never saved: a stack left loose prints itself */
+    CHECK(read_snippet(&ed, "if (counter > 1) {\n        counter = 0;\n    }\n    counter++;"), "snippet loose");
+    CHECK(ccr_editor_paste(&ed, &g_snip.ast, g_snip.items, g_snip.count, false, far_away(0.0f)), "paste loose");
+    ccr_snippet_free(&g_snip);
+    frame(&ed, far_away(0.0f), false, false, false);
+    frame(&ed, far_away(0.0f), true, true, false);
+    frame(&ed, far_away(0.0f), false, false, true);
+    const ccr_node_id lroot = ed.scripts[ed.script_count - 1].root;
+    CHECK(ccr_editor_loose_count(&ed) == 1, "the paste should lie loose");
+    copied = ccr_copy_text(&ed.ast, &lroot, 1, err, sizeof err);
+    CHECK(copied && strcmp(copied, "if (counter > 1) {\n    counter = 0;\n}\ncounter++;") == 0,
+          "copied loose: [%s] %s", copied ? copied : "(null)", err);
+    free(copied);
+    const ccr_vec2 apart = far_away(3000.0f);
+    CHECK(ccr_editor_spawn(&ed, CCR_TEMPLATE_BREAK, apart), "spawn break");
+    frame(&ed, apart, false, false, true);
+    const ccr_node_id broot = ed.scripts[ed.script_count - 1].root;
+    copied = ccr_copy_text(&ed.ast, &broot, 1, err, sizeof err);
+    CHECK(copied && strcmp(copied, "break;") == 0, "copied new break: [%s] %s", copied ? copied : "(null)", err);
+    free(copied);
+    const ccr_vec2 apart2 = far_away(6000.0f);
+    CHECK(ccr_editor_spawn(&ed, CCR_TEMPLATE_WHILE, apart2), "spawn while");
+    frame(&ed, apart2, false, false, true);
+    const ccr_node_id wroot = ed.scripts[ed.script_count - 1].root;
+    copied = ccr_copy_text(&ed.ast, &wroot, 1, err, sizeof err);
+    CHECK(!copied && err[0], "an empty slot: no copy, and why (%s)", err);
+    free(copied);
+    const ccr_node_id both[2] = { broot, lroot };
+    copied = ccr_copy_text(&ed.ast, both, 2, err, sizeof err);
+    CHECK(copied && strcmp(copied, "break;\nif (counter > 1) {\n    counter = 0;\n}\ncounter++;") == 0,
+          "two loose stacks: [%s]", copied ? copied : "(null)");
+    free(copied);
+
+    /* break and continue read in a loop, as blocks */
+    CHECK(read_snippet(&ed, "if (counter) break;\ncontinue;") && g_snip.count == 2 && g_snip.as_text == 0 &&
+          N2(&g_snip.ast, g_snip.items[0])->kind == CCR_NODE_IF, "break/continue: %d items, %d as text",
+          g_snip.count, g_snip.as_text);
+    ccr_snippet_free(&g_snip);
 
     /* a variable this file does not have: kept as a code line, not lost */
     CHECK(read_snippet(&ed, "nowhere_x = 3;\nputs(\"ok\");"), "snippet 2");

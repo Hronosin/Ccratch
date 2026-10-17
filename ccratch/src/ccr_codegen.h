@@ -37,6 +37,12 @@ typedef struct ccr_out_range {
 bool ccr_codegen_mapped(const ccr_ast *ast, char **out, size_t *out_len, ccr_out_range *map,
                         char *err, size_t err_cap);
 
+/* The code of one node on its own, as saving would write it if it were
+ * in the file: for blocks that are not (a loose stack never saved, a
+ * pasted one). Lines after the first keep the indentation printing gives
+ * them. Malloc'd; false with a reason in `err`. */
+bool ccr_codegen_node(const ccr_ast *ast, ccr_node_id id, char **out, size_t *out_len, char *err, size_t err_cap);
+
 /*
  * Can expression `id` be taken out of the slot it fills (and something
  * else put there) and the file still be saved safely? Its parent, and

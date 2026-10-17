@@ -37,9 +37,10 @@ bool ccr_snippet_parse(const char *code, const char *context, size_t context_len
 void ccr_snippet_free(ccr_snippet *s);
 
 /* What Ctrl+C puts on the clipboard: the code of `nodes` as saving would
- * write it, in file order, a line apart, their own indentation taken off
- * (malloc'd; NULL if none of them is in the file: a loose block made in
- * the editor that was never saved has no text yet). */
-char *ccr_copy_text(const ccr_ast *ast, const ccr_node_id *nodes, int count);
+ * write it, in file order, a line apart, their own indentation taken off; blocks
+ * not in the file (a loose stack never saved) after them, printed as
+ * saving would print them (malloc'd; NULL if nothing could be printed, and in `why` the reason
+ * printing gave, if it gave one: an empty slot, say). */
+char *ccr_copy_text(const ccr_ast *ast, const ccr_node_id *nodes, int count, char *why, size_t why_cap);
 
 #endif /* CCR_PASTE_H */
