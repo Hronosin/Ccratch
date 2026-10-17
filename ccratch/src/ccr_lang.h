@@ -276,6 +276,11 @@
       "line %u: an empty slot; type into it or drop a block there") \
     X(THEME_SHRINE,     "theme.shrine",          0, "Shrine")                            \
     X(THEME_BUTTON,     "topbar.theme",          0, "Theme")                             \
+    X(PICK_THEMES,      "pick.themes",           0, "Themes (the one under the mouse is tried on)") \
+    X(PICK_LANGS,       "pick.langs",            0, "Language")                          \
+    X(PICK_BUILTIN,     "pick.builtin",          0, ", built in")                        \
+    X(PICK_THEME_HINT,  "pick.theme_hint",       0, "Your own: a .theme file in ~/.local/share/ccratch/themes (ccratch --check-theme checks it)") \
+    X(PICK_LANG_HINT,   "pick.lang_hint",        0, "Your own: ccratch --lang-template > CODE.lang, translated, in ~/.local/share/ccratch/lang") \
     X(THEME_STATUS,     "status.theme",          0, "Theme: %s")                         \
     X(JUMP_MISSING,     "jump.missing",          0, "no label %s: in this function")     \
     X(JUMP_ELSEWHERE,   "jump.elsewhere",        0,                                      \

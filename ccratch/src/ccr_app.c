@@ -1206,51 +1206,187 @@ static void eula_frame(eula_view *ev, int width, int height, ccr_document *doc)
 }
 
 /* The language button: the next pack each click, remembered for next time. */
-static void next_language(ccr_document *doc)
+/* Speaks `code` from now on, remembered. */
+static void use_language(ccr_document *doc, const char *code)
 {
-    static ccr_lang_info langs[64];
-    int n = ccr_lang_scan(langs, 64);
-    int cur = 0;
-    for (int i = 0; i < n; ++i)
-        if (strcmp(langs[i].code, ccr_lang_code()) == 0)
-            cur = i;
-    for (int step = 1; step <= n; ++step) {
-        const ccr_lang_info *li = &langs[(cur + step) % n];
-        if (ccr_lang_use(li->code, stderr)) {
-            if (!ccr_lang_save_choice(li->code))
-                fprintf(stderr, "ccratch: could not remember the language in ~/.config/ccratch\n");
-            char theme[32];
-            snprintf(theme, sizeof theme, "%s", ccr_theme_code());
-            ccr_theme_use(theme, NULL);   /* theme names come in this language too */
-            ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
-            doc->has_errors = false;
-            /* C keywords stay, but pack blocks speak this language now */
-            libs_reload(doc);
-            return;
+    if (!ccr_lang_use(code, stderr))
+        return;
+    if (!ccr_lang_save_choice(code))
+        fprintf(stderr, "ccratch: could not remember the language in ~/.config/ccratch\n");
+    char theme[32];
+    snprintf(theme, sizeof theme, "%s", ccr_theme_code());
+    ccr_theme_use(theme, NULL);   /* theme names come in this language too */
+    ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
+    doc->has_errors = false;
+    /* C keywords stay, but pack blocks speak this language now */
+    libs_reload(doc);
+}
+
+/* Looks like `code` from now on (`save`: remembered). Blocks keep their
+ * colours from when they were laid out, so all are laid out again. */
+static void use_theme(ccr_document *doc, const char *code, bool save)
+{
+    if (strcmp(code, ccr_theme_code()) == 0 && !save)
+        return;
+    if (!ccr_theme_use(code, stderr))
+        return;
+    if (save) {
+        if (!ccr_theme_save_choice(code))
+            fprintf(stderr, "ccratch: could not remember the theme in ~/.config/ccratch\n");
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_THEME_STATUS, ccr_theme_name());
+        doc->has_errors = false;
+    }
+    relayout_everything(doc);
+}
+
+/* The Theme and language buttons open a list to pick from, under them.
+ * Themes show their colours, and the one under the mouse is tried on the
+ * whole window at once; Esc or a click outside goes back to the old one. */
+#define PICK_SWATCHES 8
+
+static struct {
+    int            kind;           /* 0 closed, 1 themes, 2 languages */
+    ccr_rect       button;         /* the button it hangs from */
+    int            hot;            /* the row the keys moved to, -1 */
+    char           was[32];        /* the theme when it opened */
+    ccr_theme_info themes[32];
+    ccr_color      swatch[32][PICK_SWATCHES];
+    int            n_themes;
+    ccr_lang_info  langs[32];
+    int            n_langs;
+    float          t;              /* 0..1 opening */
+} g_pick = { .hot = -1 };
+
+static void pick_open(int kind, ccr_rect button)
+{
+    if (g_pick.kind == kind) {   /* its button again: closed */
+        g_pick.kind = 0;
+        return;
+    }
+    g_pick.kind = kind;
+    g_pick.button = button;
+    g_pick.hot = -1;
+    g_pick.t = 0.0f;
+    snprintf(g_pick.was, sizeof g_pick.was, "%s", ccr_theme_code());
+    if (kind == 1) {
+        g_pick.n_themes = ccr_theme_scan(g_pick.themes, 32);
+        /* each theme's colours: put on for a moment, read, taken off */
+        for (int i = 0; i < g_pick.n_themes; ++i) {
+            if (!ccr_theme_use(g_pick.themes[i].code, NULL))
+                continue;
+            ccr_color *sw = g_pick.swatch[i];
+            sw[0] = ccr_th(CCR_C_BG);
+            sw[1] = ccr_th(CCR_C_ACCENT);
+            sw[2] = ccr_th_cat(CCR_CAT_CONTROL, CCR_FILL);
+            sw[3] = ccr_th_cat(CCR_CAT_OPERATOR, CCR_FILL);
+            sw[4] = ccr_th_cat(CCR_CAT_VARIABLE, CCR_FILL);
+            sw[5] = ccr_th_cat(CCR_CAT_CALL, CCR_FILL);
+            sw[6] = ccr_th_cat(CCR_CAT_TYPE, CCR_FILL);
+            sw[7] = ccr_th_cat(CCR_CAT_LIBRARY, CCR_FILL);
         }
+        ccr_theme_use(g_pick.was, NULL);
+        for (int i = 0; i < g_pick.n_themes; ++i)
+            if (strcmp(g_pick.themes[i].code, g_pick.was) == 0)
+                g_pick.hot = i;
+    } else {
+        g_pick.n_langs = ccr_lang_scan(g_pick.langs, 32);
+        for (int i = 0; i < g_pick.n_langs; ++i)
+            if (strcmp(g_pick.langs[i].code, ccr_lang_code()) == 0)
+                g_pick.hot = i;
     }
 }
 
-/* The theme button: the next theme each click, remembered. Blocks keep
- * their colours from when they were laid out, so all are laid out again. */
-static void next_theme(ccr_document *doc)
+static bool point_in(ccr_vec2 p, ccr_rect r);
+
+/* The open list: drawn over everything, and its clicks and keys. */
+static void pick_frame(ccr_document *doc, int w, float dt)
 {
-    static ccr_theme_info themes[64];
-    int n = ccr_theme_scan(themes, 64);
-    int cur = 0;
-    for (int i = 0; i < n; ++i)
-        if (strcmp(themes[i].code, ccr_theme_code()) == 0)
-            cur = i;
-    for (int step = 1; step <= n; ++step) {
-        const ccr_theme_info *ti = &themes[(cur + step) % n];
-        if (ccr_theme_use(ti->code, stderr)) {
-            if (!ccr_theme_save_choice(ti->code))
-                fprintf(stderr, "ccratch: could not remember the theme in ~/.config/ccratch\n");
-            ccr_trf(doc->status, sizeof doc->status, CCR_T_THEME_STATUS, ccr_theme_name());
-            doc->has_errors = false;
-            relayout_everything(doc);
-            return;
+    if (!g_pick.kind)
+        return;
+    g_pick.t = g_pick.t + dt / 0.12f > 1.0f ? 1.0f : g_pick.t + dt / 0.12f;
+    const bool themes = g_pick.kind == 1;
+    const int n = themes ? g_pick.n_themes : g_pick.n_langs;
+    const float row = themes ? 46.0f : 36.0f, pad = 8.0f, head = 34.0f, foot = 44.0f;
+    const float cw = 320.0f;
+    const float ease = 1.0f - (1.0f - g_pick.t) * (1.0f - g_pick.t);
+    ccr_rect card = { g_pick.button.x + g_pick.button.w - cw, g_pick.button.y + g_pick.button.h + 6.0f, cw,
+                      head + row * (float)n + pad + foot };
+    if (card.x < 8.0f)
+        card.x = 8.0f;
+    if (card.x + card.w > (float)w - 8.0f)
+        card.x = (float)w - 8.0f - card.w;
+    card.y -= (1.0f - ease) * 8.0f;
+    const ccr_vec2 m = ccr_gui_mouse();
+    ccr_gui_rect_rounded((ccr_rect){ card.x + 3, card.y + 4, card.w, card.h }, 0.05f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ card.x - 1, card.y - 1, card.w + 2, card.h + 2 }, 0.05f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(card, 0.05f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    ccr_gui_text(ccr_tr(themes ? CCR_T_PICK_THEMES : CCR_T_PICK_LANGS), card.x + 14.0f, card.y + 9.0f, 15.0f,
+                 ccr_th(CCR_C_PANEL_HINT));
+
+    /* the keys: up and down try, Enter takes, Esc goes back */
+    int choose = -1;
+    bool cancel = ccr_gui_key_pressed(CCR_KEY_ESCAPE);
+    if (ccr_gui_key_pressed(CCR_KEY_DOWN))
+        g_pick.hot = g_pick.hot + 1 < n ? g_pick.hot + 1 : n - 1;
+    if (ccr_gui_key_pressed(CCR_KEY_UP))
+        g_pick.hot = g_pick.hot > 0 ? g_pick.hot - 1 : 0;
+    if (ccr_gui_key_pressed(CCR_KEY_ENTER) && g_pick.hot >= 0)
+        choose = g_pick.hot;
+
+    for (int i = 0; i < n; ++i) {
+        const ccr_rect r = { card.x + pad, card.y + head + row * (float)i, card.w - pad * 2.0f, row - 4.0f };
+        const bool over = point_in(m, r);
+        if (over && (m.x != 0.0f || m.y != 0.0f))
+            g_pick.hot = i;
+        if (i == g_pick.hot)
+            ccr_gui_rect_rounded(r, 0.25f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x55u);
+        if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+            choose = i;
+        const bool current = themes ? strcmp(g_pick.themes[i].code, g_pick.was) == 0
+                                    : strcmp(g_pick.langs[i].code, ccr_lang_code()) == 0;
+        if (current)   /* the one in use: a dot */
+            ccr_gui_circle((ccr_vec2){ r.x + 10.0f, r.y + (themes ? 14.0f : r.h * 0.5f) }, 3.5f, ccr_th(CCR_C_ACCENT));
+        if (themes) {
+            ccr_gui_text(g_pick.themes[i].name, r.x + 22.0f, r.y + 4.0f, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+            /* its colours: the canvas, the accent, the blocks */
+            const ccr_color *sw = g_pick.swatch[i];
+            const float sx = r.x + 22.0f, sy = r.y + 25.0f;
+            ccr_gui_rect_rounded((ccr_rect){ sx - 1, sy - 1, 30.0f, 14.0f }, 0.4f, ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_rect_rounded((ccr_rect){ sx, sy, 28.0f, 12.0f }, 0.4f, sw[0]);
+            ccr_gui_circle((ccr_vec2){ sx + 14.0f, sy + 6.0f }, 3.5f, sw[1]);
+            for (int k = 2; k < PICK_SWATCHES; ++k)
+                ccr_gui_rect_rounded((ccr_rect){ sx + 36.0f + (float)(k - 2) * 22.0f, sy, 18.0f, 12.0f }, 0.4f, sw[k]);
+            const float cwid = ccr_gui_text_width(g_pick.themes[i].code, 12.0f);
+            ccr_gui_text(g_pick.themes[i].code, r.x + r.w - cwid - 8.0f, r.y + 6.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+        } else {
+            ccr_gui_text(g_pick.langs[i].name, r.x + 22.0f, r.y + 7.0f, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+            char code[48];
+            snprintf(code, sizeof code, "%s%s", g_pick.langs[i].code,
+                     g_pick.langs[i].path[0] ? "" : ccr_tr(CCR_T_PICK_BUILTIN));
+            const float cwid = ccr_gui_text_width(code, 12.0f);
+            ccr_gui_text(code, r.x + r.w - cwid - 8.0f, r.y + 10.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
         }
+    }
+    /* how to make one more */
+    wrap_text(ccr_tr(themes ? CCR_T_PICK_THEME_HINT : CCR_T_PICK_LANG_HINT), card.x + 14.0f,
+              card.y + card.h - foot + 4.0f, card.w - 28.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT), true);
+
+    /* trying a theme on: the one under the mouse or the keys */
+    if (themes && g_pick.hot >= 0 && g_pick.hot < n)
+        use_theme(doc, g_pick.themes[g_pick.hot].code, false);
+
+    if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(m, card) && !point_in(m, g_pick.button))
+        cancel = true;
+    if (choose >= 0) {
+        if (themes)
+            use_theme(doc, g_pick.themes[choose].code, true);
+        else
+            use_language(doc, g_pick.langs[choose].code);
+        g_pick.kind = 0;
+    } else if (cancel) {
+        if (themes)
+            use_theme(doc, g_pick.was, false);   /* as it was */
+        g_pick.kind = 0;
     }
 }
 
@@ -4583,6 +4719,17 @@ static void icon_bug(ccr_rect r, ccr_color c)
     ccr_gui_line((ccr_vec2){ m.x, m.y - 3.0f }, (ccr_vec2){ m.x, m.y + 6.5f }, 1.2f, 0xFFFFFF90u);
 }
 
+/* The little triangle of a button that opens a list. */
+static void drop_arrow(ccr_rect b, bool open)
+{
+    const float cx = b.x + b.w - 14.0f, cy = b.y + b.h * 0.5f;
+    const ccr_color c = open ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT);
+    if (open)
+        ccr_gui_triangle((ccr_vec2){ cx - 4.0f, cy + 2.5f }, (ccr_vec2){ cx + 4.0f, cy + 2.5f }, (ccr_vec2){ cx, cy - 2.5f }, c);
+    else
+        ccr_gui_triangle((ccr_vec2){ cx - 4.0f, cy - 2.5f }, (ccr_vec2){ cx + 4.0f, cy - 2.5f }, (ccr_vec2){ cx, cy + 2.5f }, c);
+}
+
 static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
 {
     int clicked = 0;
@@ -4641,13 +4788,25 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     for (char *c = code; *c; ++c)
         if (*c >= 'a' && *c <= 'z')
             *c = (char)(*c - 'a' + 'A');
-    x -= gap + 48.0f;
-    if (ccr_gui_button((ccr_rect){ x, y, 48.0f, bh }, code, bs) && !modal)
-        next_language(doc);
-    const float tw = ccr_gui_text_width(ccr_tr(CCR_T_THEME_BUTTON), 16.0f) + 24.0f;
+    /* each opens a list to pick from: a little triangle says so */
+    x -= gap + 60.0f;
+    const ccr_rect lb = { x, y, 60.0f, bh };
+    if (ccr_gui_button(lb, "", g_pick.kind == 2 ? &main_ : bs) && !modal)
+        pick_open(2, lb);
+    ccr_gui_text(code, lb.x + 12.0f, lb.y + 5.0f, 16.0f, g_pick.kind == 2 ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT));
+    drop_arrow(lb, g_pick.kind == 2);
+    const float tw = ccr_gui_text_width(ccr_tr(CCR_T_THEME_BUTTON), 16.0f) + 38.0f;
     x -= gap + tw;
-    if (ccr_gui_button((ccr_rect){ x, y, tw, bh }, ccr_tr(CCR_T_THEME_BUTTON), bs) && !modal)
-        next_theme(doc);
+    const ccr_rect tb = { x, y, tw, bh };
+    if (ccr_gui_button(tb, "", g_pick.kind == 1 ? &main_ : bs) && !modal)
+        pick_open(1, tb);
+    ccr_gui_text(ccr_tr(CCR_T_THEME_BUTTON), tb.x + 12.0f, tb.y + 5.0f, 16.0f,
+                 g_pick.kind == 1 ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT));
+    drop_arrow(tb, g_pick.kind == 1);
+    if (!modal && !g_pick.kind) {
+        tip(tb, ccr_theme_name());
+        tip(lb, ccr_lang_name());
+    }
     x -= group;
 
     /* the project */
@@ -5128,7 +5287,7 @@ int ccr_run(int argc, char **argv)
         if (te.node == CCR_NONE)
             g_drop.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
-        const bool modal = eula.open || g_libs.open || g_quit.open || g_help || g_git.diff_open;   /* a dialog has the mouse */
+        const bool modal = eula.open || g_libs.open || g_quit.open || g_help || g_git.diff_open || g_pick.kind;   /* a dialog has the mouse */
         if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open)
             g_help = !g_help;
 
@@ -5519,6 +5678,8 @@ int ccr_run(int argc, char **argv)
         git_diff_frame(&doc, &canvas, viewport, &opt, w, h);
         splitters_draw(w, h);
         const int top = draw_topbar(w, &doc, &eula);
+        if (!eula.open && !g_quit.open)
+            pick_frame(&doc, w, dt);
         if ((top & TOP_CMAKE) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             cmake_open(&doc, &canvas, viewport, &opt);
             te.node = CCR_NONE;

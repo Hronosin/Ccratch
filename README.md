@@ -487,8 +487,10 @@ style cleanup ladder to play with.
 
 ## Themes
 
-The **Theme** button in the top bar goes round them, and remembers the one
-you stop at:
+The **Theme** button in the top bar drops a list of them, each with its
+colours (the canvas, the accent, the blocks). The one under the mouse (or
+the arrow keys) is tried on the whole window at once; a click takes it and
+remembers it, Esc or a click outside goes back to the old one:
 
 ![Shrine, Super Serious, Masochist and Scratch](docs/themes.png)
 
@@ -590,7 +592,8 @@ pie.save = Сохранить
 status.loaded_errors = %s: %u ошибка ...|%s: %u ошибки ...|%s: %u ошибок ...
 ```
 
-- The **EN / RU** button in the top bar switches language and remembers it
+- The **EN / RU** button in the top bar drops a list of the languages
+  found, each in its own words; a click switches and remembers it
   (in `~/.config/ccratch/config`). Otherwise Ccratch starts in the system
   language (`$LANG`), or the one given with `--lang ru` / `$CCRATCH_LANG`.
 - Packs are looked for in `$CCRATCH_LANG_DIR`, `~/.local/share/ccratch/lang/`
