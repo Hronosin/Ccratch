@@ -28,6 +28,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 17: any library made into blocks from inside Ccratch: its headers read for the API, its .so/.a for the ABI.
 - Step 18: CMake as blocks: CMakeLists.txt opened, edited and saved like C, or made for a project that has none.
 - Step 19: the Build button: CMake builds in the background, the program runs, errors land on their blocks.
+- Step 20: getting around: tabs, find (Ctrl+F), palette search, green flag, F1, recent files, no lost work on quit.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -262,6 +263,31 @@ If there is none, it makes one first, from what is there:
 
 It is plain CMake: `ccratch --make-cmake DIR` prints the same for a
 look first, and `cmake -S . -B build && cmake --build build` builds it.
+
+## Getting around
+
+![tabs over the canvas, the palette searched for "ret", Ctrl+F finding "total": 1 of 3](docs/interface.png)
+
+- **Tabs** over the canvas, one per open file, in the order they were
+  opened: a click goes there, the x or a middle click closes it. A file
+  with changes has a dot; closing it asks for a second click.
+  `ccratch a.c b.c` opens both.
+- **Find** (Ctrl+F): every word on the canvas that has it lights up,
+  `1 of 12`; Enter, F3 and the arrows go from one to the next (Shift:
+  back), gliding there. Names inside folded blocks are found too, and
+  going to one unfolds it. Any case, Cyrillic included.
+- **Palette search**, at the top of the palette: only the blocks that
+  say what you typed, from every block pack, not only the included ones.
+  Drop a library's block into the file and its `#include` comes along.
+- **The green flag** builds and runs, **the stop sign** stops, like
+  Scratch. Buttons are in three groups: the project (CMake, Libraries,
+  Files), how Ccratch looks (Theme, language, ?), and making the program go.
+- **Zoom** at the bottom right: - 100% + and "all of it"; Ctrl+= / Ctrl+-
+  / Ctrl+0 too.
+- **F1** (or ?): every key and mouse move on one card.
+- **Recent files** on the start screen.
+- **Quitting** with changes not saved asks: save and quit, quit
+  anyway, or stay.
 
 ## Building
 
@@ -677,6 +703,9 @@ ccratch --list-blocks                    block packs found, and where
 - Del, Ctrl+D, Ctrl+/: delete, duplicate, comment out the block under the mouse
 - Ctrl+S: save (Esc no longer quits, so it cannot eat unsaved work)
 - Ctrl+B: build; Ctrl+R: build and run; again while it builds: stop
+- Ctrl+F: find blocks; Enter / F3: next, Shift: back; Esc: close
+- Ctrl+= / Ctrl+- / Ctrl+0: zoom in, out, back to 100%
+- F1: keys and mouse
 - Ctrl+Z: undo one drag; Ctrl+Y or Ctrl+Shift+Z: redo. Undoing back to
   the saved state clears the `*`, and an undone change is gone from the
   file too: undo everything and the file saves byte for byte as it was

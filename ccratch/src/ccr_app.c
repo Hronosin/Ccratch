@@ -54,6 +54,8 @@ static bool load_font(void)
 }
 
 #define TOPBAR_H     40.0f
+#define TABS_H       32.0f   /* the open files, over the canvas */
+#define PSEARCH_H    40.0f   /* the palette's search field */
 #define PALETTE_W   CCR_PALETTE_W
 #define COL_PALETTE  ccr_th(CCR_C_PALETTE)
 #define STATUSBAR_H  26.0f
@@ -102,6 +104,9 @@ static bool g_animate = true;
 
 /* The blocks to take from: one palette for the whole session. */
 static ccr_palette g_palette;
+
+static void recent_add(const char *path);
+static void tip(ccr_rect r, const char *text);
 
 /* Colours (or words) on the blocks changed: lay everything out again. */
 static void relayout_everything(ccr_document *doc)
@@ -690,6 +695,8 @@ static bool switch_to(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, cons
     }
     if (project_follow(path))
         libs_reload(doc);
+    if (opt->smoke_frames == 0)   /* tests and screenshots: not into anyone's list */
+        recent_add(path);
     fit_view(cv, doc, viewport, 1.0f);
     return true;
 }
@@ -1952,68 +1959,816 @@ static void mark_tooltip(const ccr_document *doc, const ccr_canvas *cv, ccr_rect
     wrap_text(mk->text, box.x + pad, box.y + pad - 2.0f, wrap_w, fs, ccr_th(CCR_C_PANEL_TEXT), true);
 }
 
+/* The part of the canvas no panel covers. */
+static ccr_rect visible_view(ccr_rect viewport, int w, int h)
+{
+    ccr_rect v = viewport;
+    if (g_files_t > 0.0f && files_area(w, h).x < v.x + v.w)
+        v.w = files_area(w, h).x - v.x;
+    if (g_bp.t > 0.0f)
+        v.h = build_area(w, h).y - v.y;
+    return v;
+}
+
+/* The palette's search field. */
+static struct {
+    bool focused;
+    char query[96];
+    char was[96];
+} g_psearch;
+
+/* -------------------------------------------------------------- find */
+
+#define FIND_MAX 4096
+
+static struct {
+    bool          open, focused;
+    char          query[128];
+    ccr_find_hit *hits;
+    uint32_t      count;      /* may be more than FIND_MAX: those are not kept */
+    int           current;    /* -1: none picked yet */
+    /* what the hits were found in: found again when any of it changes */
+    char          q_was[128];
+    const void   *ed_was;
+    uint32_t      hist_was, nodes_was, scripts_was;
+    bool          moving_was;
+} g_find = { .current = -1 };
+
+static void find_refresh(ccr_document *doc)
+{
+    if (!g_find.hits)
+        g_find.hits = malloc(FIND_MAX * sizeof *g_find.hits);
+    if (!g_find.hits || !doc->loaded) {
+        g_find.count = 0;
+        return;
+    }
+    const ccr_editor *ed = &doc->ed;
+    const bool moving = ed->drag != CCR_DRAG_IDLE;
+    if (strcmp(g_find.q_was, g_find.query) == 0 && g_find.ed_was == (const void *)ed->scripts &&
+        g_find.hist_was == ed->history_len && g_find.nodes_was == ed->ast.node_count &&
+        g_find.scripts_was == ed->script_count && !moving && !g_find.moving_was)
+        return;
+    const bool new_query = strcmp(g_find.q_was, g_find.query) != 0;
+    snprintf(g_find.q_was, sizeof g_find.q_was, "%s", g_find.query);
+    g_find.ed_was = ed->scripts;
+    g_find.hist_was = ed->history_len;
+    g_find.nodes_was = ed->ast.node_count;
+    g_find.scripts_was = ed->script_count;
+    g_find.moving_was = moving;
+    g_find.count = ccr_editor_find(ed, g_find.query, g_find.hits, FIND_MAX);
+    if (new_query)
+        g_find.current = -1;
+    const int kept = (int)(g_find.count < FIND_MAX ? g_find.count : FIND_MAX);
+    if (g_find.current >= kept)
+        g_find.current = kept - 1;
+}
+
+/* To hit `i`: the view glides there, a folded block unfolds. */
+static void find_go(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, int i)
+{
+    const int kept = (int)(g_find.count < FIND_MAX ? g_find.count : FIND_MAX);
+    if (kept == 0)
+        return;
+    g_find.current = ((i % kept) + kept) % kept;
+    glide_to_node(cv, doc, viewport, g_find.hits[g_find.current].node);
+    g_find.ed_was = NULL;   /* unfolding moved things: find again */
+}
+
+static void find_open(void)
+{
+    g_find.open = g_find.focused = true;
+    g_find.current = -1;
+    g_find.q_was[0] = '\x01';   /* found again */
+    ccr_gui_textbox_reset();
+}
+
+static ccr_rect find_area(ccr_rect viewport)
+{
+    const float w = 380.0f;
+    return (ccr_rect){ viewport.x + viewport.w - w - 16.0f, viewport.y + 10.0f, w, 42.0f };
+}
+
+/* The bar, the highlights; `input`: nothing else has the keyboard. */
+static void find_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, bool input)
+{
+    if (!g_find.open || !doc->loaded)
+        return;
+    find_refresh(doc);
+    const int kept = (int)(g_find.count < FIND_MAX ? g_find.count : FIND_MAX);
+
+    /* every hit lit; the current one more */
+    for (int i = 0; i < kept; ++i) {
+        const ccr_rect r = g_find.hits[i].rect;
+        const ccr_vec2 a = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x - 3.0f, r.y - 2.0f });
+        const ccr_rect box = { a.x, a.y, (r.w + 6.0f) * cv->zoom, (r.h + 4.0f) * cv->zoom };
+        if (box.x > viewport.x + viewport.w || box.y > viewport.y + viewport.h || box.x + box.w < viewport.x ||
+            box.y + box.h < viewport.y)
+            continue;
+        const bool cur = i == g_find.current;
+        const ccr_color ink = ccr_th(CCR_C_PANEL_TEXT) & 0xFFFFFF00u;   /* light on dark, dark on light */
+        const ccr_color edge = cur ? ccr_th(CCR_C_GLOW) : ink | 0xA0u;
+        ccr_gui_rect_rounded(box, 0.4f, cur ? (ccr_th(CCR_C_GLOW) & 0xFFFFFF00u) | 0x50u : ink | 0x22u);
+        const float t = cur ? 3.0f : 1.5f;
+        const ccr_vec2 pts[5] = { { box.x, box.y }, { box.x + box.w, box.y }, { box.x + box.w, box.y + box.h },
+                                  { box.x, box.y + box.h }, { box.x, box.y } };
+        for (int k = 0; k < 4; ++k)
+            ccr_gui_line(pts[k], pts[k + 1], t, edge);
+    }
+
+    const ccr_rect bar = find_area(viewport);
+    const ccr_vec2 m = ccr_gui_mouse();
+    ccr_gui_rect_rounded((ccr_rect){ bar.x - 1, bar.y - 1, bar.w + 2, bar.h + 2 }, 0.3f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(bar, 0.3f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    const ccr_rect field = { bar.x + 8.0f, bar.y + 6.0f, bar.w - 150.0f, bar.h - 12.0f };
+    const bool shift = ccr_gui_shift_down();
+    bool step = false;
+    int dir = 1;
+    if (g_find.focused && input) {
+        ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+        if (ccr_gui_textbox(field, g_find.query, (int)sizeof g_find.query, 17.0f)) {
+            if (ccr_gui_key_pressed(CCR_KEY_ENTER)) {
+                step = true;   /* Enter: next; Shift+Enter: back; and keep typing */
+                dir = shift ? -1 : 1;
+            } else {
+                g_find.focused = false;   /* clicked elsewhere */
+            }
+        }
+    } else {
+        ccr_gui_rect_rounded(field, 0.3f, ccr_th(CCR_C_FIELD));
+        ccr_gui_text(g_find.query[0] ? g_find.query : ccr_tr(CCR_T_FIND_HINT), field.x + 8.0f, field.y + 6.0f, 16.0f,
+                     g_find.query[0] ? ccr_th(CCR_C_FIELD_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+        if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && point_in(m, field)) {
+            g_find.focused = true;
+            ccr_gui_textbox_reset();
+        }
+    }
+    if (!g_find.query[0] && g_find.focused)
+        ccr_gui_text(ccr_tr(CCR_T_FIND_HINT), field.x + 8.0f, field.y + 6.0f, 16.0f, ccr_th(CCR_C_PANEL_HINT));
+
+    /* "3 of 12", back, next, close */
+    char count[64] = "";
+    if (g_find.query[0]) {
+        if (kept == 0)
+            ccr_trf(count, sizeof count, CCR_T_FIND_NONE);
+        else
+            ccr_trf(count, sizeof count, CCR_T_FIND_COUNT, g_find.current < 0 ? 0 : g_find.current + 1, (int)g_find.count);
+    }
+    float x = field.x + field.w + 8.0f;
+    ccr_gui_text(count, x, bar.y + 13.0f, 14.0f, kept || !g_find.query[0] ? ccr_th(CCR_C_PANEL_HINT) : ccr_th(CCR_C_ERROR));
+    const ccr_button_style plain = *button_style(false);
+    const float bx = bar.x + bar.w - 3.0f * 30.0f - 6.0f;
+    const bool up = ccr_gui_button((ccr_rect){ bx, bar.y + 8.0f, 26.0f, 26.0f }, "<", &plain);
+    const bool down = ccr_gui_button((ccr_rect){ bx + 30.0f, bar.y + 8.0f, 26.0f, 26.0f }, ">", &plain);
+    const bool close = ccr_gui_button((ccr_rect){ bx + 60.0f, bar.y + 8.0f, 26.0f, 26.0f }, "x", &plain);
+    if (input && (up || down)) {
+        step = true;
+        dir = up ? -1 : 1;
+    }
+    if (input && ccr_gui_key_pressed(CCR_KEY_F3)) {
+        step = true;
+        dir = shift ? -1 : 1;
+    }
+    if ((input && close) || (input && g_find.focused && ccr_gui_key_pressed(CCR_KEY_ESCAPE))) {
+        g_find.open = g_find.focused = false;
+        return;
+    }
+    /* typing: off to the first hit from where the view is */
+    if (g_find.current < 0 && kept > 0 && !step) {
+        const ccr_vec2 top = ccr_canvas_to_world(cv, (ccr_vec2){ viewport.x, viewport.y });
+        int first = 0;
+        while (first < kept && g_find.hits[first].rect.y < top.y)
+            ++first;
+        const ccr_rect r = g_find.hits[first % kept].rect;
+        const ccr_vec2 a = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x, r.y });
+        const bool seen = a.x >= viewport.x && a.y >= viewport.y && a.x < viewport.x + viewport.w &&
+                          a.y < viewport.y + viewport.h && !g_find.hits[first % kept].hidden;
+        if (seen)
+            g_find.current = first % kept;   /* in view already: no need to move */
+        else
+            find_go(doc, cv, viewport, first);
+    } else if (step && kept > 0) {
+        find_go(doc, cv, viewport, g_find.current < 0 ? (dir > 0 ? 0 : kept - 1) : g_find.current + dir);
+    }
+}
+
+static ccr_rect palette_area(int height);
+
+/* The palette's search field, above it: typing shows only the blocks
+ * that say it. */
+static void psearch_frame(bool input)
+{
+    const ccr_rect bar = { 0, TOPBAR_H, PALETTE_W, PSEARCH_H };
+    ccr_gui_rect(bar, ccr_th(CCR_C_PALETTE));
+    ccr_gui_rect((ccr_rect){ bar.x, bar.y + bar.h - 1.0f, bar.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+    const ccr_rect field = { bar.x + 8.0f, bar.y + 6.0f, bar.w - 16.0f, bar.h - 12.0f };
+    const ccr_vec2 m = ccr_gui_mouse();
+    if (g_psearch.focused && input) {
+        ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+        if (ccr_gui_key_pressed(CCR_KEY_ESCAPE)) {
+            g_psearch.query[0] = '\0';   /* Esc: everything back */
+            g_psearch.focused = false;
+        } else if (ccr_gui_textbox(field, g_psearch.query, (int)sizeof g_psearch.query, 16.0f)) {
+            g_psearch.focused = false;
+        }
+        if (!g_psearch.query[0])
+            ccr_gui_text(ccr_tr(CCR_T_PAL_SEARCH), field.x + 10.0f, field.y + 6.0f, 15.0f, ccr_th(CCR_C_PANEL_HINT));
+    } else {
+        ccr_gui_rect_rounded(field, 0.4f, ccr_th(CCR_C_FIELD));
+        ccr_gui_text(g_psearch.query[0] ? g_psearch.query : ccr_tr(CCR_T_PAL_SEARCH), field.x + 10.0f,
+                     field.y + 6.0f, 15.0f, g_psearch.query[0] ? ccr_th(CCR_C_FIELD_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+        if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && point_in(m, field)) {
+            g_psearch.focused = true;
+            g_find.focused = false;
+            ccr_gui_textbox_reset();
+        }
+    }
+    /* a magnifying glass at the end; an x to clear once there is text */
+    const ccr_color ic = ccr_th(CCR_C_PANEL_HINT);
+    if (!g_psearch.query[0]) {
+        const ccr_vec2 c = { field.x + field.w - 18.0f, field.y + field.h * 0.5f - 2.0f };
+        ccr_gui_ring(c, 4.5f, 6.3f, 0.0f, 360.0f, ic);
+        ccr_gui_line((ccr_vec2){ c.x + 4.5f, c.y + 4.5f }, (ccr_vec2){ c.x + 8.5f, c.y + 8.5f }, 2.0f, ic);
+    } else {
+        const ccr_rect x = { field.x + field.w - 24.0f, field.y + 4.0f, 20.0f, field.h - 8.0f };
+        const ccr_vec2 xc = { x.x + 10.0f, x.y + x.h * 0.5f };
+        ccr_gui_line((ccr_vec2){ xc.x - 4, xc.y - 4 }, (ccr_vec2){ xc.x + 4, xc.y + 4 }, 1.6f, ic);
+        ccr_gui_line((ccr_vec2){ xc.x - 4, xc.y + 4 }, (ccr_vec2){ xc.x + 4, xc.y - 4 }, 1.6f, ic);
+        if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && point_in(m, x)) {
+            g_psearch.query[0] = '\0';
+            g_psearch.focused = false;
+        }
+    }
+    if (strcmp(g_psearch.was, g_psearch.query) != 0) {
+        snprintf(g_psearch.was, sizeof g_psearch.was, "%s", g_psearch.query);
+        if (g_palette.ready && !ccr_palette_set_filter(&g_palette, g_psearch.query))
+            fprintf(stderr, "ccratch: out of memory laying out the palette\n");
+    }
+    if (g_psearch.query[0] && g_palette.ready && g_palette.item_count == 0) {
+        const ccr_rect area = palette_area(ccr_gui_height());
+        ccr_gui_text(ccr_tr(CCR_T_PAL_NONE), area.x + CCR_PALETTE_STRIP_W + 12.0f, area.y + 16.0f, 15.0f,
+                     ccr_th(CCR_C_PANEL_HINT));
+    }
+}
+
+/* ---------------------------------------------------------- F1: help */
+
+static bool g_help;
+
+/* Every key and mouse move, on one card. True: open the agreement. */
+static bool help_frame(int w, int h)
+{
+    if (!g_help)
+        return false;
+    static const struct { const char *keys; ccr_text k; ccr_text what; } rows[] = {
+        { NULL, CCR_T_HELP_K_DRAG, CCR_T_HELP_DRAG },
+        { NULL, CCR_T_HELP_K_RIGHT, CCR_T_HELP_PIE },
+        { NULL, CCR_T_HELP_K_PAN, CCR_T_HELP_PAN },
+        { NULL, CCR_T_HELP_K_WHEEL, CCR_T_HELP_ZOOM },
+        { NULL, CCR_T_HELP_K_DOUBLE, CCR_T_HELP_FOLD },
+        { "Home", 0, CCR_T_HELP_HOME },
+        { "Ctrl+S", 0, CCR_T_HELP_SAVE },
+        { "Ctrl+Z / Ctrl+Y", 0, CCR_T_HELP_UNDO },
+        { "Del, Ctrl+D, Ctrl+/", 0, CCR_T_HELP_EDIT },
+        { "Ctrl+F, F3", 0, CCR_T_HELP_FIND },
+        { "Ctrl+P, Ctrl+Tab", 0, CCR_T_HELP_FILES },
+        { "Ctrl+B, Ctrl+R", 0, CCR_T_HELP_BUILD },
+        { "F5", 0, CCR_T_HELP_RELOAD },
+        { "F1", 0, CCR_T_HELP_HELP },
+    };
+    const int n = (int)(sizeof rows / sizeof rows[0]);
+    ccr_gui_rect((ccr_rect){ 0, 0, (float)w, (float)h }, ccr_th(CCR_C_BACKDROP));
+    const float row = 30.0f, pw = 700.0f > (float)w - 40.0f ? (float)w - 40.0f : 700.0f;
+    const float ph = 90.0f + row * (float)n + 56.0f;
+    const ccr_rect panel = { ((float)w - pw) * 0.5f, ((float)h - ph) * 0.5f, pw, ph };
+    ccr_gui_rect_rounded((ccr_rect){ panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4 }, 0.04f, COL_ACCENT);
+    ccr_gui_rect_rounded(panel, 0.04f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    ccr_gui_text(ccr_tr(CCR_T_HELP_TITLE), panel.x + 28.0f, panel.y + 22.0f, 24.0f, ccr_th(CCR_C_PANEL_TEXT));
+    ccr_gui_text(ccr_tr(CCR_T_HELP_CLOSE), panel.x + panel.w - 28.0f - ccr_gui_text_width(ccr_tr(CCR_T_HELP_CLOSE), 14.0f),
+                 panel.y + 30.0f, 14.0f, ccr_th(CCR_C_PANEL_HINT));
+    const float kx = panel.x + 28.0f, dx = panel.x + 250.0f;
+    float y = panel.y + 74.0f;
+    for (int i = 0; i < n; ++i, y += row) {
+        const char *keys = rows[i].keys ? rows[i].keys : ccr_tr(rows[i].k);
+        const float kw = ccr_gui_text_width(keys, 15.0f) + 16.0f;
+        ccr_gui_rect_rounded((ccr_rect){ kx, y - 3.0f, kw, 24.0f }, 0.4f, ccr_th(CCR_C_BG));
+        ccr_gui_rect_rounded((ccr_rect){ kx, y + 19.0f, kw, 2.0f }, 1.0f, ccr_th(CCR_C_PANEL_EDGE));
+        ccr_gui_text(keys, kx + 8.0f, y + 1.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_text(ccr_tr(rows[i].what), dx, y + 1.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
+    }
+    const char *ll = ccr_tr(CCR_T_HELP_LICENSE);
+    const float lw = ccr_gui_text_width(ll, 15.0f) + 28.0f;
+    const ccr_button_style plain = *button_style(false);
+    const bool license = ccr_gui_button((ccr_rect){ kx, panel.y + panel.h - 46.0f, lw, 30.0f }, ll, &plain);
+    if (ccr_gui_key_pressed(CCR_KEY_ESCAPE) ||
+        (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(ccr_gui_mouse(), panel)) || license)
+        g_help = false;
+    return license;
+}
+
+/* ------------------------------------------------- zoom, bottom right */
+
+static void zoom_to(ccr_canvas *cv, ccr_rect viewport, float zoom)
+{
+    if (zoom < CCR_ZOOM_MIN) zoom = CCR_ZOOM_MIN;
+    if (zoom > CCR_ZOOM_MAX) zoom = CCR_ZOOM_MAX;
+    const ccr_vec2 c = { viewport.x + viewport.w * 0.5f, viewport.y + viewport.h * 0.5f };
+    const ccr_vec2 at = ccr_canvas_to_world(cv, c);   /* the middle stays put */
+    cv->zoom = zoom;
+    cv->offset.x = c.x - at.x * zoom;
+    cv->offset.y = c.y - at.y * zoom;
+    g_glide.active = false;
+}
+
+/* [-] 100% [+] [fit] at the right of the status bar; its left edge. */
+static float zoom_widget(int w, int h, ccr_canvas *cv, ccr_document *doc, ccr_rect viewport, bool input)
+{
+    const float y = (float)h - STATUSBAR_H + 3.0f, bh = STATUSBAR_H - 6.0f;
+    const ccr_button_style plain = *button_style(false);
+    float x = (float)w - 8.0f - 34.0f;
+    const ccr_rect fit = { x, y, 34.0f, bh };
+    const bool f = ccr_gui_button(fit, "", &plain);
+    {   /* four corners: all of it */
+        const ccr_vec2 c = { fit.x + fit.w * 0.5f, fit.y + fit.h * 0.5f };
+        const ccr_color ic = ccr_th(CCR_C_BUTTON_TEXT);
+        const float a = 6.0f, l = 3.5f;
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2) {
+                const ccr_vec2 k = { c.x + (float)sx * a, c.y + (float)sy * (a - 1.5f) };
+                ccr_gui_line(k, (ccr_vec2){ k.x - (float)sx * l, k.y }, 1.6f, ic);
+                ccr_gui_line(k, (ccr_vec2){ k.x, k.y - (float)sy * l }, 1.6f, ic);
+            }
+    }
+    if (input)
+        tip(fit, ccr_tr(CCR_T_TIP_FIT));
+    x -= 4.0f + 26.0f;
+    const bool plus = ccr_gui_button((ccr_rect){ x, y, 26.0f, bh }, "+", &plain);
+    char pct[16];
+    snprintf(pct, sizeof pct, "%d%%", (int)(cv->zoom * 100.0f + 0.5f));
+    const float pw = 52.0f;
+    x -= 4.0f + pw;
+    const bool reset = ccr_gui_button((ccr_rect){ x, y, pw, bh }, pct, &plain);
+    x -= 4.0f + 26.0f;
+    const bool minus = ccr_gui_button((ccr_rect){ x, y, 26.0f, bh }, "-", &plain);
+    if (input) {
+        const bool ctrl = ccr_gui_ctrl_down();
+        if (plus || (ctrl && ccr_gui_key_pressed(CCR_KEY_EQUAL)))
+            zoom_to(cv, viewport, cv->zoom * 1.25f);
+        if (minus || (ctrl && ccr_gui_key_pressed(CCR_KEY_MINUS)))
+            zoom_to(cv, viewport, cv->zoom / 1.25f);
+        if (reset || (ctrl && ccr_gui_key_pressed(CCR_KEY_ZERO)))
+            zoom_to(cv, viewport, 1.0f);
+        if (f)
+            fit_view_smooth(cv, doc, viewport);
+    }
+    return x;
+}
+
+/* --------------------------------------------------------- recent files */
+
+#define RECENT_MAX 8
+
+static void recent_add(const char *path)
+{
+    char real[PATH_MAX_LEN];
+    if (!ccr_files_real(path, real, (int)sizeof real))
+        return;
+    char list[RECENT_MAX][512];
+    int n = 0;
+    snprintf(list[n++], sizeof list[0], "%.511s", real);
+    for (int i = 1; i <= RECENT_MAX && n < RECENT_MAX; ++i) {
+        char key[32], v[512];
+        snprintf(key, sizeof key, "recent.%d", i);
+        if (ccr_config_get(key, v, sizeof v) && strcmp(v, list[0]) != 0)
+            snprintf(list[n++], sizeof list[0], "%s", v);
+    }
+    for (int i = 0; i < n; ++i) {
+        char key[32];
+        snprintf(key, sizeof key, "recent.%d", i + 1);
+        if (!ccr_config_set(key, list[i]))
+            return;   /* no config folder: no list */
+    }
+}
+
+/* The start screen: drop a file, or one of the last ones. */
+static void start_screen(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt,
+                         bool input)
+{
+    const char *a = ccr_tr(CCR_T_EMPTY_TITLE);
+    const char *b = ccr_tr(CCR_T_EMPTY_HINT);
+    const float cx = viewport.x + viewport.w * 0.5f;
+    float y = viewport.y + viewport.h * 0.3f;
+    ccr_gui_text(a, cx - ccr_gui_text_width(a, 30.0f) * 0.5f, y, 30.0f, COL_HINT);
+    ccr_gui_text(b, cx - ccr_gui_text_width(b, 20.0f) * 0.5f, y + 40.0f, 20.0f, COL_HINT);
+    y += 100.0f;
+    static char paths[RECENT_MAX][512];
+    static int n = -1;
+    static double read_at;
+    if (n < 0 || ccr_gui_time() - read_at > 2.0) {   /* the config, now and then: not every frame */
+        n = 0;
+        read_at = ccr_gui_time();
+        for (int i = 1; i <= RECENT_MAX; ++i) {
+            char key[32];
+            snprintf(key, sizeof key, "recent.%d", i);
+            if (ccr_config_get(key, paths[n], sizeof paths[0])) {
+                FILE *f = fopen(paths[n], "rb");
+                if (f) {
+                    fclose(f);
+                    ++n;
+                }
+            }
+        }
+    }
+    if (n == 0)
+        return;
+    const float w = 460.0f;
+    ccr_gui_text(ccr_tr(CCR_T_RECENT), cx - w * 0.5f, y, 17.0f, ccr_th(CCR_C_PANEL_TEXT));
+    y += 30.0f;
+    const ccr_vec2 m = ccr_gui_mouse();
+    char go[512] = "";
+    for (int i = 0; i < n; ++i, y += 40.0f) {
+        const ccr_rect row = { cx - w * 0.5f, y, w, 36.0f };
+        const bool hot = input && point_in(m, row);
+        ccr_gui_rect_rounded(row, 0.3f, hot ? ccr_th(CCR_C_BUTTON_HOVER) : ccr_th(CCR_C_BUTTON));
+        ccr_gui_text(base_name(paths[i]), row.x + 14.0f, row.y + 8.0f, 17.0f, ccr_th(CCR_C_BUTTON_TEXT));
+        char dir[512];
+        snprintf(dir, sizeof dir, "%s", paths[i]);
+        char *slash = strrchr(dir, '/');
+        if (slash)
+            *slash = '\0';
+        const char *home = getenv("HOME");
+        char shown[540];
+        if (home && strncmp(dir, home, strlen(home)) == 0)
+            snprintf(shown, sizeof shown, "~%s", dir + strlen(home));
+        else
+            snprintf(shown, sizeof shown, "%s", dir);
+        const float nx = row.x + 24.0f + ccr_gui_text_width(base_name(paths[i]), 17.0f);
+        ccr_gui_clip_begin((ccr_rect){ nx, row.y, row.x + row.w - nx - 10.0f, row.h });
+        ccr_gui_text(shown, nx, row.y + 10.0f, 14.0f, ccr_th(CCR_C_PANEL_HINT));
+        ccr_gui_clip_end();
+        if (hot && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+            snprintf(go, sizeof go, "%s", paths[i]);
+    }
+    if (go[0])
+        switch_to(doc, cv, viewport, go, opt);
+}
+
+/* ------------------------------------------------------------- tabs */
+
+/* The open files as tabs over the canvas, in the order they were opened
+ * (the editor slots swap around; the tabs do not). */
+static char g_tabs[MAX_OPEN + 1][PATH_MAX_LEN];
+static int  g_tab_n;
+static char g_tab_armed[PATH_MAX_LEN];   /* closing an unsaved one: x again */
+
+static void tabs_sync(const ccr_document *doc)
+{
+    ccr_open_file of[MAX_OPEN + 1];
+    const int n = open_files(doc, of);
+    /* gone: out */
+    for (int i = 0; i < g_tab_n;) {
+        bool open = false;
+        for (int k = 0; k < n && !open; ++k)
+            open = strcmp(of[k].path, g_tabs[i]) == 0;
+        if (open) {
+            ++i;
+        } else {
+            memmove(g_tabs[i], g_tabs[i + 1], (size_t)(g_tab_n - i - 1) * sizeof g_tabs[0]);
+            --g_tab_n;
+        }
+    }
+    /* new: at the end */
+    for (int k = 0; k < n; ++k) {
+        bool known = false;
+        for (int i = 0; i < g_tab_n && !known; ++i)
+            known = strcmp(of[k].path, g_tabs[i]) == 0;
+        if (!known && g_tab_n < MAX_OPEN + 1)
+            snprintf(g_tabs[g_tab_n++], sizeof g_tabs[0], "%s", of[k].path);
+    }
+}
+
+static bool tab_modified(const ccr_document *doc, const char *path)
+{
+    if (doc->loaded && strcmp(doc->path, path) == 0)
+        return ccr_editor_modified(&doc->ed);
+    for (int i = 0; i < g_stash_n; ++i)
+        if (strcmp(g_stash[i].doc->path, path) == 0)
+            return ccr_editor_modified(&g_stash[i].doc->ed);
+    return false;
+}
+
+#define TAB_MAX_W 200.0f
+#define TAB_MIN_W 84.0f
+
+/* The tab strip; `input`: nothing else has the mouse. */
+static void tabs_frame(int w, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
+                       const ccr_options *opt, bool input)
+{
+    tabs_sync(doc);
+    const ccr_rect strip = { PALETTE_W, TOPBAR_H, (float)w - PALETTE_W, TABS_H };
+    ccr_gui_rect(strip, ccr_th(CCR_C_PALETTE));
+    ccr_gui_rect((ccr_rect){ strip.x, strip.y + strip.h - 1.0f, strip.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+    if (g_tab_n == 0)
+        return;
+    float tw = (strip.w - 16.0f) / (float)g_tab_n;
+    if (tw > TAB_MAX_W) tw = TAB_MAX_W;
+    if (tw < TAB_MIN_W) tw = TAB_MIN_W;
+    const ccr_vec2 m = ccr_gui_mouse();
+    char go[PATH_MAX_LEN] = "", close[PATH_MAX_LEN] = "";
+    for (int i = 0; i < g_tab_n; ++i) {
+        const ccr_rect t = { strip.x + 8.0f + (float)i * tw, strip.y + 4.0f, tw - 4.0f, TABS_H - 4.0f };
+        if (t.x > strip.x + strip.w)
+            break;
+        const bool current = doc->loaded && strcmp(doc->path, g_tabs[i]) == 0;
+        const bool hot = input && point_in(m, t);
+        const bool modified = tab_modified(doc, g_tabs[i]);
+        const bool armed = strcmp(g_tab_armed, g_tabs[i]) == 0;
+        const ccr_color fill = armed ? ccr_th(CCR_C_ERROR)
+                             : current ? ccr_th(CCR_C_BG)
+                             : hot ? ccr_th(CCR_C_BUTTON_HOVER) : ccr_th(CCR_C_BUTTON);
+        ccr_gui_rect_corners(t, 7.0f, CCR_CORNER_TL | CCR_CORNER_TR, fill);
+        if (current)   /* one piece with the canvas under it */
+            ccr_gui_rect((ccr_rect){ t.x, t.y + t.h - 1.0f, t.w, 2.0f }, ccr_th(CCR_C_BG));
+        if (current)
+            ccr_gui_rect_corners((ccr_rect){ t.x, t.y, t.w, 3.0f }, 3.0f, CCR_CORNER_TL | CCR_CORNER_TR, COL_ACCENT);
+        /* a dot for a file with changes, the x when it can be closed */
+        const ccr_rect x = { t.x + t.w - 22.0f, t.y + (t.h - 18.0f) * 0.5f, 18.0f, 18.0f };
+        const bool on_x = hot && point_in(m, x);
+        char name[160];
+        snprintf(name, sizeof name, "%s", base_name(g_tabs[i]));
+        const ccr_color tc = armed ? 0xFFFFFFFFu : current ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_BUTTON_TEXT);
+        const float room = t.w - 40.0f;
+        float fs = 15.0f;
+        while (fs > 11.0f && ccr_gui_text_width(name, fs) > room)
+            fs -= 0.5f;
+        ccr_gui_clip_begin((ccr_rect){ t.x + 10.0f, t.y, room + 4.0f, t.h });
+        ccr_gui_text(name, t.x + 12.0f, t.y + (t.h - fs) * 0.5f, fs, tc);
+        ccr_gui_clip_end();
+        if (hot || current || armed) {
+            if (on_x)
+                ccr_gui_rect_rounded(x, 1.0f, armed ? 0x00000033u : ccr_th(CCR_C_BUTTON_PRESS));
+            const ccr_vec2 c = { x.x + 9.0f, x.y + 9.0f };
+            ccr_gui_line((ccr_vec2){ c.x - 4, c.y - 4 }, (ccr_vec2){ c.x + 4, c.y + 4 }, 1.6f, tc);
+            ccr_gui_line((ccr_vec2){ c.x - 4, c.y + 4 }, (ccr_vec2){ c.x + 4, c.y - 4 }, 1.6f, tc);
+        } else if (modified) {
+            ccr_gui_circle((ccr_vec2){ x.x + 9.0f, x.y + 9.0f }, 4.0f, tc);
+        }
+        if (modified && (hot || current) && !armed)
+            ccr_gui_circle((ccr_vec2){ x.x - 6.0f, x.y + 9.0f }, 3.5f, COL_ACCENT);
+
+        if (!hot)
+            continue;
+        if ((on_x && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) || ccr_gui_mouse_pressed(CCR_MOUSE_MIDDLE))
+            snprintf(close, sizeof close, "%s", g_tabs[i]);
+        else if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !current)
+            snprintf(go, sizeof go, "%s", g_tabs[i]);
+    }
+    if (close[0]) {
+        if (tab_modified(doc, close) && strcmp(g_tab_armed, close) != 0) {
+            snprintf(g_tab_armed, sizeof g_tab_armed, "%s", close);   /* unsaved: once more */
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_FILES_UNSAVED);
+            doc->has_errors = true;
+        } else {
+            g_tab_armed[0] = '\0';
+            close_file(doc, cv, close);
+        }
+    } else if (go[0]) {
+        g_tab_armed[0] = '\0';
+        if (!doc->loaded || doc->ed.drag == CCR_DRAG_IDLE)
+            switch_to(doc, cv, viewport, go, opt);
+    } else if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(m, strip)) {
+        g_tab_armed[0] = '\0';
+    }
+}
+
+/* -------------------------------------------- quitting with unsaved work */
+
+static struct {
+    bool open;
+    char note[300];
+} g_quit;
+
+static int unsaved_count(const ccr_document *doc)
+{
+    int n = doc->loaded && ccr_editor_modified(&doc->ed);
+    for (int i = 0; i < g_stash_n; ++i)
+        n += ccr_editor_modified(&g_stash[i].doc->ed);
+    return n;
+}
+
+/* True when it is time to go. */
+static bool quit_frame(int w, int h, ccr_document *doc, const ccr_options *opt)
+{
+    if (!g_quit.open)
+        return false;
+    ccr_gui_rect((ccr_rect){ 0, 0, (float)w, (float)h }, ccr_th(CCR_C_BACKDROP));
+    const int n = unsaved_count(doc);
+    const float pw = 520.0f, ph = 140.0f + 22.0f * (float)(n < 6 ? n : 6);
+    const ccr_rect panel = { ((float)w - pw) * 0.5f, ((float)h - ph) * 0.42f, pw, ph };
+    ccr_gui_rect_rounded((ccr_rect){ panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4 }, 0.06f, COL_ACCENT);
+    ccr_gui_rect_rounded(panel, 0.06f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    float y = panel.y + 22.0f;
+    ccr_gui_text(ccr_tr(CCR_T_QUIT_TITLE), panel.x + 24.0f, y, 22.0f, ccr_th(CCR_C_PANEL_TEXT));
+    y += 36.0f;
+    /* which ones */
+    int shown = 0;
+    const ccr_document *all[MAX_OPEN + 1];
+    int na = 0;
+    if (doc->loaded)
+        all[na++] = doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        all[na++] = g_stash[i].doc;
+    for (int i = 0; i < na && shown < 6; ++i)
+        if (ccr_editor_modified(&all[i]->ed)) {
+            ccr_gui_circle((ccr_vec2){ panel.x + 32.0f, y + 9.0f }, 3.5f, COL_ACCENT);
+            ccr_gui_text(base_name(all[i]->path), panel.x + 44.0f, y, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+            y += 22.0f;
+            ++shown;
+        }
+    if (g_quit.note[0])
+        ccr_gui_text(g_quit.note, panel.x + 24.0f, panel.y + panel.h - 78.0f, 14.0f, ccr_th(CCR_C_ERROR));
+
+    const char *ls = ccr_tr(CCR_T_QUIT_SAVE), *ld = ccr_tr(CCR_T_QUIT_DISCARD), *lc = ccr_tr(CCR_T_QUIT_CANCEL);
+    const float ws = ccr_gui_text_width(ls, 16.0f) + 30.0f, wd = ccr_gui_text_width(ld, 16.0f) + 30.0f,
+                wc = ccr_gui_text_width(lc, 16.0f) + 30.0f;
+    const float by = panel.y + panel.h - 50.0f;
+    float bx = panel.x + panel.w - 20.0f - ws;
+    const ccr_button_style plain = *button_style(false);
+    const bool save = ccr_gui_button((ccr_rect){ bx, by, ws, 34.0f }, ls, button_style(true));
+    bx -= 10.0f + wd;
+    const bool discard = ccr_gui_button((ccr_rect){ bx, by, wd, 34.0f }, ld, &plain);
+    const bool cancel = ccr_gui_button((ccr_rect){ panel.x + 20.0f, by, wc, 34.0f }, lc, &plain) ||
+                        ccr_gui_key_pressed(CCR_KEY_ESCAPE);
+    if (cancel) {
+        g_quit.open = false;
+        return false;
+    }
+    if (discard)
+        return true;
+    if (save) {
+        ccr_document *each[MAX_OPEN + 1];
+        int ne = 0;
+        if (doc->loaded)
+            each[ne++] = doc;
+        for (int i = 0; i < g_stash_n; ++i)
+            each[ne++] = g_stash[i].doc;
+        for (int i = 0; i < ne; ++i)
+            if (ccr_editor_modified(&each[i]->ed) && !document_save(each[i], opt)) {
+                ccr_trf(g_quit.note, sizeof g_quit.note, CCR_T_BUILD_NOT_SAVED, base_name(each[i]->path));
+                return false;   /* the rest stays to decide */
+            }
+        return true;
+    }
+    return false;
+}
+
+/* A hint under the mouse, drawn last of all (over every panel). */
+static struct {
+    char   text[200];
+    double since;
+    ccr_rect over;
+    bool   want;
+} g_tip;
+
+static void tip(ccr_rect r, const char *text)
+{
+    const ccr_vec2 m = ccr_gui_mouse();
+    if (!point_in(m, r))
+        return;
+    if (!g_tip.text[0] || strcmp(g_tip.text, text) != 0 || g_tip.over.x != r.x || g_tip.over.y != r.y) {
+        snprintf(g_tip.text, sizeof g_tip.text, "%s", text);
+        g_tip.since = ccr_gui_time();
+        g_tip.over = r;
+    }
+    g_tip.want = true;
+}
+
+static void tip_draw(int w, int h)
+{
+    if (!g_tip.want) {
+        g_tip.text[0] = '\0';
+        return;
+    }
+    g_tip.want = false;
+    if (ccr_gui_time() - g_tip.since < 0.45)
+        return;
+    const float fs = 14.0f, tw = ccr_gui_text_width(g_tip.text, fs) + 16.0f;
+    ccr_rect b = { g_tip.over.x + g_tip.over.w * 0.5f - tw * 0.5f, g_tip.over.y + g_tip.over.h + 6.0f, tw, 26.0f };
+    if (b.y + b.h > (float)h)
+        b.y = g_tip.over.y - b.h - 6.0f;
+    if (b.x + b.w > (float)w - 4.0f) b.x = (float)w - 4.0f - b.w;
+    if (b.x < 4.0f) b.x = 4.0f;
+    ccr_gui_rect_rounded(b, 0.4f, ccr_th(CCR_C_PANEL_TEXT));
+    ccr_gui_text(g_tip.text, b.x + 8.0f, b.y + 5.0f, fs, ccr_th(CCR_C_PANEL) | 0xFFu);
+}
+
+/* Scratch's green flag: build and run. */
+static void icon_flag(ccr_rect r, ccr_color c)
+{
+    const float x = r.x + r.w * 0.5f - 6.0f, y = r.y + 5.0f;
+    ccr_gui_line((ccr_vec2){ x, y }, (ccr_vec2){ x, y + 17.0f }, 2.2f, c);
+    /* the cloth, waving a little */
+    ccr_gui_triangle((ccr_vec2){ x + 1, y }, (ccr_vec2){ x + 7, y + 1.5f }, (ccr_vec2){ x + 1, y + 9 }, c);
+    ccr_gui_triangle((ccr_vec2){ x + 7, y + 1.5f }, (ccr_vec2){ x + 7, y + 10.5f }, (ccr_vec2){ x + 1, y + 9 }, c);
+    ccr_gui_triangle((ccr_vec2){ x + 7, y + 1.5f }, (ccr_vec2){ x + 13, y }, (ccr_vec2){ x + 7, y + 10.5f }, c);
+    ccr_gui_triangle((ccr_vec2){ x + 13, y }, (ccr_vec2){ x + 13, y + 9 }, (ccr_vec2){ x + 7, y + 10.5f }, c);
+}
+
+/* And its red stop sign. */
+static void icon_stop(ccr_rect r, ccr_color c)
+{
+    const ccr_vec2 m = { r.x + r.w * 0.5f, r.y + r.h * 0.5f };
+    const float R = 8.0f;
+    ccr_vec2 p[8];
+    for (int k = 0; k < 8; ++k) {
+        const float a = (22.5f + 45.0f * (float)k) * 0.0174533f;
+        p[k] = (ccr_vec2){ m.x + cosf(a) * R, m.y + sinf(a) * R };
+    }
+    for (int k = 0; k < 8; ++k)
+        ccr_gui_triangle(m, p[k], p[(k + 1) % 8], c);
+}
+
 /* What was clicked in the top bar that the caller does (it has what
  * opening a file and building take). */
-enum { TOP_CMAKE = 1, TOP_BUILD = 2 };
+enum { TOP_CMAKE = 1, TOP_BUILD = 2, TOP_RUN = 4, TOP_STOP = 8, TOP_HELP = 16 };
 
 static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
 {
     int clicked = 0;
-    const bool modal = ev->open;
+    const bool modal = ev->open || g_quit.open;
     ccr_gui_rect((ccr_rect){ 0, 0, (float)width, TOPBAR_H }, COL_BAR);
     ccr_gui_circle((ccr_vec2){ 22.0f, TOPBAR_H * 0.5f }, 8.0f, COL_ACCENT);
     ccr_gui_text("Ccratch", 38.0f, 8.0f, 22.0f, COL_TITLE);
-    if (doc->loaded) {
-        char title[300];
-        snprintf(title, sizeof title, "%s%s", base_name(doc->path),
-                 ccr_editor_modified(&doc->ed) ? " *" : "");
-        ccr_gui_text(title, 38.0f + ccr_gui_text_width("Ccratch", 22.0f) + 18.0f, 11.0f, 18.0f,
-                     COL_BAR_TEXT);
+    if (g_files.root[0]) {   /* the project; the files are the tabs */
+        const char *proj = strrchr(g_files.root, '/');
+        ccr_gui_text(proj ? proj + 1 : g_files.root, 38.0f + ccr_gui_text_width("Ccratch", 22.0f) + 18.0f,
+                     11.0f, 18.0f, COL_BAR_TEXT);
     }
+    const ccr_button_style plain = *button_style(false), *bs = &plain;   /* the style is static */
+    const ccr_button_style main_ = *button_style(true);
+    const bool busy = ccr_job_busy(&g_job);
+    const float y = 7.0f, bh = 26.0f, gap = 6.0f, group = 22.0f;
+    float x = (float)width - 10.0f;
 
+    /* build, run, stop: what makes the program go */
+    const char *bl = ccr_tr(CCR_T_BUILD);
+    const float bw = ccr_gui_text_width(bl, 16.0f) + 28.0f;
+    x -= bw;
+    if (ccr_gui_button((ccr_rect){ x, y, bw, bh }, bl, busy ? bs : &main_) && !modal)
+        clicked |= busy ? TOP_STOP : TOP_BUILD;
+    x -= gap + 36.0f;
+    const ccr_rect flag = { x, y, 36.0f, bh };
+    if (ccr_gui_button(flag, "", bs) && !modal)
+        clicked |= TOP_RUN;
+    icon_flag(flag, 0x4CBF56FFu);
+    if (!modal)
+        tip(flag, ccr_tr(CCR_T_TIP_RUN));
+    x -= 4.0f + 36.0f;
+    const ccr_rect stop = { x, y, 36.0f, bh };
+    if (ccr_gui_button(stop, "", bs) && !modal && busy)
+        clicked |= TOP_STOP;
+    icon_stop(stop, busy ? 0xEC5959FFu : 0xEC595950u);
+    if (!modal)
+        tip(stop, ccr_tr(CCR_T_TIP_STOP));
+    x -= group;
+
+    /* how Ccratch looks and speaks */
+    x -= 32.0f;
+    if (ccr_gui_button((ccr_rect){ x, y, 32.0f, bh }, "?", bs) && !modal)
+        clicked |= TOP_HELP;
     char code[24];
     snprintf(code, sizeof code, "%s", ccr_lang_code());
     for (char *c = code; *c; ++c)
         if (*c >= 'a' && *c <= 'z')
             *c = (char)(*c - 'a' + 'A');
-    const ccr_button_style plain = *button_style(false), *bs = &plain;   /* the style is static */
-    const float tw = ccr_gui_text_width(ccr_tr(CCR_T_THEME_BUTTON), 16.0f) + 24.0f;
-    if (ccr_gui_button((ccr_rect){ (float)width - 166.0f, 7.0f, 48.0f, 26.0f }, code, bs) && !modal)
+    x -= gap + 48.0f;
+    if (ccr_gui_button((ccr_rect){ x, y, 48.0f, bh }, code, bs) && !modal)
         next_language(doc);
-    if (ccr_gui_button((ccr_rect){ (float)width - 174.0f - tw, 7.0f, tw, 26.0f },
-                       ccr_tr(CCR_T_THEME_BUTTON), bs) && !modal)
+    const float tw = ccr_gui_text_width(ccr_tr(CCR_T_THEME_BUTTON), 16.0f) + 24.0f;
+    x -= gap + tw;
+    if (ccr_gui_button((ccr_rect){ x, y, tw, bh }, ccr_tr(CCR_T_THEME_BUTTON), bs) && !modal)
         next_theme(doc);
+    x -= group;
+
+    /* the project */
     const float fw = ccr_gui_text_width(ccr_tr(CCR_T_FILES_TITLE), 16.0f) + 24.0f;
-    if (ccr_gui_button((ccr_rect){ (float)width - 222.0f - tw - fw, 7.0f, fw, 26.0f },
-                       ccr_tr(CCR_T_FILES_TITLE), g_files_open ? button_style(true) : bs) && !modal)
+    x -= fw;
+    if (ccr_gui_button((ccr_rect){ x, y, fw, bh }, ccr_tr(CCR_T_FILES_TITLE), g_files_open ? &main_ : bs) && !modal)
         files_toggle(doc);
     const float lw = ccr_gui_text_width(ccr_tr(CCR_T_LIBS_TITLE), 16.0f) + 24.0f;
-    if (ccr_gui_button((ccr_rect){ (float)width - 230.0f - tw - fw - lw, 7.0f, lw, 26.0f },
-                       ccr_tr(CCR_T_LIBS_TITLE), g_libs.open ? button_style(true) : bs) && !modal) {
+    x -= gap + lw;
+    if (ccr_gui_button((ccr_rect){ x, y, lw, bh }, ccr_tr(CCR_T_LIBS_TITLE), g_libs.open ? &main_ : bs) && !modal) {
         if (g_libs.open) g_libs.open = false;
         else libs_open(doc);
     }
     const float cw = ccr_gui_text_width("CMake", 16.0f) + 24.0f;
     const bool on_cmake = doc->loaded && doc->ed.ast.lang == CCR_LANG_CMAKE;
-    if (ccr_gui_button((ccr_rect){ (float)width - 238.0f - tw - fw - lw - cw, 7.0f, cw, 26.0f },
-                       "CMake", on_cmake ? button_style(true) : bs) && !modal && !g_libs.open)
+    x -= gap + cw;
+    if (ccr_gui_button((ccr_rect){ x, y, cw, bh }, "CMake", on_cmake ? &main_ : bs) && !modal && !g_libs.open)
         clicked |= TOP_CMAKE;
-    if (ccr_gui_button((ccr_rect){ (float)width - 214.0f - tw, 7.0f, 32.0f, 26.0f }, "?", bs) &&
-        !modal) {
-        ev->open = true;   /* the agreement again, to read it at leisure */
-        ev->scroll = 0.0f;
-    }
-
-    float x = (float)width - 110.0f;
-    const bool busy = ccr_job_busy(&g_job);
-    if (ccr_gui_button((ccr_rect){ x, 7.0f, 100.0f, 26.0f }, ccr_tr(busy ? CCR_T_BUILD_STOP : CCR_T_BUILD),
-                       busy ? bs : button_style(true)) &&
-        !modal && !g_libs.open)
-        clicked |= TOP_BUILD;
     return clicked;
 }
 
-static void draw_statusbar(int width, int height, const ccr_canvas *cv, const ccr_document *doc)
+static void draw_statusbar(int width, int height, const ccr_canvas *cv, const ccr_document *doc, float right_edge)
 {
     float y = (float)height - STATUSBAR_H;
     ccr_gui_rect((ccr_rect){ 0, y, (float)width, STATUSBAR_H }, COL_BAR);
@@ -2023,27 +2778,28 @@ static void draw_statusbar(int width, int height, const ccr_canvas *cv, const cc
     ccr_gui_circle((ccr_vec2){ 14.0f, y + STATUSBAR_H * 0.5f }, 4.0f, dot);
     ccr_gui_text(msg, 26.0f, y + 5.0f, 15.0f, COL_BAR_TEXT);
 
-    char right[512], loose_txt[128] = "", zoom[64];
+    (void)cv;
+    char right[512], loose_txt[128] = "";
     uint32_t loose = doc->loaded ? ccr_editor_loose_count(&doc->ed) : 0;
     if (loose) {
         ccr_trnf(loose_txt, sizeof loose_txt - 8, CCR_T_BAR_LOOSE, loose, loose);
         strcat(loose_txt, "   |   ");
     }
-    ccr_trf(zoom, sizeof zoom, CCR_T_BAR_ZOOM, (int)(cv->zoom * 100.0f + 0.5f));
-    snprintf(right, sizeof right, "%s%s  |  %s", loose_txt, zoom, ccr_tr(CCR_T_BAR_HINTS));
-    /* no room next to the message (long words, narrow window): hints go first */
-    float room = (float)width - 26.0f - ccr_gui_text_width(msg, 15.0f) - 48.0f;
+    snprintf(right, sizeof right, "%s%s", loose_txt, ccr_tr(CCR_T_BAR_HINTS));
+    /* no room next to the message (long words, narrow window): the hint goes first */
+    float room = right_edge - 26.0f - ccr_gui_text_width(msg, 15.0f) - 48.0f;
     if (ccr_gui_text_width(right, 15.0f) > room)
-        snprintf(right, sizeof right, "%s%s", loose_txt, zoom);
+        snprintf(right, sizeof right, "%.*s", (int)(loose ? strlen(loose_txt) - 7 : 0), loose_txt);
     float rw = ccr_gui_text_width(right, 15.0f);
-    ccr_gui_text(right, (float)width - rw - 12.0f, y + 5.0f, 15.0f, COL_BAR_TEXT);
+    ccr_gui_text(right, right_edge - rw - 12.0f, y + 5.0f, 15.0f, COL_BAR_TEXT);
+    (void)width;
 }
 
 /* ------------------------------------------------------------ palette */
 
 static ccr_rect palette_area(int height)
 {
-    return (ccr_rect){ 0, TOPBAR_H, PALETTE_W, (float)height - TOPBAR_H - STATUSBAR_H };
+    return (ccr_rect){ 0, TOPBAR_H + PSEARCH_H, PALETTE_W, (float)height - TOPBAR_H - PSEARCH_H - STATUSBAR_H };
 }
 
 /* ------------------------------------------------- the operator menu */
@@ -2205,14 +2961,6 @@ static void run_action(ccr_action a, const ccr_context *ctx, ccr_vec2 world,
     }
 }
 
-static void draw_empty_hint(ccr_rect viewport)
-{
-    const char *a = ccr_tr(CCR_T_EMPTY_TITLE);
-    const char *b = ccr_tr(CCR_T_EMPTY_HINT);
-    float cx = viewport.x + viewport.w * 0.5f, cy = viewport.y + viewport.h * 0.5f;
-    ccr_gui_text(a, cx - ccr_gui_text_width(a, 30.0f) * 0.5f, cy - 30.0f, 30.0f, COL_HINT);
-    ccr_gui_text(b, cx - ccr_gui_text_width(b, 20.0f) * 0.5f, cy + 10.0f, 20.0f, COL_HINT);
-}
 
 /* ------------------------------------------------------------ run */
 
@@ -2281,12 +3029,17 @@ int ccr_run(int argc, char **argv)
 
     /* static: a document holds a 4 KB path and is reused all session */
     static ccr_document doc;
-    ccr_rect viewport = { PALETTE_W, TOPBAR_H, (float)ccr_gui_width() - PALETTE_W,
-                          (float)ccr_gui_height() - TOPBAR_H - STATUSBAR_H };
+    ccr_rect viewport = { PALETTE_W, TOPBAR_H + TABS_H, (float)ccr_gui_width() - PALETTE_W,
+                          (float)ccr_gui_height() - TOPBAR_H - TABS_H - STATUSBAR_H };
     const float start_zoom = opt.zoom_percent > 0 ? (float)opt.zoom_percent / 100.0f : 1.0f;
     /* the first file named is the one on screen: the others open first */
     for (int i = opt.also_n - 1; i >= 0; --i)
         switch_to(&doc, &canvas, viewport, opt.also[i], &opt);
+    if (opt.open) {   /* the tabs in the order they were named */
+        snprintf(g_tabs[g_tab_n++], sizeof g_tabs[0], "%s", opt.open);
+        for (int i = 0; i < opt.also_n; ++i)
+            snprintf(g_tabs[g_tab_n++], sizeof g_tabs[0], "%s", opt.also[i]);
+    }
     if (opt.open && switch_to(&doc, &canvas, viewport, opt.open, &opt))
         fit_view(&canvas, &doc, viewport, start_zoom);
     else
@@ -2306,7 +3059,15 @@ int ccr_run(int argc, char **argv)
     bool rmb_armed = false;
 
     double last_time = ccr_gui_time();
-    while (!ccr_gui_should_close()) {
+    for (bool quitting = false; !quitting;) {
+        /* the window's x: straight out, unless work would be lost */
+        if (ccr_gui_should_close()) {
+            if (opt.smoke_frames > 0 || unsaved_count(&doc) == 0)
+                break;
+            ccr_gui_cancel_close();
+            g_quit.open = true;
+            g_quit.note[0] = '\0';
+        }
         /* seconds since the last frame, for animations; a stall (window
          * dragged, laptop asleep) does not make things jump */
         const double now = ccr_gui_time();
@@ -2316,12 +3077,14 @@ int ccr_run(int argc, char **argv)
         if (dt > 0.05f) dt = 0.05f;
         const int w = ccr_gui_width();
         const int h = ccr_gui_height();
-        viewport = (ccr_rect){ PALETTE_W, TOPBAR_H, (float)w - PALETTE_W,
-                               (float)h - TOPBAR_H - STATUSBAR_H };
+        viewport = (ccr_rect){ PALETTE_W, TOPBAR_H + TABS_H, (float)w - PALETTE_W,
+                               (float)h - TOPBAR_H - TABS_H - STATUSBAR_H };
         if (!doc.loaded)
             te.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
-        const bool modal = eula.open || g_libs.open;   /* a dialog has the mouse */
+        const bool modal = eula.open || g_libs.open || g_quit.open || g_help;   /* a dialog has the mouse */
+        if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open)
+            g_help = !g_help;
 
         if (ccr_gui_file_dropped(dropped, sizeof dropped) &&
             switch_to(&doc, &canvas, viewport, dropped, &opt)) {
@@ -2359,7 +3122,8 @@ int ccr_run(int argc, char **argv)
         const ccr_vec2 m = ccr_gui_mouse();
         const ccr_vec2 world = ccr_canvas_to_world(&canvas, m);
         const bool inside = point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h))) &&
-                            !(g_bp.t > 0.0f && point_in(m, build_area(w, h)));
+                            !(g_bp.t > 0.0f && point_in(m, build_area(w, h))) &&
+                            !(g_find.open && doc.loaded && point_in(m, find_area(visible_view(viewport, w, h))));
         const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
         palette_follow(&doc);
         const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
@@ -2435,23 +3199,30 @@ int ccr_run(int argc, char **argv)
         }
         rmb_armed = rmb_armed && ccr_gui_mouse_down(CCR_MOUSE_RIGHT);
 
+        /* a search box has the keyboard: keys type, they do not edit blocks */
+        const bool typing = (g_find.open && g_find.focused) || g_psearch.focused;
+        if (doc.loaded && !modal && !pie.open && te.node == CCR_NONE && ccr_gui_ctrl_down() &&
+            ccr_gui_key_pressed(CCR_KEY_F)) {
+            find_open();
+            g_psearch.focused = false;
+        }
         if (can_act && !pie.open && !was_open && ccr_gui_ctrl_down()) {
             if (ccr_gui_key_pressed(CCR_KEY_S))
                 document_save(&doc, &opt);
             if (ccr_gui_key_pressed(CCR_KEY_B) || ccr_gui_key_pressed(CCR_KEY_R))
                 build_start(&doc, ccr_gui_key_pressed(CCR_KEY_R), &opt);
             /* Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo */
-            if (ccr_gui_key_pressed(CCR_KEY_Z)) {
+            if (ccr_gui_key_pressed(CCR_KEY_Z) && !typing) {
                 if (ccr_gui_shift_down())
                     ccr_editor_redo(&doc.ed);
                 else
                     ccr_editor_undo(&doc.ed);
             }
-            if (ccr_gui_key_pressed(CCR_KEY_Y))
+            if (ccr_gui_key_pressed(CCR_KEY_Y) && !typing)
                 ccr_editor_redo(&doc.ed);
         }
         /* the block under the mouse: Delete, Ctrl+D, Ctrl+/ */
-        if (can_act && !pie.open && !was_open && inside) {
+        if (can_act && !pie.open && !was_open && inside && !typing) {
             ccr_action a = CCR_ACTION_NONE;
             if (ccr_gui_key_pressed(CCR_KEY_DELETE))
                 a = CCR_ACTION_DELETE;
@@ -2467,7 +3238,7 @@ int ccr_run(int argc, char **argv)
                     run_action(a, &ctx, world, &doc, &opt, &canvas, viewport, &te);
             }
         }
-        if (ccr_gui_key_pressed(CCR_KEY_HOME) && !pie.open)
+        if (ccr_gui_key_pressed(CCR_KEY_HOME) && !pie.open && !typing)
             fit_view_smooth(&canvas, &doc, viewport);
 
         const bool gliding = glide_step(&canvas, dt);
@@ -2505,8 +3276,10 @@ int ccr_run(int argc, char **argv)
                 glide_to_node(&canvas, &doc, viewport, doc.ed.hover_far);
 
             ccr_node_id req = ccr_editor_take_edit_request(&doc.ed);
-            if (req != CCR_NONE)
+            if (req != CCR_NONE) {
                 start_editing(&te, &doc.ed, req);
+                g_find.focused = g_psearch.focused = false;
+            }
             ccr_node_id incq = ccr_editor_take_include_request(&doc.ed);
             if (incq != CCR_NONE)
                 open_include(&doc, &canvas, viewport, incq, &opt);
@@ -2522,9 +3295,11 @@ int ccr_run(int argc, char **argv)
         if (doc.loaded)
             ccr_editor_draw(&doc.ed, &canvas, viewport);
         else
-            draw_empty_hint(viewport);
+            start_screen(&doc, &canvas, viewport, &opt, !modal);
         ccr_palette_draw(&g_palette, palette_area(h),
                          doc.loaded && doc.ed.drag == CCR_DRAG_MOVING && over_palette);
+        psearch_frame(!modal && !pie.open && !opm.open && te.node == CCR_NONE &&
+                      g_fpanel.naming == CCR_NAMING_NONE && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE));
 
         /* the text box over the slot being edited */
         if (te.node != CCR_NONE) {
@@ -2545,6 +3320,10 @@ int ccr_run(int argc, char **argv)
                 }
             }
         }
+        find_frame(&doc, &canvas, visible_view(viewport, w, h),
+                   !modal && !pie.open && !opm.open && te.node == CCR_NONE && g_fpanel.naming == CCR_NAMING_NONE);
+        tabs_frame(w, &doc, &canvas, viewport, &opt,
+                   !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         mark_tooltip(&doc, &canvas, viewport);
         build_panel(w, h, &doc, &canvas, viewport, &opt,
                     !modal && !pie.open && !opm.open && te.node == CCR_NONE);
@@ -2567,17 +3346,28 @@ int ccr_run(int argc, char **argv)
             cmake_open(&doc, &canvas, viewport, &opt);
             te.node = CCR_NONE;
         }
-        if ((top & TOP_BUILD) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
+        if ((top & (TOP_BUILD | TOP_RUN)) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             te.node = CCR_NONE;
-            build_start(&doc, false, &opt);
+            build_start(&doc, (top & TOP_RUN) != 0, &opt);
         }
-        draw_statusbar(w, h, &canvas, &doc);
+        if (top & TOP_STOP)
+            ccr_job_stop(&g_job);
+        if (top & TOP_HELP)
+            g_help = !g_help;
+        draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f);
+        zoom_widget(w, h, &canvas, &doc, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         ccr_pie_draw(&pie);
         if (doc.loaded)
             op_menu_draw(&opm, &doc.ed, m, w, h);
         if (!eula.open)
             libs_frame(w, h, &doc, &opt);
         eula_frame(&eula, w, h, &doc);
+        if (help_frame(w, h)) {
+            eula.open = true;   /* the agreement, from the help card */
+            eula.scroll = 0.0f;
+        }
+        quitting = quit_frame(w, h, &doc, &opt);
+        tip_draw(w, h);
 
         ++frame;
         const bool last = opt.smoke_frames > 0 && frame >= opt.smoke_frames;

@@ -44,6 +44,8 @@ void ccr_files_dir_of(const char *path, char *out, int cap);
  * CMakeLists.txt, a Makefile, meson.build or compile_commands.json in it;
  * else the file's own folder. */
 void ccr_files_project_of(const char *path, char *out, int cap);
+/* The whole path of a file (links and ../ resolved); false if it is not there. */
+bool ccr_files_real(const char *path, char *out, int cap);
 /* The same file, however the two paths spell it. */
 bool ccr_files_same(const char *a, const char *b);
 /* Is `path` inside `root`? */

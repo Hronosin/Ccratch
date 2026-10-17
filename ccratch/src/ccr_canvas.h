@@ -7,6 +7,9 @@
 
 #include "ccr_gui.h"
 
+#define CCR_ZOOM_MIN    0.25f
+#define CCR_ZOOM_MAX    3.0f
+
 typedef struct ccr_canvas {
     ccr_vec2 offset;   /* screen position of canvas origin */
     float    zoom;     /* 1.0 = 100% */

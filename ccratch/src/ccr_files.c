@@ -652,3 +652,12 @@ ccr_files_event ccr_files_panel_tools(ccr_files_panel *p, ccr_files *f, ccr_rect
     }
     return ev;
 }
+
+bool ccr_files_real(const char *path, char *out, int cap)
+{
+    char real[FULL_PATH];
+    if (!realpath(path, real) || (int)strlen(real) >= cap)
+        return false;
+    memcpy(out, real, strlen(real) + 1);
+    return true;
+}

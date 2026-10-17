@@ -99,6 +99,25 @@ static void free_items(ccr_palette *p)
     ccr_ast_free(&p->ast);
 }
 
+/* Does the block say what was typed into the search (its words, or its
+ * name: printf, a + b, InitWindow)? */
+static bool item_matches(const ccr_palette *p, const ccr_palette_item *it)
+{
+    char q[96], w[512];
+    ccr_fold_case(p->filter, q, sizeof q);
+    ccr_fold_case(ccr_template_label(it->t), w, sizeof w);
+    if (strstr(w, q))
+        return true;
+    const ccr_blocks *b = &it->blocks;
+    for (uint32_t i = 0; i < b->prim_count; ++i)
+        if (b->prims[i].kind == CCR_PRIM_TEXT) {
+            ccr_fold_case(b->text + b->prims[i].text, w, sizeof w);
+            if (strstr(w, q))
+                return true;
+        }
+    return false;
+}
+
 /* Lays out template `t` under the last section's heading, at *y. */
 static bool add_item(ccr_palette *p, ccr_template t, float *y)
 {
@@ -132,6 +151,10 @@ static bool add_item(ccr_palette *p, ccr_template t, float *y)
     if (!ccr_layout_cache_reserve(&p->cache, p->ast.node_count) ||
         !ccr_blocks_build_script(&it->blocks, &p->ast, root, &p->cache))
         return false;
+    if (p->filter[0] && !item_matches(p, it)) {   /* searching: not this one */
+        ccr_blocks_free(&it->blocks);
+        return true;
+    }
     ++p->item_count;
     /* the block's top may be above 0 (a notch), its bottom below bounds
      * (a tab): bounds covers both */
@@ -164,6 +187,8 @@ bool ccr_palette_init(ccr_palette *p)
 {
     const float scroll = p->ready ? p->scroll : 0.0f;
     const ccr_lang_kind lang = p->lang;
+    char filter[sizeof p->filter];
+    memcpy(filter, p->filter, sizeof filter);
     /* the includes survive: they say which packs show */
     char (*keep)[128] = malloc(sizeof p->includes);
     const int keep_n = p->include_count;
@@ -177,6 +202,7 @@ bool ccr_palette_init(ccr_palette *p)
     }
     p->hot = -1;
     p->lang = lang;
+    memcpy(p->filter, filter, sizeof filter);
     if (!ccr_ast_init(&p->ast))
         return false;
     p->ast.lang = lang;   /* blocks drawn the way the file on screen speaks */
@@ -186,6 +212,8 @@ bool ccr_palette_init(ccr_palette *p)
     for (int c = 0; c < CCR_TCAT_COUNT; ++c) {
         if (ccr_tcat_is_cmake((ccr_tcat)c) != cmake)
             continue;
+        const float head_y = y;
+        const uint32_t had = p->item_count;
         heading(p, ccr_tr(g_cat_names[c]), g_cat_colors[c], &y);
         for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t)
             if (ccr_template_category((ccr_template)t) == (ccr_tcat)c && !add_item(p, (ccr_template)t, &y))
@@ -198,17 +226,30 @@ bool ccr_palette_init(ccr_palette *p)
             if (pk->link[0] && !add_item(p, ccr_template_pack_link(k), &y))
                 goto oom;
         }
+        if (p->filter[0] && p->item_count == had) {   /* searching: nothing here */
+            --p->cat_count;
+            y = head_y;
+            continue;
+        }
         y += CAT_GAP;
     }
     /* then a section per block pack the file can use */
     for (int k = 0; k < ccr_lib_pack_count() && !cmake; ++k) {
         const ccr_lib_pack *pk = ccr_lib_pack_at(k);
-        if (!pack_shown(p, pk) || pk->count == 0 || p->cat_count == CCR_PALETTE_MAX_CATS)
+        /* searching: every pack, so a library's block can be found first */
+        if ((!pack_shown(p, pk) && !p->filter[0]) || pk->count == 0 || p->cat_count == CCR_PALETTE_MAX_CATS)
             continue;
+        const float head_y = y;
+        const uint32_t had = p->item_count;
         heading(p, pk->name, pk->category, &y);
         for (int b = 0; b < pk->count; ++b)
             if (!add_item(p, CCR_TEMPLATE_LIB(pk->first + b), &y))
                 goto oom;
+        if (p->filter[0] && p->item_count == had) {
+            --p->cat_count;
+            y = head_y;
+            continue;
+        }
         y += CAT_GAP;
     }
     p->content_h = y;
@@ -218,6 +259,15 @@ bool ccr_palette_init(ccr_palette *p)
 oom:
     free_items(p);
     return false;
+}
+
+bool ccr_palette_set_filter(ccr_palette *p, const char *text)
+{
+    if (strcmp(p->filter, text) == 0)
+        return true;
+    snprintf(p->filter, sizeof p->filter, "%s", text);
+    p->scroll = p->scroll_to = 0.0f;   /* the first matches at the top */
+    return !p->ready || ccr_palette_relayout(p);
 }
 
 bool ccr_palette_set_includes(ccr_palette *p, const char *const *includes, int count)

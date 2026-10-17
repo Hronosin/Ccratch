@@ -618,3 +618,22 @@ void ccr_lang_pick(const char *cli, FILE *log)
         }
     }
 }
+
+void ccr_fold_case(const char *in, char *out, size_t cap)
+{
+    size_t n = 0;
+    if (!cap)
+        return;
+    for (const unsigned char *p = (const unsigned char *)in; *p && n + 2 < cap; ++p) {
+        if (p[0] == 0xD0 && p[1] >= 0x90 && p[1] <= 0x9F) {          /* А-П */
+            out[n++] = (char)0xD0; out[n++] = (char)(p[1] + 0x20); ++p;
+        } else if (p[0] == 0xD0 && p[1] >= 0xA0 && p[1] <= 0xAF) {   /* Р-Я */
+            out[n++] = (char)0xD1; out[n++] = (char)(p[1] - 0x20); ++p;
+        } else if (p[0] == 0xD0 && p[1] == 0x81) {                   /* Ё */
+            out[n++] = (char)0xD1; out[n++] = (char)0x91; ++p;
+        } else {
+            out[n++] = (char)((*p >= 'A' && *p <= 'Z') ? *p + 32 : *p);
+        }
+    }
+    out[n] = '\0';
+}

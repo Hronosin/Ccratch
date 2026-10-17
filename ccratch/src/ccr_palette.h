@@ -50,6 +50,7 @@ typedef struct ccr_palette {
     int               include_count;
     float             scroll, scroll_to;   /* unscaled units from the top */
     int               hot;                 /* item under the mouse, or -1 */
+    char              filter[96];          /* typed into the search: only blocks saying it */
     ccr_lang_kind     lang;                /* C's blocks, or CMake's */
     bool              ready;
 } ccr_palette;
@@ -65,6 +66,11 @@ bool ccr_palette_set_includes(ccr_palette *p, const char *const *includes, int c
 
 /* C or CMake: the blocks for the file on screen. */
 bool ccr_palette_set_lang(ccr_palette *p, ccr_lang_kind lang);
+
+/* Only the blocks whose words (or name) contain `text`, every pack's
+ * included, so a library's block can be found before its #include is
+ * there; "" shows everything again. Lays out again if it changed. */
+bool ccr_palette_set_filter(ccr_palette *p, const char *text);
 
 /* Wheel scrolling, category clicks, the glide. `area` is the whole palette
  * (strip and flyout), screen coordinates. */

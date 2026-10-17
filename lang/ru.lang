@@ -52,7 +52,7 @@ status.language = Язык: %s
 # статус справа: подсказки
 bar.loose = %u свободный стек (не компилируется)|%u свободных стека (не компилируются)|%u свободных стеков (не компилируются)
 bar.zoom = масштаб %d%%
-bar.hints = ПКМ: меню  |  ПКМ тянуть: двигать  колесо: масштаб  |  Ctrl+S сохранить  Z отменить  Y вернуть  |  Home  F5
+bar.hints = F1 — клавиши и мышь
 
 # пай-меню
 pie.save = Сохранить
@@ -148,3 +148,40 @@ build.no_cmake = CMake не установлен: dnf install cmake (или apt 
 build.not_saved = Не собрано: %s не удалось сохранить
 build.finished = Программа завершилась (код %d)
 build.click = щёлкни по ошибке — покажу её блок
+
+# удобства
+quit.title = Ещё не сохранено
+quit.save = Сохранить и выйти
+quit.discard = Выйти без сохранения
+quit.cancel = Остаться
+find.hint = найти имя, число, слово
+find.count = %d из %d
+find.none = ничего
+palette.search = поиск блоков
+palette.none = такого блока нет
+start.recent = Недавние файлы
+help.title = Клавиши и мышь
+help.close = F1 или Esc — закрыть
+help.drag = двигать блоки; из палитры, в слоты
+help.pie = круговое меню
+help.pan = двигать холст
+help.zoom = масштаб (и Ctrl + = / - / 0)
+help.home = к началу файла
+help.save = сохранить
+help.undo = отменить / вернуть
+help.edit = удалить, дублировать, выключить блок под мышью
+help.find = искать блоки; Enter — дальше, Shift+Enter — назад
+help.files = панель файлов; следующий открытый файл
+help.build = собрать; собрать и запустить
+help.fold = свернуть или развернуть блок
+help.reload = перечитать файл с диска
+help.help = этот список
+help.k_drag = Перетащить
+help.k_right = Правый клик
+help.k_pan = Тянуть правой / средней
+help.k_wheel = Колесо
+help.k_double = Двойной клик
+help.license = Соглашение
+tip.run = Собрать и запустить (Ctrl+R)
+tip.stop = Остановить
+tip.fit = Весь файл на экран (Home)

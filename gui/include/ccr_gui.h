@@ -41,7 +41,14 @@ typedef enum ccr_key {
     CCR_KEY_W,
     CCR_KEY_TAB,
     CCR_KEY_B,
-    CCR_KEY_R
+    CCR_KEY_R,
+    CCR_KEY_F,
+    CCR_KEY_F1,
+    CCR_KEY_F3,
+    CCR_KEY_ENTER,
+    CCR_KEY_EQUAL,     /* = and the keypad's + */
+    CCR_KEY_MINUS,     /* - and the keypad's - */
+    CCR_KEY_ZERO
 } ccr_key;
 
 /* Window and frame lifecycle */
@@ -76,6 +83,9 @@ bool     ccr_gui_shift_down(void);
 /* If a file was dropped onto the window this frame, copies its path into
  * `out` and returns true. Only the first file of a drop is reported. */
 bool     ccr_gui_file_dropped(char *out, unsigned int cap);
+/* The window's close button was pressed but there is unsaved work: keep
+ * the window open (ccr_gui_should_close is false again next frame). */
+void     ccr_gui_cancel_close(void);
 
 /* Drawing. Text sizes are floats so the canvas can zoom smoothly. */
 void  ccr_gui_rect(ccr_rect r, ccr_color c);

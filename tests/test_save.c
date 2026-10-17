@@ -1348,6 +1348,31 @@ static void test_fold(void)
 /* Block packs: a library call from the palette is the plain C call when
  * saved; a call in the file with a pack's name and arity is drawn as the
  * pack's block. */
+/* Find: words on the canvas, any case; folded ones too. */
+static void test_find(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    ccr_find_hit hits[64];
+    const uint32_t n = ccr_editor_find(&ed, "HELLO", hits, 64);
+    CHECK(n >= 1, "\"hello\" not found");
+    for (uint32_t i = 1; i < n && i < 64; ++i)
+        CHECK(hits[i].rect.y >= hits[i - 1].rect.y, "hits not top to bottom");
+    CHECK(ccr_editor_find(&ed, "no such word anywhere", hits, 64) == 0, "found nothing as something");
+    /* fold the function holding it: still found, as hidden */
+    const ccr_node_id hello = n ? hits[0].node : CCR_NONE;
+    ccr_node_id fn = hello;
+    while (fn != CCR_NONE && N(&ed, fn)->kind != CCR_NODE_FUNCTION)
+        fn = N(&ed, fn)->parent;
+    CHECK(fn != CCR_NONE && ccr_editor_toggle_fold(&ed, fn), "fold");
+    const uint32_t m = ccr_editor_find(&ed, "hello", hits, 64);
+    bool hidden = false;
+    for (uint32_t i = 0; i < m && i < 64; ++i)
+        hidden = hidden || hits[i].hidden;
+    CHECK(m >= 1 && hidden, "folded away: %u hits, hidden %d", m, hidden);
+    ccr_editor_free(&ed);
+}
+
 static void test_library_blocks(void)
 {
     ccr_lib_load(stderr);
@@ -1467,6 +1492,7 @@ int main(int argc, char **argv)
     test_new_declarations();
     test_header_guard();
     test_fold();
+    test_find();
     test_library_blocks();
     test_trash();
     test_delete();

@@ -139,6 +139,18 @@ typedef struct ccr_editor_mark {
 bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast);
 void ccr_editor_free(ccr_editor *ed);
 
+/* A word on the canvas that matched a search. */
+typedef struct ccr_find_hit {
+    ccr_node_id node;     /* the block it belongs to */
+    ccr_rect    rect;     /* world: the word, or the folded block hiding it */
+    bool        hidden;   /* inside a folded block (going there unfolds it) */
+} ccr_find_hit;
+
+/* Every word on the canvas containing `query` (any case, Latin and
+ * Cyrillic), top to bottom: the blocks' own words, and names inside folded
+ * blocks. Returns how many there are; up to `cap` go into `out`. */
+uint32_t ccr_editor_find(const ccr_editor *ed, const char *query, ccr_find_hit *out, uint32_t cap);
+
 /* The build's errors and warnings on this file's blocks (copied; replaces
  * what was there). Drawn as a red or orange outline with a badge. */
 void ccr_editor_set_marks(ccr_editor *ed, const ccr_editor_mark *marks, uint32_t count);

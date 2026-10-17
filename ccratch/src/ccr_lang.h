@@ -89,6 +89,41 @@
     X(BUILD_NOT_SAVED,  "build.not_saved",       0, "Not built: %s could not be saved")  \
     X(BUILD_FINISHED,   "build.finished",        0, "The program finished (code %d)")    \
     X(BUILD_CLICK,      "build.click",           0, "click an error to go to its block") \
+    X(QUIT_TITLE,       "quit.title",            0, "Not saved yet")                     \
+    X(QUIT_SAVE,        "quit.save",             0, "Save and quit")                     \
+    X(QUIT_DISCARD,     "quit.discard",          0, "Quit without saving")               \
+    X(QUIT_CANCEL,      "quit.cancel",           0, "Stay")                              \
+    X(FIND_HINT,        "find.hint",             0, "find a name, a number, a word")     \
+    X(FIND_COUNT,       "find.count",            0, "%d of %d")                          \
+    X(FIND_NONE,        "find.none",             0, "nothing")                           \
+    X(PAL_SEARCH,       "palette.search",        0, "search blocks")                     \
+    X(PAL_NONE,         "palette.none",          0, "no block says that")                \
+    X(RECENT,           "start.recent",          0, "Recent files")                      \
+    X(HELP_TITLE,       "help.title",            0, "Keys and mouse")                    \
+    X(HELP_CLOSE,       "help.close",            0, "F1 or Esc to close")                \
+    X(HELP_DRAG,        "help.drag",             0, "move blocks; out of the palette, into slots") \
+    X(HELP_PIE,         "help.pie",              0, "the pie menu")                      \
+    X(HELP_PAN,         "help.pan",              0, "move around the canvas")            \
+    X(HELP_ZOOM,        "help.zoom",             0, "zoom (Ctrl + = / - / 0 too)")       \
+    X(HELP_HOME,        "help.home",             0, "back to the start of the file")     \
+    X(HELP_SAVE,        "help.save",             0, "save")                              \
+    X(HELP_UNDO,        "help.undo",             0, "undo / redo")                       \
+    X(HELP_EDIT,        "help.edit",             0, "delete, duplicate, switch off the block under the mouse") \
+    X(HELP_FIND,        "help.find",             0, "find blocks; Enter: next, Shift+Enter: back") \
+    X(HELP_FILES,       "help.files",            0, "the files panel; the next open file") \
+    X(HELP_BUILD,       "help.build",            0, "build; build and run")              \
+    X(HELP_FOLD,        "help.fold",             0, "fold or unfold a block")            \
+    X(HELP_RELOAD,      "help.reload",           0, "read the file again from disk")     \
+    X(HELP_HELP,        "help.help",             0, "this list")                         \
+    X(HELP_K_DRAG,      "help.k_drag",           0, "Drag")                              \
+    X(HELP_K_RIGHT,     "help.k_right",          0, "Right click")                       \
+    X(HELP_K_PAN,       "help.k_pan",            0, "Right / middle drag")               \
+    X(HELP_K_WHEEL,     "help.k_wheel",          0, "Wheel")                             \
+    X(HELP_K_DOUBLE,    "help.k_double",         0, "Double click")                      \
+    X(HELP_LICENSE,     "help.license",          0, "The agreement")                     \
+    X(TIP_RUN,          "tip.run",               0, "Build and run (Ctrl+R)")            \
+    X(TIP_STOP,         "tip.stop",              0, "Stop")                              \
+    X(TIP_FIT,          "tip.fit",               0, "Whole file in view (Home)")         \
     X(CAT_CONTROL,      "palette.control",       0, "Control")                           \
     X(CAT_OPERATORS,    "palette.operators",     0, "Operators")                         \
     X(CAT_VARIABLES,    "palette.variables",     0, "Variables")                         \
@@ -123,7 +158,7 @@
       "%u loose stack (not compiled)|%u loose stacks (not compiled)")                    \
     X(BAR_ZOOM,         "bar.zoom",              0, "zoom %d%%")                         \
     X(BAR_HINTS,        "bar.hints",             0,                                      \
-      "right click: menu  |  RMB drag pan  wheel zoom  |  Ctrl+S save  Z undo  Y redo  |  Home  F5") \
+      "F1: keys and mouse") \
     /* pie menu */                                                                       \
     X(PIE_SAVE,         "pie.save",              0, "Save")                              \
     X(PIE_COMMENT,      "pie.comment",           0, "Comment out")                       \
@@ -281,5 +316,9 @@ void ccr_lang_write_template(FILE *out);
 
 /* Back to built-in English; frees the pack. */
 void ccr_lang_reset(void);
+
+/* Lower case for matching what someone typed: ASCII, and Cyrillic
+ * (А-Я, Ё) in UTF-8. */
+void ccr_fold_case(const char *in, char *out, size_t cap);
 
 #endif /* CCR_LANG_H */

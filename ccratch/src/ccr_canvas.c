@@ -4,8 +4,6 @@
 #include <math.h>
 
 #define CCR_GRID_STEP   24.0f
-#define CCR_ZOOM_MIN    0.25f
-#define CCR_ZOOM_MAX    3.0f
 
 void ccr_canvas_init(ccr_canvas *cv)
 {

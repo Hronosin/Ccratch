@@ -84,6 +84,12 @@ void ccr_gui_shutdown(void)
 }
 
 bool ccr_gui_should_close(void)     { return WindowShouldClose(); }
+void ccr_gui_cancel_close(void)
+{
+    GLFWwindow *w = glfwGetCurrentContext();
+    if (w)
+        glfwSetWindowShouldClose(w, GLFW_FALSE);
+}
 void ccr_gui_end_frame(void)        { EndDrawing(); }
 int  ccr_gui_width(void)            { return GetScreenWidth(); }
 int  ccr_gui_height(void)           { return GetScreenHeight(); }
@@ -292,6 +298,13 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_TAB:    return IsKeyPressed(KEY_TAB);
     case CCR_KEY_B:      return IsKeyPressed(KEY_B);
     case CCR_KEY_R:      return IsKeyPressed(KEY_R);
+    case CCR_KEY_F:      return IsKeyPressed(KEY_F);
+    case CCR_KEY_F1:     return IsKeyPressed(KEY_F1);
+    case CCR_KEY_F3:     return IsKeyPressed(KEY_F3);
+    case CCR_KEY_ENTER:  return IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER);
+    case CCR_KEY_EQUAL:  return IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD);
+    case CCR_KEY_MINUS:  return IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT);
+    case CCR_KEY_ZERO:   return IsKeyPressed(KEY_ZERO) || IsKeyPressed(KEY_KP_0);
     }
     return false;
 }

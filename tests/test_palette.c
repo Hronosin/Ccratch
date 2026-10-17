@@ -93,6 +93,19 @@ int main(void)
               ccr_template_label(p.items[i].t));
     check_hits(&p);
     CHECK(ccr_palette_set_lang(&p, CCR_LANG_C) && p.item_count == expected(false), "back to C");
+
+    /* the search: only blocks that say it, in any case; nothing; all back */
+    CHECK(ccr_palette_set_filter(&p, "PrintF"), "filter failed");
+    bool printf_there = false;
+    for (uint32_t i = 0; i < p.item_count; ++i)
+        printf_there = printf_there || p.items[i].t == CCR_TEMPLATE_PRINTF;
+    CHECK(printf_there && p.item_count < 6 && p.cat_count >= 1, "printf: %u blocks, %d sections", p.item_count,
+          p.cat_count);
+    CHECK(ccr_palette_set_filter(&p, "while") && p.item_count == 2, "while: %u blocks (while, do/while)",
+          p.item_count);
+    CHECK(ccr_palette_set_filter(&p, "no block says this") && p.item_count == 0 && p.cat_count == 0,
+          "nothing: %u", p.item_count);
+    CHECK(ccr_palette_set_filter(&p, "") && p.item_count == expected(false), "all back: %u", p.item_count);
     ccr_palette_free(&p);
     ccr_gui_shutdown();
     if (g_failures)

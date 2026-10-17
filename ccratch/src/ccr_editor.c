@@ -296,6 +296,69 @@ void ccr_editor_free(ccr_editor *ed)
     memset(ed, 0, sizeof *ed);
 }
 
+/* ------------------------------------------------------------ find */
+
+static int compare_hits(const void *a, const void *b)
+{
+    const ccr_find_hit *x = a, *y = b;
+    if (x->rect.y != y->rect.y)
+        return x->rect.y < y->rect.y ? -1 : 1;
+    return (x->rect.x > y->rect.x) - (x->rect.x < y->rect.x);
+}
+
+static bool folded_away(const ccr_editor *ed, ccr_node_id id, ccr_node_id *fold)
+{
+    for (ccr_node_id p = N(ed, id)->parent; p != CCR_NONE; p = N(ed, p)->parent)
+        if (N(ed, p)->flags & CCR_FLAG_COLLAPSED) {
+            *fold = p;
+            return true;
+        }
+    return false;
+}
+
+uint32_t ccr_editor_find(const ccr_editor *ed, const char *query, ccr_find_hit *out, uint32_t cap)
+{
+    char q[256], word[1024];
+    ccr_fold_case(query, q, sizeof q);
+    if (!q[0])
+        return 0;
+    uint32_t n = 0;
+    /* what is drawn */
+    for (uint32_t s = 0; s < ed->script_count; ++s) {
+        const ccr_script *sc = &ed->scripts[s];
+        const ccr_blocks *b = &sc->blocks;
+        for (uint32_t i = 0; i < b->prim_count; ++i) {
+            const ccr_prim *p = &b->prims[i];
+            if (p->kind != CCR_PRIM_TEXT)
+                continue;
+            ccr_fold_case(b->text + p->text, word, sizeof word);
+            if (!strstr(word, q))
+                continue;
+            if (n < cap)
+                out[n] = (ccr_find_hit){ p->node,
+                                         { p->rect.x + sc->pos.x, p->rect.y + sc->pos.y, p->rect.w, p->rect.h },
+                                         false };
+            ++n;
+        }
+    }
+    /* what folding hides: names, words, numbers */
+    for (ccr_node_id i = 0; i < ed->ast.node_count; ++i) {
+        const ccr_node *k = N(ed, i);
+        ccr_node_id fold;
+        if (!k->name || (k->flags & CCR_FLAG_DEAD) || !folded_away(ed, i, &fold))
+            continue;
+        ccr_fold_case(ccr_ast_str(&ed->ast, k->name), word, sizeof word);
+        ccr_rect r;
+        if (!strstr(word, q) || !ccr_editor_node_rect(ed, fold, &r))
+            continue;
+        if (n < cap)
+            out[n] = (ccr_find_hit){ i, r, true };
+        ++n;
+    }
+    qsort(out, n < cap ? n : cap, sizeof *out, compare_hits);
+    return n;
+}
+
 /* ------------------------------------------------------ build marks */
 
 void ccr_editor_set_marks(ccr_editor *ed, const ccr_editor_mark *marks, uint32_t count)
