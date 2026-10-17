@@ -133,6 +133,36 @@
     X(PASTE_EMPTY,      "clip.empty",            0, "The clipboard has no code in it")   \
     X(SELECTED,         "sel.count",             1, "%u selected: Del deletes, Ctrl+C copies|%u selected: Del deletes, Ctrl+C copies") \
     X(DELETED,          "sel.deleted",           1, "%u block deleted (Ctrl+Z brings it back)|%u blocks deleted (Ctrl+Z brings them back)") \
+    X(DBG_TITLE,        "dbg.title",             0, "Debugger")                          \
+    X(DBG_CONTINUE,     "dbg.continue",          0, "Continue")                          \
+    X(DBG_NEXT,         "dbg.next",              0, "Step")                              \
+    X(DBG_STEP,         "dbg.step",              0, "Into")                              \
+    X(DBG_OUT,          "dbg.out",               0, "Out")                               \
+    X(DBG_PAUSE,        "dbg.pause",             0, "Pause")                             \
+    X(DBG_STOP,         "dbg.stop",              0, "Stop")                              \
+    X(DBG_AGAIN,        "dbg.again",             0, "Again")                             \
+    X(DBG_VARS,         "dbg.vars",              0, "Variables")                         \
+    X(DBG_STACK,        "dbg.stack",             0, "Call stack")                        \
+    X(DBG_OUTPUT,       "dbg.output",            0, "What the program printed")          \
+    X(DBG_STARTING,     "dbg.starting",          0, "Building, then gdb starts the program...") \
+    X(DBG_RUNNING,      "dbg.running",           0, "Running (F9 on a block: stop there; Pause: stop now)") \
+    X(DBG_AT_BREAK,     "dbg.at_break",          0, "Stopped at a breakpoint: %s, line %d") \
+    X(DBG_STOPPED,      "dbg.stopped",           0, "Stopped: %s, line %d")              \
+    X(DBG_CRASHED,      "dbg.crashed",           0, "Crashed (%s) in %s, line %d")       \
+    X(DBG_EXITED,       "dbg.exited",            0, "The program finished with code %d") \
+    X(DBG_KILLED,       "dbg.killed",            0, "The program was killed by %s")      \
+    X(DBG_ENDED,        "dbg.ended",             0, "Debugging is over")                 \
+    X(DBG_NO_GDB,       "dbg.no_gdb",            0, "gdb is not installed (sudo apt install gdb), so no debugging") \
+    X(DBG_NO_PROGRAM,   "dbg.no_program",        0, "Nothing to debug: the build made no program") \
+    X(DBG_BP_ON,        "dbg.bp_on",             0, "Breakpoint: the program will stop on this block (F9 again takes it away)") \
+    X(DBG_BP_OFF,       "dbg.bp_off",            0, "Breakpoint taken away")             \
+    X(DBG_BP_NONE,      "dbg.bp_none",           0, "A breakpoint goes on a block inside a function: point at one and press F9") \
+    X(DBG_BP_LATER,     "dbg.bp_later",          0, "Breakpoint set; this block is new, so it counts from the next build") \
+    X(DBG_NONE_HERE,    "dbg.none_here",         0, "(none here)")                       \
+    X(DBG_NO_SOURCE,    "dbg.no_source",         0, "no source")                         \
+    X(DBG_TIP,          "dbg.tip",               0, "Debug: build, run under gdb, stop at breakpoints (F8)") \
+    X(DBG_KEYS,         "dbg.keys",              0, "F8 continue, F10 step, F11 into, Shift+F11 out, F9 breakpoint") \
+    X(HELP_DEBUG,       "help.debug",            0, "debugger: start / continue, breakpoint on the block under the mouse, step, into, out") \
     X(AUTOSAVE_ON,      "autosave.on",           0, "autosave: on")                      \
     X(AUTOSAVE_OFF,     "autosave.off",          0, "autosave: off")                     \
     X(TIP_AUTOSAVE,     "tip.autosave",          0, "Save by itself a moment after every change") \

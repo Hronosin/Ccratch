@@ -15,6 +15,7 @@
 typedef struct ccr_proc {
     int    pid;          /* 0: nothing running */
     int    fd;           /* the read end, -1 once closed */
+    int    in_fd;        /* its stdin, when started with one (-1: /dev/null) */
     bool   finished;
     int    exit_code;    /* when finished: its code, or 128 + the signal */
     double stop_at;      /* asked to stop then (SIGTERM); SIGKILL a second later */
@@ -28,6 +29,13 @@ typedef void (*ccr_proc_line_fn)(void *ctx, const char *line);
  * LC_ALL=C, so compilers speak the English the build panel reads. */
 bool ccr_proc_start(ccr_proc *p, const char *const *argv, const char *cwd, bool c_locale,
                     char *err, size_t err_cap);
+
+/* The same, and the program's stdin a pipe that ccr_proc_write feeds
+ * (a debugger, told what to do a line at a time). */
+bool ccr_proc_start_in(ccr_proc *p, const char *const *argv, const char *cwd, bool c_locale,
+                       char *err, size_t err_cap);
+/* Writes `text` to its stdin; false if it is gone. */
+bool ccr_proc_write(ccr_proc *p, const char *text);
 
 /* Reads what is there, calls `fn` for each whole line. True while it runs;
  * false once it has finished and everything it wrote has been read. */

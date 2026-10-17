@@ -126,6 +126,14 @@ typedef struct ccr_editor {
     /* what the last build said about blocks of this file */
     struct ccr_editor_mark *marks;
     uint32_t       mark_count;
+
+    /* the debugger: where the program stopped, its breakpoints, and the
+     * values of what that statement uses */
+    ccr_node_id    dbg_at;          /* CCR_NONE: not stopped in this file */
+    bool           dbg_fault;       /* stopped by a crash (SIGSEGV...) */
+    ccr_node_id   *dbg_breaks;
+    uint32_t       dbg_break_count;
+    char           dbg_values[600]; /* "i = 1\ntotal = 0": beside dbg_at */
 } ccr_editor;
 
 /* Blocks from another tree (ccr_paste): a stack of `items` (or one
@@ -164,6 +172,16 @@ uint32_t ccr_editor_find(const ccr_editor *ed, const char *query, ccr_find_hit *
 /* The build's errors and warnings on this file's blocks (copied; replaces
  * what was there). Drawn as a red or orange outline with a badge. */
 void ccr_editor_set_marks(ccr_editor *ed, const ccr_editor_mark *marks, uint32_t count);
+/* The debugger's look on this file: the statement it stopped at (or
+ * CCR_NONE), `fault` if a crash stopped it there, the statements with a
+ * breakpoint (copied), and lines of values to show beside the one it
+ * stopped at. */
+void ccr_editor_set_debug(ccr_editor *ed, ccr_node_id at, bool fault, const ccr_node_id *breaks, uint32_t count,
+                          const char *values);
+/* The statement a breakpoint would go on for `id`: itself if it is one,
+ * else the statement it is part of. CCR_NONE for declarations. */
+ccr_node_id ccr_editor_statement_of(const ccr_editor *ed, ccr_node_id id);
+
 /* The mark under a world point (its badge or its block), or -1. */
 int  ccr_editor_mark_at(const ccr_editor *ed, ccr_vec2 world);
 /* Where mark `i` is drawn (world): its block. */

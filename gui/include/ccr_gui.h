@@ -55,6 +55,7 @@ typedef enum ccr_key {
     CCR_KEY_M,
     CCR_KEY_UP,        /* held: repeats */
     CCR_KEY_DOWN,
+    CCR_KEY_F8,
     CCR_KEY_F9,
     CCR_KEY_F10,
     CCR_KEY_F11,

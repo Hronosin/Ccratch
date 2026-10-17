@@ -324,6 +324,7 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_M:      return IsKeyPressed(KEY_M);
     case CCR_KEY_UP:     return IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP);
     case CCR_KEY_DOWN:   return IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN);
+    case CCR_KEY_F8:     return IsKeyPressed(KEY_F8);
     case CCR_KEY_F9:     return IsKeyPressed(KEY_F9);
     case CCR_KEY_F10:    return IsKeyPressed(KEY_F10);
     case CCR_KEY_F11:    return IsKeyPressed(KEY_F11);

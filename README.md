@@ -372,6 +372,34 @@ blocks, so its error lands on the block around it.
 
 ![a build that failed: the log at the bottom, an unused variable outlined in orange, the if with the misspelled name in red, the compiler's message under the mouse](docs/build.png)
 
+## Debugging
+
+The bug in the top bar (F8) builds the program and runs it under gdb.
+Point at a block inside a function and press **F9**: a red dot, a
+breakpoint. The program stops there, before that block runs:
+
+- the block gets a yellow outline and an arrow, and a card beside it
+  with the values of what it uses (`total = 1`, `i = 2`); a value that
+  changed since the last stop is in the accent colour;
+- the panel at the bottom has every variable of the function, the call
+  stack (a click on a function shows its variables and glides to its
+  block), and what the program printed; the program has a terminal of
+  its own, so its lines come as it prints them, not when it ends;
+- **Continue** (F8), **Step** over a block (F10), **Into** the function
+  it calls (F11), **Out** of this one (Shift+F11, and what it gave back
+  is printed), **Pause** while it runs, **Stop** (Shift+F8);
+- a crash stops it too: the block that crashed in red, `SIGSEGV`, and
+  the variables as they were (`n = 0x0`);
+- stepping past the end of `main` into the C library goes on by itself:
+  only the program's own blocks are stopped on.
+
+Breakpoints belong to their blocks: they move with them, and stay from
+one run to the next. F9 while it runs sets one at once (or at the next
+stop). gdb has to be installed (`sudo apt install gdb`); Ccratch speaks
+to it in its machine interface (GDB/MI).
+
+![stopped at a breakpoint the third time round the loop: the block outlined, i and total beside it, the variables, the call stack and the program's output in the panel](docs/debug.png)
+
 ## Expressions
 
 Like Scratch reporters: grab `count` out of `i < count` and it comes out
@@ -750,6 +778,8 @@ ccratch --list-blocks                    block packs found, and where
 - Del, Ctrl+D, Ctrl+/: delete, duplicate, comment out the block under the mouse
 - Ctrl+S: save (Esc no longer quits, so it cannot eat unsaved work)
 - Ctrl+B: build; Ctrl+R: build and run; again while it builds: stop
+- F8: debug, continue; F9: breakpoint on the block under the mouse; F10,
+  F11, Shift+F11: step, into, out; Shift+F8: stop debugging
 - Ctrl+F: find blocks; Enter / F3: next, Shift: back; Esc: close
 - Ctrl+= / Ctrl+- / Ctrl+0: zoom in, out, back to 100%
 - F1: keys and mouse

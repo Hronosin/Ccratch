@@ -256,3 +256,11 @@ add_test(NAME slot_choices COMMAND test_choice ${CMAKE_CURRENT_SOURCE_DIR}/data/
                                    ${CMAKE_CURRENT_SOURCE_DIR}/data/uses_toy.c)
 set_tests_properties(slot_choices PROPERTIES
     ENVIRONMENT "CCRATCH_BLOCKS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/blocks")
+
+add_executable(debugme data/debugme.c)
+target_compile_options(debugme PRIVATE -g -O0)
+set_target_properties(debugme PROPERTIES C_STANDARD 11)
+add_executable(test_gdb test_gdb.c)
+target_link_libraries(test_gdb PRIVATE ccratch_core)
+add_dependencies(test_gdb debugme)
+add_test(NAME debugger COMMAND test_gdb $<TARGET_FILE:debugme> ${CMAKE_CURRENT_SOURCE_DIR}/data/debugme.c)

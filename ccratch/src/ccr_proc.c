@@ -63,20 +63,33 @@ static char **make_env(bool c_locale)
     return env;
 }
 
-bool ccr_proc_start(ccr_proc *p, const char *const *argv, const char *cwd, bool c_locale,
-                    char *err, size_t err_cap)
+static bool start(ccr_proc *p, const char *const *argv, const char *cwd, bool c_locale, bool with_stdin,
+                  char *err, size_t err_cap)
 {
     memset(p, 0, sizeof *p);
     p->fd = -1;
-    int fds[2];
+    p->in_fd = -1;
+    int fds[2], ins[2] = { -1, -1 };
     if (pipe2(fds, O_CLOEXEC) != 0) {
         snprintf(err, err_cap, "pipe: %s", strerror(errno));
         return false;
     }
+    if (with_stdin && pipe2(ins, O_CLOEXEC) != 0) {
+        snprintf(err, err_cap, "pipe: %s", strerror(errno));
+        close(fds[0]);
+        close(fds[1]);
+        return false;
+    }
+    if (with_stdin)
+        signal(SIGPIPE, SIG_IGN);   /* it went away: a failed write, not a dead window */
     char **env = make_env(c_locale);
     if (!env) {
         close(fds[0]);
         close(fds[1]);
+        if (ins[0] >= 0) {
+            close(ins[0]);
+            close(ins[1]);
+        }
         snprintf(err, err_cap, "out of memory");
         return false;
     }
@@ -87,6 +100,10 @@ bool ccr_proc_start(ccr_proc *p, const char *const *argv, const char *cwd, bool 
         free(env);
         close(fds[0]);
         close(fds[1]);
+        if (ins[0] >= 0) {
+            close(ins[0]);
+            close(ins[1]);
+        }
         return false;
     }
     if (pid == 0) {
@@ -94,9 +111,13 @@ bool ccr_proc_start(ccr_proc *p, const char *const *argv, const char *cwd, bool 
         setpgid(0, 0);
         dup2(fds[1], 1);
         dup2(fds[1], 2);
-        const int devnull = open("/dev/null", O_RDONLY);
-        if (devnull >= 0)
-            dup2(devnull, 0);
+        if (ins[0] >= 0) {
+            dup2(ins[0], 0);
+        } else {
+            const int devnull = open("/dev/null", O_RDONLY);
+            if (devnull >= 0)
+                dup2(devnull, 0);
+        }
         if (cwd && chdir(cwd) != 0) {
             static const char msg[] = "ccratch: cannot enter the folder to run in\n";
             if (write(2, msg, sizeof msg - 1) < 0) { /* nothing to do */ }
@@ -113,6 +134,39 @@ bool ccr_proc_start(ccr_proc *p, const char *const *argv, const char *cwd, bool 
     fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK);
     p->pid = pid;
     p->fd = fds[0];
+    if (ins[0] >= 0) {
+        close(ins[0]);
+        p->in_fd = ins[1];
+    }
+    return true;
+}
+
+bool ccr_proc_start(ccr_proc *p, const char *const *argv, const char *cwd, bool c_locale,
+                    char *err, size_t err_cap)
+{
+    return start(p, argv, cwd, c_locale, false, err, err_cap);
+}
+
+bool ccr_proc_start_in(ccr_proc *p, const char *const *argv, const char *cwd, bool c_locale,
+                       char *err, size_t err_cap)
+{
+    return start(p, argv, cwd, c_locale, true, err, err_cap);
+}
+
+bool ccr_proc_write(ccr_proc *p, const char *text)
+{
+    if (p->in_fd < 0)
+        return false;
+    size_t n = strlen(text);
+    while (n > 0) {
+        const ssize_t put = write(p->in_fd, text, n);
+        if (put < 0 && errno == EINTR)
+            continue;
+        if (put <= 0)
+            return false;
+        text += put;
+        n -= (size_t)put;
+    }
     return true;
 }
 
@@ -162,7 +216,9 @@ static void finish(ccr_proc *p, ccr_proc_line_fn fn, void *ctx)
     }
     if (p->fd >= 0)
         close(p->fd);
-    p->fd = -1;
+    if (p->in_fd >= 0)
+        close(p->in_fd);
+    p->fd = p->in_fd = -1;
     p->pid = 0;
     p->finished = true;
 }
@@ -212,8 +268,11 @@ void ccr_proc_kill_wait(ccr_proc *p)
         waitpid(p->pid, &status, 0);
         p->exit_code = 128 + SIGKILL;
         finish(p, NULL, NULL);
-    } else if (p->fd >= 0) {
-        close(p->fd);
-        p->fd = -1;
+    } else {
+        if (p->fd >= 0)
+            close(p->fd);
+        if (p->in_fd > 0)
+            close(p->in_fd);
+        p->fd = p->in_fd = -1;
     }
 }

@@ -12,6 +12,7 @@
 #include "ccr_lang.h"
 #include "ccr_parse.h"
 #include "ccr_files.h"
+#include "ccr_gdb.h"
 #include "ccr_job.h"
 #include "ccr_lib.h"
 #include "ccr_palette.h"
@@ -1590,6 +1591,18 @@ static struct {
     ccr_job_result last;   /* to notice the end */
 } g_bp = { .follow = true, .hot = -1 };
 
+/* The program under gdb (see debugging, below). */
+static ccr_gdb g_gdb;
+static struct {
+    bool     pending;      /* building first, then gdb */
+    bool     view;         /* the panel shows the debugger, not the build log */
+    uint32_t seen;         /* g_gdb.generation acted on */
+    char     where[1200];  /* the last stop the view went to: file:line:frame */
+    float    out_scroll;
+    bool     out_follow;
+    float    var_scroll;
+} g_dbg = { .out_follow = true };
+
 #define BUILD_H   (g_lay.build_h)
 #define LOG_ROW   19.0f
 #define LOG_FONT  14.0f
@@ -1875,6 +1888,9 @@ static ccr_color log_color(ccr_log_kind k)
 
 /* The panel: input and drawing in one go (after the canvas is drawn).
  * `input`: nothing else has the mouse (no menu, no dialog). */
+static void debug_panel(ccr_rect r, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt,
+                        bool input);
+
 static void build_panel(int w, int h, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
                         const ccr_options *opt, bool input)
 {
@@ -1885,6 +1901,10 @@ static void build_panel(int w, int h, ccr_document *doc, ccr_canvas *cv, ccr_rec
     const bool over = input && point_in(m, r);
     ccr_gui_rect((ccr_rect){ r.x, r.y - 1.0f, r.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
     ccr_gui_rect(r, ccr_th(CCR_C_PANEL) | 0xFFu);
+    if (g_dbg.view && !ccr_job_busy(&g_job)) {
+        debug_panel(r, doc, cv, viewport, opt, input);
+        return;
+    }
 
     /* the header: what is going on, and the buttons */
     const float hh = 38.0f;
@@ -1973,6 +1993,464 @@ static void build_panel(int w, int h, ccr_document *doc, ccr_canvas *cv, ccr_rec
         seen.h = r.y - viewport.y;
         go_to_diag(doc, cv, seen, &d, opt);
     }
+}
+
+/* --------------------------------------------------------- debugging */
+
+/* The program under gdb: breakpoints are the editors' (they travel with
+ * their file), where it stopped is a block, its variables are beside it
+ * and in the panel. */
+
+/* The line of the built file node `id` starts on (0: not in it). */
+static int place_line(const ccr_document *doc, ccr_node_id id)
+{
+    if (!doc->place || id >= doc->place_n || doc->place[id].b == UINT32_MAX || !doc->line_at)
+        return 0;
+    const uint32_t at = doc->place[id].b;
+    uint32_t lo = 0, hi = doc->line_n;   /* the last line starting at or before `at` */
+    while (hi - lo > 1) {
+        const uint32_t mid = (lo + hi) / 2;
+        if (doc->line_at[mid] <= at)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return (int)lo + 1;
+}
+
+static void real_path(const char *path, char *out, size_t cap)
+{
+    if (!ccr_files_real(path, out, (int)cap))
+        snprintf(out, cap, "%s", path);
+}
+
+/* Every open file's breakpoints, to gdb (before it starts). */
+static void dbg_send_breaks(ccr_document *doc)
+{
+    while (g_gdb.bp_count)
+        ccr_gdb_set_break(&g_gdb, g_gdb.bps[0].file, g_gdb.bps[0].line, false);
+    ccr_document *all[MAX_OPEN + 1];
+    int n = 0;
+    if (doc->loaded)
+        all[n++] = doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        all[n++] = g_stash[i].doc;
+    for (int i = 0; i < n; ++i) {
+        char path[PATH_MAX_LEN];
+        real_path(all[i]->path, path, sizeof path);
+        for (uint32_t k = 0; k < all[i]->ed.dbg_break_count; ++k) {
+            const int line = place_line(all[i], all[i]->ed.dbg_breaks[k]);
+            if (line > 0)
+                ccr_gdb_set_break(&g_gdb, path, line, true);
+        }
+    }
+}
+
+/* The values of what statement `at` uses, a line each ("*" first: changed). */
+static void dbg_values(const ccr_ast *a, ccr_node_id at, char *out, size_t cap)
+{
+    out[0] = '\0';
+    if (at == CCR_NONE)
+        return;
+    /* the names in it, each once, in order: a walk over its subtree */
+    ccr_node_id stack[512];
+    int sp = 0, lines = 0;
+    size_t len = 0;
+    char seen[16][64];
+    int nseen = 0;
+    stack[sp++] = at;
+    while (sp > 0 && lines < 10) {
+        const ccr_node_id id = stack[--sp];
+        const ccr_node *n = &a->nodes[id];
+        if (n->kind == CCR_NODE_REF || n->kind == CCR_NODE_VAR || n->kind == CCR_NODE_TEXT) {
+            const char *name = ccr_ast_str(a, n->name);
+            bool dup = false;
+            for (int i = 0; i < nseen && !dup; ++i)
+                dup = strcmp(seen[i], name) == 0;
+            for (int v = 0; !dup && v < g_gdb.var_count; ++v) {
+                const ccr_gdb_var *var = &g_gdb.vars[v];
+                if (strcmp(var->name, name) != 0)
+                    continue;
+                len += (size_t)snprintf(out + len, len < cap ? cap - len : 0, "%s%s%s = %.60s%s",
+                                        lines ? "\n" : "", var->changed ? "*" : "", var->name, var->value,
+                                        strlen(var->value) > 60 ? "..." : "");
+                ++lines;
+                if (nseen < 16)
+                    snprintf(seen[nseen++], sizeof seen[0], "%s", name);
+                break;
+            }
+        }
+        /* children in reverse, so they come off the stack in order; a body's
+         * statements are its own stops, not this one's */
+        ccr_node_id kids[64];
+        int nk = 0;
+        for (ccr_node_id c = n->first_child; c != CCR_NONE && nk < 64; c = a->nodes[c].next_sibling)
+            if (a->nodes[c].kind != CCR_NODE_BLOCK)
+                kids[nk++] = c;
+        while (nk > 0 && sp < 512)
+            stack[sp++] = kids[--nk];
+    }
+    if (len >= cap && cap > 4)
+        snprintf(out + cap - 4, 4, "...");
+}
+
+/* Where it stopped, as one of this document's blocks (or CCR_NONE). */
+static ccr_node_id dbg_block_in(const ccr_document *doc)
+{
+    if (g_gdb.state != CCR_GDB_STOPPED || g_gdb.frame >= g_gdb.frame_count || !doc->loaded)
+        return CCR_NONE;
+    const ccr_gdb_frame *f = &g_gdb.frames[g_gdb.frame];
+    if (!f->file[0] || !same_file(f->file, doc->path))
+        return CCR_NONE;
+    return locate(doc, (uint32_t)f->line, 0);
+}
+
+/* The debugger's look on one document: where it stopped and the values. */
+static void dbg_apply(ccr_document *doc)
+{
+    if (!doc->loaded)
+        return;
+    const ccr_node_id at = dbg_block_in(doc);
+    char values[sizeof doc->ed.dbg_values];
+    dbg_values(&doc->ed.ast, at, values, sizeof values);
+    ccr_node_id *keep = NULL;
+    const uint32_t n = doc->ed.dbg_break_count;
+    if (n && (keep = malloc(n * sizeof *keep)) != NULL)
+        memcpy(keep, doc->ed.dbg_breaks, n * sizeof *keep);
+    ccr_editor_set_debug(&doc->ed, at, at != CCR_NONE && g_gdb.signal[0] && g_gdb.frame == 0, keep,
+                         keep ? n : 0, values);
+    free(keep);
+}
+
+/* F9: a breakpoint on the statement under the mouse, or off it. */
+static void dbg_toggle(ccr_document *doc, ccr_vec2 world)
+{
+    if (!doc->loaded || doc->ed.ast.lang != CCR_LANG_C)
+        return;
+    const ccr_context ctx = ccr_editor_context(&doc->ed, world);
+    const ccr_node_id st = ccr_editor_statement_of(&doc->ed, ctx.item != CCR_NONE ? ctx.item : ctx.node);
+    if (st == CCR_NONE) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_DBG_BP_NONE);
+        doc->has_errors = true;
+        return;
+    }
+    const uint32_t n = doc->ed.dbg_break_count;
+    ccr_node_id *list = malloc((n + 1) * sizeof *list);
+    if (!list)
+        return;
+    uint32_t k = 0;
+    bool was = false;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (doc->ed.dbg_breaks[i] == st)
+            was = true;
+        else
+            list[k++] = doc->ed.dbg_breaks[i];
+    }
+    if (!was)
+        list[k++] = st;
+    ccr_editor_set_debug(&doc->ed, doc->ed.dbg_at, doc->ed.dbg_fault, list, k, doc->ed.dbg_values);
+    free(list);
+    const int line = place_line(doc, st);
+    if (ccr_gdb_active(&g_gdb) && line > 0) {
+        char path[PATH_MAX_LEN];
+        real_path(doc->path, path, sizeof path);
+        ccr_gdb_set_break(&g_gdb, path, line, !was);
+    }
+    ccr_trf(doc->status, sizeof doc->status,
+            was ? CCR_T_DBG_BP_OFF : (line > 0 || !ccr_gdb_active(&g_gdb)) ? CCR_T_DBG_BP_ON : CCR_T_DBG_BP_LATER);
+    doc->has_errors = false;
+}
+
+/* F8, the bug button: debugging starts (a build first), or goes on. */
+static void dbg_start(ccr_document *doc, const ccr_options *opt)
+{
+    if (g_gdb.state == CCR_GDB_STOPPED) {
+        ccr_gdb_continue(&g_gdb);
+        return;
+    }
+    if (ccr_gdb_active(&g_gdb) || g_dbg.pending || ccr_job_busy(&g_job))
+        return;
+    if (!ccr_gdb_available()) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_DBG_NO_GDB);
+        doc->has_errors = true;
+        return;
+    }
+    g_dbg.pending = true;
+    g_dbg.view = true;
+    g_dbg.where[0] = '\0';
+    build_start(doc, false, opt);
+    if (!ccr_job_busy(&g_job))   /* it could not even start */
+        g_dbg.pending = false;
+}
+
+static void dbg_end(void)
+{
+    ccr_gdb_stop(&g_gdb);
+    g_dbg.pending = false;
+}
+
+/* Every frame: the build done, gdb started; a new stop shown. */
+static void dbg_follow(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt)
+{
+    ccr_gdb_poll(&g_gdb);
+    if (g_dbg.pending && !ccr_job_busy(&g_job)) {
+        g_dbg.pending = false;
+        if (g_job.result == CCR_JOB_BUILT && g_job.exe[0]) {
+            dbg_send_breaks(doc);
+            char err[300];
+            g_dbg.out_follow = true;
+            if (!ccr_gdb_start(&g_gdb, g_job.exe, g_job.project, err, (int)sizeof err)) {
+                snprintf(doc->status, sizeof doc->status, "gdb: %s", err);
+                doc->has_errors = true;
+                g_dbg.view = false;
+            }
+        } else {
+            if (g_job.result == CCR_JOB_BUILT) {
+                ccr_trf(doc->status, sizeof doc->status, CCR_T_DBG_NO_PROGRAM);
+                doc->has_errors = true;
+            }
+            g_dbg.view = false;   /* the build's errors are what to see */
+        }
+    }
+    if (g_dbg.seen == g_gdb.generation)
+        return;
+    g_dbg.seen = g_gdb.generation;
+    /* a new place to show: when everything about the stop has come in */
+    if (g_gdb.state == CCR_GDB_STOPPED && g_gdb.pending_count == 0 && g_gdb.frame < g_gdb.frame_count) {
+        const ccr_gdb_frame *f = &g_gdb.frames[g_gdb.frame];
+        char where[sizeof g_dbg.where];
+        snprintf(where, sizeof where, "%.1100s:%d:%d:%d", f->file, f->line, g_gdb.frame, g_gdb.frame_count);
+        if (f->file[0] && strcmp(where, g_dbg.where) != 0) {
+            snprintf(g_dbg.where, sizeof g_dbg.where, "%s", where);
+            char path[PATH_MAX_LEN];
+            snprintf(path, sizeof path, "%s", f->file);
+            if (!doc->loaded || !same_file(path, doc->path)) {
+                FILE *probe = fopen(path, "rb");
+                if (probe) {
+                    fclose(probe);
+                    switch_to(doc, cv, viewport, path, opt);
+                }
+            }
+            dbg_apply(doc);
+            ccr_rect seen = viewport;   /* the part of the canvas the panel leaves */
+            if (g_bp.t > 0.0f)
+                seen.h = build_area(ccr_gui_width(), ccr_gui_height()).y - viewport.y;
+            ccr_rect r;
+            if (doc->ed.dbg_at != CCR_NONE && ccr_editor_node_rect(&doc->ed, doc->ed.dbg_at, &r)) {
+                const ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x, r.y });
+                const float lh = (r.h < 40.0f ? r.h : 40.0f) * cv->zoom;
+                if (tl.x < seen.x || tl.y < seen.y || tl.x + 60.0f > seen.x + seen.w || tl.y + lh > seen.y + seen.h)
+                    glide_to_node(cv, doc, seen, doc->ed.dbg_at);
+            }
+        }
+    }
+    if (g_gdb.state != CCR_GDB_STOPPED)
+        g_dbg.where[0] = '\0';
+    dbg_apply(doc);
+    for (int i = 0; i < g_stash_n; ++i)
+        dbg_apply(g_stash[i].doc);
+}
+
+/* What the debugger's header says. */
+static void dbg_headline(char *out, size_t cap, ccr_color *c)
+{
+    *c = ccr_th(CCR_C_PANEL_HINT);
+    const ccr_gdb_frame *f = g_gdb.frame_count ? &g_gdb.frames[0] : NULL;
+    switch (g_gdb.state) {
+    case CCR_GDB_OFF:
+        ccr_trf(out, cap, g_dbg.pending ? CCR_T_DBG_STARTING : CCR_T_DBG_ENDED);
+        return;
+    case CCR_GDB_STARTING:
+        ccr_trf(out, cap, CCR_T_DBG_STARTING);
+        return;
+    case CCR_GDB_RUNNING:
+        *c = ccr_th(CCR_C_OK);
+        ccr_trf(out, cap, CCR_T_DBG_RUNNING);
+        return;
+    case CCR_GDB_STOPPED:
+        *c = 0xD99A05FFu;
+        if (g_gdb.signal[0]) {
+            *c = ccr_th(CCR_C_ERROR);
+            ccr_trf(out, cap, CCR_T_DBG_CRASHED, g_gdb.signal, f ? f->func : "?", f ? f->line : 0);
+        } else {
+            ccr_trf(out, cap, g_gdb.stopped_bp >= 0 ? CCR_T_DBG_AT_BREAK : CCR_T_DBG_STOPPED, f ? f->func : "?",
+                    f ? f->line : 0);
+        }
+        return;
+    case CCR_GDB_EXITED:
+        if (g_gdb.signal[0]) {
+            *c = ccr_th(CCR_C_ERROR);
+            ccr_trf(out, cap, CCR_T_DBG_KILLED, g_gdb.signal);
+        } else {
+            *c = g_gdb.exit_code ? ccr_th(CCR_C_ERROR) : ccr_th(CCR_C_OK);
+            ccr_trf(out, cap, CCR_T_DBG_EXITED, g_gdb.exit_code);
+        }
+        return;
+    }
+}
+
+/* A small title over a column. */
+static void column_title(const char *t, float x, float y)
+{
+    ccr_gui_text(t, x, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+}
+
+/* The panel while debugging: buttons, variables, the call stack, and
+ * what the program printed. */
+static void debug_panel(ccr_rect r, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt,
+                        bool input)
+{
+    const ccr_vec2 m = ccr_gui_mouse();
+    const bool over = input && point_in(m, r);
+    const float hh = 38.0f;
+    char head[400];
+    ccr_color hc;
+    dbg_headline(head, sizeof head, &hc);
+    float x = r.x + 14.0f;
+    ccr_gui_circle((ccr_vec2){ x + 6.0f, r.y + hh * 0.5f }, 5.0f, hc);
+    x += 18.0f;
+    ccr_gui_text(ccr_tr(CCR_T_DBG_TITLE), x, r.y + 9.0f, 17.0f, ccr_th(CCR_C_PANEL_TEXT));
+    x += ccr_gui_text_width(ccr_tr(CCR_T_DBG_TITLE), 17.0f) + 14.0f;
+
+    /* the buttons, right to left */
+    const ccr_button_style plain = *button_style(false), *mainb = button_style(true);
+    float bx = r.x + r.w - 10.0f;
+    if (ccr_gui_button((ccr_rect){ bx - 28.0f, r.y + 7.0f, 28.0f, 24.0f }, "x", &plain) && input) {
+        dbg_end();
+        g_dbg.view = false;
+        g_bp.open = false;
+    }
+    bx -= 36.0f;
+    const bool active = ccr_gdb_active(&g_gdb), stopped = g_gdb.state == CCR_GDB_STOPPED;
+    struct { ccr_text label; const char *key; bool on; bool main_; int what; } btn[] = {
+        { CCR_T_DBG_STOP, "Shift+F8", active || g_dbg.pending, false, 0 },
+        { CCR_T_DBG_OUT, "Shift+F11", stopped, false, 1 },
+        { CCR_T_DBG_STEP, "F11", stopped, false, 2 },
+        { CCR_T_DBG_NEXT, "F10", stopped, false, 3 },
+        { g_gdb.state == CCR_GDB_RUNNING ? CCR_T_DBG_PAUSE : active || g_dbg.pending ? CCR_T_DBG_CONTINUE
+                                                                                     : CCR_T_DBG_AGAIN,
+          "F8", g_gdb.state == CCR_GDB_RUNNING || stopped || (!active && !g_dbg.pending), true, 4 },
+    };
+    for (size_t i = 0; i < sizeof btn / sizeof btn[0]; ++i) {
+        const char *l = ccr_tr(btn[i].label);
+        const float bw = ccr_gui_text_width(l, 15.0f) + 24.0f;
+        bx -= bw;
+        const ccr_rect b = { bx, r.y + 7.0f, bw, 24.0f };
+        const bool hit = ccr_gui_button(b, l, btn[i].on && btn[i].main_ ? mainb : &plain) && input && btn[i].on;
+        if (!btn[i].on)   /* greyed: drawn over */
+            ccr_gui_rect_rounded(b, 0.3f, (ccr_th(CCR_C_PANEL) & 0xFFFFFF00u) | 0xA0u);
+        if (input)
+            tip(b, btn[i].key);
+        bx -= 6.0f;
+        if (!hit)
+            continue;
+        switch (btn[i].what) {
+        case 0: dbg_end(); break;
+        case 1: ccr_gdb_finish(&g_gdb); break;
+        case 2: ccr_gdb_step(&g_gdb); break;
+        case 3: ccr_gdb_next(&g_gdb); break;
+        case 4:
+            if (g_gdb.state == CCR_GDB_RUNNING)
+                ccr_gdb_pause(&g_gdb);
+            else
+                dbg_start(doc, opt);
+            break;
+        }
+    }
+    /* what is going on, in the room left between the title and the buttons */
+    ccr_gui_clip_begin((ccr_rect){ x, r.y, bx - x - 8.0f, hh });
+    ccr_gui_text(head, x, r.y + 11.0f, 15.0f, hc);
+    ccr_gui_clip_end();
+
+    /* three columns */
+    const ccr_rect body = { r.x + 8.0f, r.y + hh, r.w - 16.0f, r.h - hh - 6.0f };
+    const float cw1 = body.w * 0.36f, cw2 = body.w * 0.26f;
+    const ccr_rect vars = { body.x, body.y, cw1 - 8.0f, body.h };
+    const ccr_rect stack = { body.x + cw1, body.y, cw2 - 8.0f, body.h };
+    const ccr_rect outp = { body.x + cw1 + cw2, body.y, body.w - cw1 - cw2, body.h };
+    ccr_gui_rect((ccr_rect){ stack.x - 5.0f, body.y, 1.0f, body.h }, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect((ccr_rect){ outp.x - 5.0f, body.y, 1.0f, body.h }, ccr_th(CCR_C_PANEL_EDGE));
+    const float row = LOG_ROW, top = 20.0f;
+
+    /* variables: name = value; changed ones in the accent colour */
+    column_title(ccr_tr(CCR_T_DBG_VARS), vars.x + 4.0f, vars.y);
+    const ccr_rect vlist = { vars.x, vars.y + top, vars.w, vars.h - top };
+    const int vrows = (int)(vlist.h / row);
+    const float vmax = (float)(g_gdb.var_count > vrows ? g_gdb.var_count - vrows : 0);
+    if (over && point_in(m, vlist))
+        g_dbg.var_scroll -= ccr_gui_wheel() * 3.0f;
+    g_dbg.var_scroll = g_dbg.var_scroll < 0.0f ? 0.0f : g_dbg.var_scroll > vmax ? vmax : g_dbg.var_scroll;
+    ccr_gui_clip_begin(vlist);
+    const bool stale = g_gdb.state != CCR_GDB_STOPPED;
+    if (g_gdb.var_count == 0)
+        ccr_gui_text(ccr_tr(CCR_T_DBG_NONE_HERE), vlist.x + 6.0f, vlist.y + 2.0f, LOG_FONT, ccr_th(CCR_C_PANEL_HINT));
+    for (int i = (int)g_dbg.var_scroll; i < g_gdb.var_count && i < (int)g_dbg.var_scroll + vrows + 1; ++i) {
+        const ccr_gdb_var *v = &g_gdb.vars[i];
+        const float y = vlist.y + (float)(i - (int)g_dbg.var_scroll) * row;
+        const ccr_color nc = stale ? ccr_th(CCR_C_PANEL_HINT) : ccr_th(CCR_C_PANEL_TEXT);
+        ccr_gui_text(v->name, vlist.x + 12.0f, y + 2.0f, LOG_FONT, nc);
+        const float nx = vlist.x + 20.0f + ccr_gui_text_width(v->name, LOG_FONT);
+        ccr_gui_text("=", nx, y + 2.0f, LOG_FONT, ccr_th(CCR_C_PANEL_HINT));
+        ccr_gui_text(v->value, nx + 14.0f, y + 2.0f, LOG_FONT,
+                     stale ? ccr_th(CCR_C_PANEL_HINT) : v->changed ? ccr_th(CCR_C_ACCENT) : nc);
+        if (v->arg)   /* a parameter: a small mark before it */
+            ccr_gui_circle((ccr_vec2){ vlist.x + 5.0f, y + row * 0.5f }, 2.5f, ccr_th(CCR_C_PANEL_HINT));
+    }
+    ccr_gui_clip_end();
+
+    /* the call stack: a click shows that function's variables and block */
+    column_title(ccr_tr(CCR_T_DBG_STACK), stack.x + 4.0f, stack.y);
+    const ccr_rect slist = { stack.x, stack.y + top, stack.w, stack.h - top };
+    ccr_gui_clip_begin(slist);
+    for (int i = 0; i < g_gdb.frame_count && (float)i * row < slist.h; ++i) {
+        const ccr_gdb_frame *f = &g_gdb.frames[i];
+        const ccr_rect it = { slist.x, slist.y + (float)i * row, slist.w, row };
+        const bool hot = over && point_in(m, it) && f->file[0] && !stale;
+        if (i == g_gdb.frame && !stale)
+            ccr_gui_rect_rounded(it, 0.3f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x60u);
+        else if (hot)
+            ccr_gui_rect_rounded(it, 0.3f, (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0x90u);
+        char text[300];
+        if (f->file[0])
+            snprintf(text, sizeof text, "%s   %s:%d", f->func, base_name(f->file), f->line);
+        else
+            snprintf(text, sizeof text, "%s   (%s)", f->func, ccr_tr(CCR_T_DBG_NO_SOURCE));
+        ccr_gui_text(text, it.x + 6.0f, it.y + 2.0f, LOG_FONT,
+                     f->file[0] && !stale ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+        if (hot && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && i != g_gdb.frame) {
+            ccr_gdb_select_frame(&g_gdb, i);
+            g_gdb.frame = i;   /* where to look; its variables are on their way */
+            ++g_gdb.generation;
+        }
+    }
+    ccr_gui_clip_end();
+
+    /* what the program printed */
+    column_title(ccr_tr(CCR_T_DBG_OUTPUT), outp.x + 4.0f, outp.y);
+    const ccr_rect olist = { outp.x, outp.y + top, outp.w, outp.h - top };
+    const int orows = (int)(olist.h / row);
+    const float omax = (float)(g_gdb.out_count > orows ? g_gdb.out_count - orows : 0);
+    if (over && point_in(m, olist)) {
+        const float wheel = ccr_gui_wheel();
+        if (wheel != 0.0f) {
+            g_dbg.out_scroll -= wheel * 3.0f;
+            g_dbg.out_follow = g_dbg.out_scroll >= omax;
+        }
+    }
+    if (g_dbg.out_follow)
+        g_dbg.out_scroll = omax;
+    g_dbg.out_scroll = g_dbg.out_scroll < 0.0f ? 0.0f : g_dbg.out_scroll > omax ? omax : g_dbg.out_scroll;
+    ccr_gui_clip_begin(olist);
+    for (int i = (int)g_dbg.out_scroll; i < g_gdb.out_count && i < (int)g_dbg.out_scroll + orows + 1; ++i) {
+        const ccr_gdb_out *o = &g_gdb.out[i];
+        const float y = olist.y + (float)(i - (int)g_dbg.out_scroll) * row;
+        ccr_gui_text(o->text, olist.x + 6.0f, y + 2.0f, LOG_FONT,
+                     o->kind == CCR_GDB_OUT_ERROR ? ccr_th(CCR_C_ERROR)
+                     : o->kind == CCR_GDB_OUT_INFO ? ccr_th(CCR_C_PANEL_HINT) : ccr_th(CCR_C_PANEL_TEXT));
+    }
+    ccr_gui_clip_end();
+    (void)cv;
+    (void)viewport;
 }
 
 /* A mark under the mouse: what the compiler said, next to it. */
@@ -2280,6 +2758,7 @@ static bool help_frame(int w, int h)
         { "Ctrl+P, Ctrl+Tab", 0, CCR_T_HELP_FILES },
         { "Ctrl+B, Ctrl+R", 0, CCR_T_HELP_BUILD },
         { "Ctrl+M", 0, CCR_T_HELP_MINIMAP },
+        { "F8, F9, F10, F11", 0, CCR_T_HELP_DEBUG },
         { "F5", 0, CCR_T_HELP_RELOAD },
         { "F1", 0, CCR_T_HELP_HELP },
     };
@@ -3148,7 +3627,22 @@ static void icon_stop(ccr_rect r, ccr_color c)
 
 /* What was clicked in the top bar that the caller does (it has what
  * opening a file and building take). */
-enum { TOP_CMAKE = 1, TOP_BUILD = 2, TOP_RUN = 4, TOP_STOP = 8, TOP_HELP = 16 };
+enum { TOP_CMAKE = 1, TOP_BUILD = 2, TOP_RUN = 4, TOP_STOP = 8, TOP_HELP = 16, TOP_DEBUG = 32, TOP_GIT = 64 };
+
+/* A bug, for the debugger. */
+static void icon_bug(ccr_rect r, ccr_color c)
+{
+    const ccr_vec2 m = { r.x + r.w * 0.5f, r.y + r.h * 0.5f + 1.0f };
+    for (int k = -1; k <= 1; ++k) {   /* legs */
+        ccr_gui_line((ccr_vec2){ m.x - 9.0f, m.y + (float)k * 4.0f - 1.0f }, (ccr_vec2){ m.x + 9.0f, m.y + (float)k * 4.0f - 1.0f },
+                     1.6f, c);
+    }
+    ccr_gui_line((ccr_vec2){ m.x - 2.0f, m.y - 8.0f }, (ccr_vec2){ m.x - 5.0f, m.y - 11.0f }, 1.4f, c);
+    ccr_gui_line((ccr_vec2){ m.x + 2.0f, m.y - 8.0f }, (ccr_vec2){ m.x + 5.0f, m.y - 11.0f }, 1.4f, c);
+    ccr_gui_circle((ccr_vec2){ m.x, m.y - 6.0f }, 3.5f, c);   /* head */
+    ccr_gui_circle((ccr_vec2){ m.x, m.y + 1.0f }, 6.0f, c);   /* body */
+    ccr_gui_line((ccr_vec2){ m.x, m.y - 3.0f }, (ccr_vec2){ m.x, m.y + 6.5f }, 1.2f, 0xFFFFFF90u);
+}
 
 static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
 {
@@ -3182,10 +3676,19 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     if (!modal)
         tip(flag, ccr_tr(CCR_T_TIP_RUN));
     x -= 4.0f + 36.0f;
+    const ccr_rect bug = { x, y, 36.0f, bh };
+    const bool debugging = ccr_gdb_active(&g_gdb) || g_dbg.pending;
+    if (ccr_gui_button(bug, "", debugging ? &main_ : bs) && !modal)
+        clicked |= TOP_DEBUG;
+    icon_bug(bug, debugging ? 0xFFFFFFFFu : 0xD9822BFFu);
+    if (!modal)
+        tip(bug, ccr_tr(CCR_T_DBG_TIP));
+    x -= 4.0f + 36.0f;
     const ccr_rect stop = { x, y, 36.0f, bh };
-    if (ccr_gui_button(stop, "", bs) && !modal && busy)
+    const bool stoppable = busy || ccr_gdb_active(&g_gdb) || g_dbg.pending;
+    if (ccr_gui_button(stop, "", bs) && !modal && stoppable)
         clicked |= TOP_STOP;
-    icon_stop(stop, busy ? 0xEC5959FFu : 0xEC595950u);
+    icon_stop(stop, stoppable ? 0xEC5959FFu : 0xEC595950u);
     if (!modal)
         tip(stop, ccr_tr(CCR_T_TIP_STOP));
     x -= group;
@@ -3545,6 +4048,7 @@ static void run_action(ccr_action a, const ccr_context *ctx, ccr_vec2 world,
 int ccr_run(int argc, char **argv)
 {
     ccr_options opt = { 0 };
+    ccr_gdb_init(&g_gdb);
     int early = parse_args(argc, argv, &opt);
     if (early >= 0)
         return early;
@@ -3690,6 +4194,7 @@ int ccr_run(int argc, char **argv)
         /* the build: its output read, its errors onto the blocks */
         ccr_job_poll(&g_job);
         marks_follow(&doc);
+        dbg_follow(&doc, &canvas, viewport, &opt);
         if (g_bp.last == CCR_JOB_RUNNING && g_job.result != CCR_JOB_RUNNING && !ccr_job_busy(&g_job)) {
             ccr_color unused;
             build_headline(doc.status, sizeof doc.status, &unused);
@@ -3877,6 +4382,29 @@ int ccr_run(int argc, char **argv)
         if (ccr_gui_key_pressed(CCR_KEY_HOME) && !pie.open && !typing)
             fit_view_smooth(&canvas, &doc, viewport);
 
+        /* the debugger's keys, as in most debuggers */
+        if (!modal && !pie.open && te.node == CCR_NONE && !typing) {
+            const bool shift = ccr_gui_shift_down();
+            if (ccr_gui_key_pressed(CCR_KEY_F8)) {
+                if (shift)
+                    dbg_end();
+                else if (g_gdb.state == CCR_GDB_RUNNING)
+                    ccr_gdb_pause(&g_gdb);
+                else if (doc.ed.drag == CCR_DRAG_IDLE || !doc.loaded)
+                    dbg_start(&doc, &opt);
+            }
+            if (ccr_gui_key_pressed(CCR_KEY_F9) && inside && doc.loaded)
+                dbg_toggle(&doc, world);
+            if (ccr_gui_key_pressed(CCR_KEY_F10))
+                ccr_gdb_next(&g_gdb);
+            if (ccr_gui_key_pressed(CCR_KEY_F11)) {
+                if (shift)
+                    ccr_gdb_finish(&g_gdb);
+                else
+                    ccr_gdb_step(&g_gdb);
+            }
+        }
+
         const bool gliding = glide_step(&canvas, dt);
         if (!pie.open && !was_open && !modal && !(te.node != CCR_NONE && drop_has_mouse())) {
             const ccr_canvas before = canvas;
@@ -4027,8 +4555,15 @@ int ccr_run(int argc, char **argv)
             te.node = CCR_NONE;
             build_start(&doc, (top & TOP_RUN) != 0, &opt);
         }
-        if (top & TOP_STOP)
+        if (top & TOP_STOP) {
             ccr_job_stop(&g_job);
+            if (ccr_gdb_active(&g_gdb) || g_dbg.pending)
+                dbg_end();
+        }
+        if ((top & TOP_DEBUG) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
+            te.node = CCR_NONE;
+            dbg_start(&doc, &opt);
+        }
         if (top & TOP_HELP)
             g_help = !g_help;
         draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f - autosave_width());
@@ -4058,6 +4593,7 @@ int ccr_run(int argc, char **argv)
     }
 
     ccr_job_free(&g_job);   /* a program still running goes too */
+    ccr_gdb_free(&g_gdb);
     free(g_copied);
     g_copied = NULL;
     document_close(&doc);

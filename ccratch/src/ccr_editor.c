@@ -6,6 +6,7 @@
 #include "ccr_lib.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -231,6 +232,7 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     ed->ast = *ast;
     memset(ast, 0, sizeof *ast);   /* ownership moved */
     ed->dragged = UINT32_MAX;
+    ed->dbg_at = CCR_NONE;
     ed->edit_request = CCR_NONE;
     ed->hover = ed->hover_arrow = ed->hover_far = CCR_NONE;
     ed->press_op = ed->op_request = ed->hover_op = CCR_NONE;
@@ -294,6 +296,7 @@ void ccr_editor_free(ccr_editor *ed)
     ccr_layout_cache_free(&ed->cache);
     ccr_ast_free(&ed->ast);
     free(ed->marks);
+    free(ed->dbg_breaks);
     memset(ed, 0, sizeof *ed);
 }
 
@@ -418,6 +421,104 @@ int ccr_editor_mark_at(const ccr_editor *ed, ccr_vec2 world)
         }
     }
     return best;
+}
+
+void ccr_editor_set_debug(ccr_editor *ed, ccr_node_id at, bool fault, const ccr_node_id *breaks, uint32_t count,
+                          const char *values)
+{
+    ed->dbg_at = at;
+    ed->dbg_fault = fault;
+    free(ed->dbg_breaks);
+    ed->dbg_breaks = NULL;
+    ed->dbg_break_count = 0;
+    if (count) {
+        ed->dbg_breaks = malloc(count * sizeof *ed->dbg_breaks);
+        if (ed->dbg_breaks) {
+            memcpy(ed->dbg_breaks, breaks, count * sizeof *breaks);
+            ed->dbg_break_count = count;
+        }
+    }
+    snprintf(ed->dbg_values, sizeof ed->dbg_values, "%s", values ? values : "");
+}
+
+ccr_node_id ccr_editor_statement_of(const ccr_editor *ed, ccr_node_id id)
+{
+    for (ccr_node_id a = id; a != CCR_NONE && a < ed->ast.node_count; a = N(ed, a)->parent) {
+        const ccr_node_id p = N(ed, a)->parent;
+        if (p == CCR_NONE)
+            return CCR_NONE;
+        if (N(ed, p)->kind == CCR_NODE_BLOCK)
+            return (N(ed, p)->flags & CCR_FLAG_LOOSE) ? CCR_NONE : a;   /* loose: not in the program */
+        if (N(ed, p)->kind == CCR_NODE_TRANSLATION_UNIT)
+            return CCR_NONE;
+    }
+    return CCR_NONE;
+}
+
+/* A breakpoint: a red dot left of the block; where it stopped: an outline
+ * and an arrow, and the values beside it. */
+static void draw_debug(const ccr_editor *ed, const ccr_canvas *cv)
+{
+    const float z = cv->zoom;
+    for (uint32_t i = 0; i < ed->dbg_break_count; ++i) {
+        ccr_rect r;
+        if (!ccr_editor_node_rect(ed, ed->dbg_breaks[i], &r))
+            continue;
+        const ccr_vec2 c = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x - 11.0f, r.y + 16.0f });
+        ccr_gui_circle(c, 7.5f * z + 1.5f, 0xFFFFFFFFu);
+        ccr_gui_circle(c, 7.5f * z, 0xE5383BFFu);
+    }
+    ccr_rect r;
+    if (ed->dbg_at == CCR_NONE || !ccr_editor_node_rect(ed, ed->dbg_at, &r))
+        return;
+    const ccr_color c = ed->dbg_fault ? ccr_th(CCR_C_ERROR) : 0xF2B705FFu;
+    const float m = 4.0f, t = 3.0f * (z < 1.0f ? 1.0f : z);
+    const float line = r.h < 40.0f ? r.h : 40.0f;
+    const ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x - m, r.y - m });
+    const ccr_vec2 br = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x + r.w + m, r.y + line + m });
+    const ccr_vec2 pts[5] = { tl, { br.x, tl.y }, br, { tl.x, br.y }, tl };
+    for (int k = 0; k + 1 < 5; ++k)
+        ccr_gui_line(pts[k], pts[k + 1], t, c);
+    for (int k = 0; k < 4; ++k)
+        ccr_gui_circle(pts[k], t * 0.5f, c);
+    /* the arrow: here */
+    const float ay = (tl.y + br.y) * 0.5f, ax = tl.x - 20.0f * z;   /* left of a breakpoint's dot */
+    ccr_gui_triangle((ccr_vec2){ ax - 16.0f * z, ay - 9.0f * z }, (ccr_vec2){ ax, ay },
+                     (ccr_vec2){ ax - 16.0f * z, ay + 9.0f * z }, c);
+    if (!ed->dbg_values[0])
+        return;
+    /* the values, a line each, in a card to the right */
+    const float fs = 15.0f, pad = 8.0f, row = 19.0f;
+    float w = 0.0f;
+    int lines = 0;
+    char line_buf[200];
+    for (const char *p = ed->dbg_values; *p;) {
+        const char *e = strchr(p, '\n');
+        const size_t n = e ? (size_t)(e - p) : strlen(p);
+        snprintf(line_buf, sizeof line_buf, "%.*s", (int)(n < sizeof line_buf ? n : sizeof line_buf - 1), p);
+        const float lw = ccr_gui_text_width(line_buf, fs);
+        if (lw > w)
+            w = lw;
+        ++lines;
+        p += n + (e != NULL);
+    }
+    const ccr_rect card = { br.x + 14.0f, tl.y, w + pad * 2.0f, (float)lines * row + pad * 2.0f - 4.0f };
+    ccr_gui_triangle((ccr_vec2){ card.x, card.y + 10.0f }, (ccr_vec2){ card.x - 8.0f, card.y + 15.0f },
+                     (ccr_vec2){ card.x, card.y + 20.0f }, c);
+    ccr_gui_rect_rounded((ccr_rect){ card.x - 2, card.y - 2, card.w + 4, card.h + 4 }, 0.15f, c);
+    ccr_gui_rect_rounded(card, 0.15f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    float y = card.y + pad - 2.0f;
+    for (const char *p = ed->dbg_values; *p;) {
+        const char *e = strchr(p, '\n');
+        const size_t n = e ? (size_t)(e - p) : strlen(p);
+        snprintf(line_buf, sizeof line_buf, "%.*s", (int)(n < sizeof line_buf ? n : sizeof line_buf - 1), p);
+        /* "*name = v": changed since the last stop */
+        const bool changed = line_buf[0] == '*';
+        ccr_gui_text(changed ? line_buf + 1 : line_buf, card.x + pad, y, fs,
+                     changed ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_PANEL_TEXT));
+        y += row;
+        p += n + (e != NULL);
+    }
 }
 
 static void draw_marks(const ccr_editor *ed, const ccr_canvas *cv)
@@ -2317,6 +2418,7 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
     }
     draw_jumps(ed, cv);
     draw_marks(ed, cv);
+    draw_debug(ed, cv);
 
     /* an #include under the mouse: a click opens the file, underlined */
     ccr_rect inc;
