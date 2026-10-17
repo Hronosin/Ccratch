@@ -12,6 +12,7 @@
 #include "ccr_gui.h"
 #include "ccr_lib.h"
 #include "ccr_parse.h"
+#include "ccr_paste.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1348,6 +1349,88 @@ static void test_fold(void)
 /* Block packs: a library call from the palette is the plain C call when
  * saved; a call in the file with a pack's name and arity is drawn as the
  * pack's block. */
+/* Code from the clipboard, as blocks; and back to the clipboard. */
+static ccr_snippet g_snip;   /* big: off the stack */
+
+static bool read_snippet(const ccr_editor *ed, const char *code)
+{
+    char *ctx = generate(ed);
+    const bool ok = ccr_snippet_parse(code, ctx, ctx ? strlen(ctx) : 0, g_input, false, NULL, 0, &g_snip);
+    free(ctx);
+    return ok;
+}
+
+/* The carried paste, dropped right after statement `after`. */
+static void drop_after(ccr_editor *ed, ccr_node_id after)
+{
+    ccr_vec2 at;
+    if (!snap_at(ed, CCR_SNAP_AFTER, after, &at))
+        return;
+    const ccr_vec2 hold = { at.x + 10.0f, at.y + 10.0f };
+    frame(ed, hold, false, false, false);
+    frame(ed, hold, true, true, false);
+    frame(ed, hold, false, false, true);
+}
+
+static void test_paste(void)
+{
+    ccr_editor ed;
+    CHECK(load(&ed), "load failed");
+    char *before = generate(&ed);
+
+    /* statements the file can read */
+    CHECK(read_snippet(&ed, "counter += 2;\n    printf(\"%d\\n\", counter);"), "snippet");
+    CHECK(g_snip.count == 2 && g_snip.as_text == 0 && !g_snip.reporter && !g_snip.toplevel,
+          "two statements: %d, %d as text", g_snip.count, g_snip.as_text);
+    const ccr_node_id hello = stmt(&ed, "printf(\"hello\\n\")");
+    CHECK(ccr_editor_paste(&ed, &g_snip.ast, g_snip.items, g_snip.count, false, far_away(0.0f)), "paste");
+    ccr_snippet_free(&g_snip);
+    drop_after(&ed, hello);
+    CHECK(ed.drag == CCR_DRAG_IDLE && ccr_editor_loose_count(&ed) == 0, "the paste did not land");
+    char err[256];
+    char *text = save_to(&ed, "pasted.c", err, sizeof err);
+    CHECK(text && strstr(text, "    printf(\"hello\\n\");\n    counter += 2;\n    printf(\"%d\\n\", counter);\n"),
+          "pasted statements saved as:\n%s", text ? text : err);
+    free(text);
+    check_compiles("pasted.c");
+
+    /* and copied back out: the same code */
+    const ccr_node_id added = N(&ed, hello)->next_sibling;
+    const ccr_node_id two[2] = { N(&ed, added)->next_sibling, added };   /* out of order on purpose */
+    char *copied = ccr_copy_text(&ed.ast, two, 2);
+    CHECK(copied && strcmp(copied, "counter += 2;\nprintf(\"%d\\n\", counter);") == 0, "copied: [%s]",
+          copied ? copied : "(null)");
+    free(copied);
+
+    /* a variable this file does not have: kept as a code line, not lost */
+    CHECK(read_snippet(&ed, "nowhere_x = 3;\nputs(\"ok\");"), "snippet 2");
+    CHECK(g_snip.count == 2 && g_snip.as_text == 1, "unknown name: %d items, %d as text", g_snip.count, g_snip.as_text);
+    ccr_snippet_free(&g_snip);
+
+    /* one expression: a reporter */
+    CHECK(read_snippet(&ed, "counter * 2") && g_snip.reporter && g_snip.count == 1, "an expression");
+    ccr_snippet_free(&g_snip);
+
+    /* a whole function: into the file, where functions go */
+    CHECK(read_snippet(&ed, "static int twice(int v)\n{\n    return v * 2;\n}\n") && g_snip.toplevel &&
+          g_snip.count == 1, "a function: toplevel %d, %d items", g_snip.toplevel, g_snip.count);
+    CHECK(ccr_editor_paste_decls(&ed, &g_snip.ast, g_snip.items, g_snip.count, far_away(0.0f)), "paste decls");
+    ccr_snippet_free(&g_snip);
+    text = save_to(&ed, "pasted_fn.c", err, sizeof err);
+    CHECK(text && strstr(text, "static int twice(int v)\n{\n    return v * 2;\n}\n"), "pasted function:\n%s",
+          text ? text : err);
+    free(text);
+    check_compiles("pasted_fn.c");
+
+    /* undone: the file as it was */
+    while (ccr_editor_undo(&ed)) {}
+    char *after = generate(&ed);
+    CHECK(before && after && strcmp(before, after) == 0, "undo left a paste behind");
+    free(before);
+    free(after);
+    ccr_editor_free(&ed);
+}
+
 /* Find: words on the canvas, any case; folded ones too. */
 static void test_find(void)
 {
@@ -1493,6 +1576,7 @@ int main(int argc, char **argv)
     test_header_guard();
     test_fold();
     test_find();
+    test_paste();
     test_library_blocks();
     test_trash();
     test_delete();

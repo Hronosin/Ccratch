@@ -84,6 +84,19 @@ void ccr_gui_shutdown(void)
 }
 
 bool ccr_gui_should_close(void)     { return WindowShouldClose(); }
+void ccr_gui_set_clipboard(const char *text) { SetClipboardText(text ? text : ""); }
+const char *ccr_gui_clipboard(void)          { return GetClipboardText(); }
+
+void ccr_gui_set_cursor(ccr_cursor c)
+{
+    static int now = -1;   /* only when it changes: X11 is not free */
+    if ((int)c == now)
+        return;
+    now = (int)c;
+    SetMouseCursor(c == CCR_CURSOR_EW ? MOUSE_CURSOR_RESIZE_EW
+                   : c == CCR_CURSOR_NS ? MOUSE_CURSOR_RESIZE_NS : MOUSE_CURSOR_DEFAULT);
+}
+
 void ccr_gui_cancel_close(void)
 {
     GLFWwindow *w = glfwGetCurrentContext();
@@ -305,6 +318,10 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_EQUAL:  return IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD);
     case CCR_KEY_MINUS:  return IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT);
     case CCR_KEY_ZERO:   return IsKeyPressed(KEY_ZERO) || IsKeyPressed(KEY_KP_0);
+    case CCR_KEY_C:      return IsKeyPressed(KEY_C);
+    case CCR_KEY_V:      return IsKeyPressed(KEY_V);
+    case CCR_KEY_A:      return IsKeyPressed(KEY_A);
+    case CCR_KEY_M:      return IsKeyPressed(KEY_M);
     }
     return false;
 }

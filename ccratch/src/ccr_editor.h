@@ -128,6 +128,16 @@ typedef struct ccr_editor {
     uint32_t       mark_count;
 } ccr_editor;
 
+/* Blocks from another tree (ccr_paste): a stack of `items` (or one
+ * reporter) stuck to the mouse, dropped on the next click like Ctrl+D's
+ * copy. One undo step. */
+bool ccr_editor_paste(ccr_editor *ed, const ccr_ast *src, const ccr_node_id *items, int count, bool reporter,
+                      ccr_vec2 mouse);
+/* Declarations (functions, types, #includes) from another tree, put
+ * straight into the file where their kind goes, next to `at` on the
+ * canvas. One undo step. */
+bool ccr_editor_paste_decls(ccr_editor *ed, const ccr_ast *src, const ccr_node_id *items, int count, ccr_vec2 at);
+
 /* An error or warning from a build, pinned to the block it is about. */
 typedef struct ccr_editor_mark {
     ccr_node_id node;
@@ -242,6 +252,8 @@ ccr_jump_state ccr_editor_jump(const ccr_editor *ed, ccr_node_id go, ccr_node_id
  * loose stack goes if its top block is picked. An expression in a slot
  * goes and leaves the slot empty. One undo step. */
 bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item);
+/* Several at once (a selection), one undo step. */
+bool ccr_editor_delete_many(ccr_editor *ed, const ccr_node_id *items, int count);
 
 /* Copies a block (a statement, or an expression in a slot); the copy
  * follows the mouse until the next click, then snaps or lies loose like

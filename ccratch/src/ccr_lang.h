@@ -124,6 +124,24 @@
     X(TIP_RUN,          "tip.run",               0, "Build and run (Ctrl+R)")            \
     X(TIP_STOP,         "tip.stop",              0, "Stop")                              \
     X(TIP_FIT,          "tip.fit",               0, "Whole file in view (Home)")         \
+    X(COPIED,           "clip.copied",           1, "Copied: %u block|Copied: %u blocks") \
+    X(COPY_NONE,        "clip.none",             0, "Nothing to copy here (blocks made on the canvas and never saved have no code yet)") \
+    X(PASTED,           "clip.pasted",           1, "Pasted: %u block, click where it goes|Pasted: %u blocks, click where they go") \
+    X(PASTED_DECLS,     "clip.pasted_decls",     1, "Pasted into the file: %u declaration|Pasted into the file: %u declarations") \
+    X(PASTED_TEXT,      "clip.as_text",          1, "(%u as a code line: clang could not read it here)|(%u as code lines: clang could not read them here)") \
+    X(PASTE_EMPTY,      "clip.empty",            0, "The clipboard has no code in it")   \
+    X(SELECTED,         "sel.count",             1, "%u selected: Del deletes, Ctrl+C copies|%u selected: Del deletes, Ctrl+C copies") \
+    X(DELETED,          "sel.deleted",           1, "%u block deleted (Ctrl+Z brings it back)|%u blocks deleted (Ctrl+Z brings them back)") \
+    X(AUTOSAVE_ON,      "autosave.on",           0, "autosave: on")                      \
+    X(AUTOSAVE_OFF,     "autosave.off",          0, "autosave: off")                     \
+    X(TIP_AUTOSAVE,     "tip.autosave",          0, "Save by itself a moment after every change") \
+    X(TIP_MINIMAP,      "tip.minimap",           0, "The whole file (Ctrl+M hides it)")  \
+    X(HELP_COPY,        "help.copy",             0, "copy the block under the mouse (or the selected); paste code as blocks") \
+    X(HELP_SELECT,      "help.select",           0, "select blocks to delete or copy together") \
+    X(HELP_K_BAND,      "help.k_band",           0, "Drag on empty canvas")              \
+    X(HELP_MINIMAP,     "help.minimap",          0, "the minimap on and off")            \
+    X(HELP_PALETTE,     "help.palette",          0, "bigger or smaller blocks in the palette; drag a panel's edge to size it") \
+    X(HELP_K_PALZOOM,   "help.k_palzoom",        0, "Ctrl+wheel on the palette")         \
     X(CAT_CONTROL,      "palette.control",       0, "Control")                           \
     X(CAT_OPERATORS,    "palette.operators",     0, "Operators")                         \
     X(CAT_VARIABLES,    "palette.variables",     0, "Variables")                         \
@@ -229,18 +247,28 @@
       "That an opening brace on the same line follows the will of Kernighan and Ritchie, on a line of its own the will of Allman, and indented by two spaces (GNU) needs a written explanation.") \
     X(EULA_C15, "eula.c15", 0, \
       "Kernighan first printed \"hello, world\" in 1972, in B. The User undertakes to print it at least once in every new language, except Rust.") \
+    X(EULA_C16, "eula.c16", 0, \
+      "To acknowledge that a transistor differs from a programmer in that it actually does the work. By the laws of thermodynamics, work comes with heat, and here the programmer is the transistor's equal: just as much heat, with an efficiency tending to zero. A deadline is the only method known to science of raising a programmer's efficiency above that of a steam engine.") \
+    X(EULA_C17, "eula.c17", 0, \
+      "That the heat released by the User while waiting for the build is not counted as work, even when the fans are spinning loudly enough to sound like it.") \
     X(EULA_MEME_ZONE, "eula.meme_zone", 0, \
       "MEME ZONE. Everything below is memes and references. If you are offended, read the last point again.") \
     X(EULA_M01, "eula.m01", 0, \
       "If you are a femboy, you may not write C or assembly: your place is in C++. The Rust community has appealed, citing exclusive rights to programming socks. The appeal is being reviewed by the borrow checker; no date has been set.") \
     X(EULA_M02, "eula.m02", 0, \
       "If you are a girl, welcome to the low-level programming course for the littlest ones. It is taught by Ada Lovelace (the first published program, 1843) and Grace Hopper (the first compilers, and the first actual bug: a moth in a relay, 1947). So, honestly, the littlest ones here are us.") \
+    X(EULA_M03, "eula.m03", 0, \
+      "AI will replace everyone. This clause was written by an AI. So were the others. So was most of Ccratch's code. Who it has replaced so far is unclear: a human still has to read the error, say \"hmm\" and press the button again. Ccratch undertakes to make way for AI as soon as AI learns to quit Vim.") \
     X(EULA_FINAL, "eula.final", 0, \
       "None of the above has any legal force. The real license is the Mozilla Public License 2.0 (see LICENSE). The shrine maiden enforces nothing; she only collects donations.") \
     X(EULA_ACCEPT, "eula.accept", 0, \
       "I accept") \
     X(EULA_RUST, "eula.rust", 0, \
       "I write Rust") \
+    X(EULA_DECLINE, "eula.decline", 0, \
+      "I don't want to") \
+    X(EULA_HURT, "eula.hurt", 0, \
+      "Fine... That hurts, you know.") \
     X(EULA_CLOSE, "eula.close", 0, \
       "Close") \
     X(EULA_ACCEPTED, "eula.accepted", 0, \

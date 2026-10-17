@@ -69,17 +69,19 @@ static ccr_rect fly_of(ccr_rect area)
     return (ccr_rect){ area.x + CCR_PALETTE_STRIP_W, area.y, area.w - CCR_PALETTE_STRIP_W, area.h };
 }
 
+#define ZOOM(p) ((p)->zoom > 0.0f ? (p)->zoom : CCR_PALETTE_ZOOM)
+
 /* The flyout as a little canvas: unscaled units, scrolled. */
 static ccr_canvas fly_canvas(const ccr_palette *p, ccr_rect fly)
 {
-    return (ccr_canvas){ .offset = { fly.x, fly.y - p->scroll * CCR_PALETTE_ZOOM },
-                         .zoom = CCR_PALETTE_ZOOM };
+    return (ccr_canvas){ .offset = { fly.x, fly.y - p->scroll * ZOOM(p) },
+                         .zoom = ZOOM(p) };
 }
 
 static float max_scroll(const ccr_palette *p, ccr_rect area)
 {
     /* far enough that the last category's heading can reach the top */
-    float m = p->content_h - area.h / CCR_PALETTE_ZOOM;
+    float m = p->content_h - area.h / ZOOM(p);
     const float last = p->cat_count ? p->cats[p->cat_count - 1].heading_y - PAD_TOP : 0.0f;
     if (m < last)
         m = last;
@@ -189,6 +191,7 @@ bool ccr_palette_init(ccr_palette *p)
     const ccr_lang_kind lang = p->lang;
     char filter[sizeof p->filter];
     memcpy(filter, p->filter, sizeof filter);
+    const float zoom = p->zoom;
     /* the includes survive: they say which packs show */
     char (*keep)[128] = malloc(sizeof p->includes);
     const int keep_n = p->include_count;
@@ -203,6 +206,7 @@ bool ccr_palette_init(ccr_palette *p)
     p->hot = -1;
     p->lang = lang;
     memcpy(p->filter, filter, sizeof filter);
+    p->zoom = zoom;
     if (!ccr_ast_init(&p->ast))
         return false;
     p->ast.lang = lang;   /* blocks drawn the way the file on screen speaks */
@@ -259,6 +263,13 @@ bool ccr_palette_init(ccr_palette *p)
 oom:
     free_items(p);
     return false;
+}
+
+void ccr_palette_set_zoom(ccr_palette *p, float zoom)
+{
+    if (zoom < CCR_PALETTE_ZOOM_MIN) zoom = CCR_PALETTE_ZOOM_MIN;
+    if (zoom > CCR_PALETTE_ZOOM_MAX) zoom = CCR_PALETTE_ZOOM_MAX;
+    p->zoom = zoom;   /* drawn at a scale: no layout needed */
 }
 
 bool ccr_palette_set_filter(ccr_palette *p, const char *text)
@@ -442,7 +453,7 @@ void ccr_palette_draw(const ccr_palette *p, ccr_rect area, bool trash)
     /* a thin scroll bar, when there is more than fits */
     const float top = max_scroll(p, area);
     if (top > 0.0f) {
-        const float view = fly.h / (p->content_h * CCR_PALETTE_ZOOM);
+        const float view = fly.h / (p->content_h * ZOOM(p));
         const float bar_h = fly.h * (view > 1.0f ? 1.0f : view);
         const float bar_y = fly.y + (fly.h - bar_h) * (p->scroll / top);
         ccr_gui_rect_rounded((ccr_rect){ fly.x + fly.w - 6.0f, bar_y + 2.0f, 4.0f, bar_h - 4.0f }, 1.0f,

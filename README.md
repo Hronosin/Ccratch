@@ -29,6 +29,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 18: CMake as blocks: CMakeLists.txt opened, edited and saved like C, or made for a project that has none.
 - Step 19: the Build button: CMake builds in the background, the program runs, errors land on their blocks.
 - Step 20: getting around: tabs, find (Ctrl+F), palette search, green flag, F1, recent files, no lost work on quit.
+- Step 21: copy and paste blocks between files (and any C as blocks), selection, minimap, autosave, panels you can size.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -266,7 +267,7 @@ look first, and `cmake -S . -B build && cmake --build build` builds it.
 
 ## Getting around
 
-![tabs over the canvas, the palette searched for "ret", Ctrl+F finding "total": 1 of 3](docs/interface.png)
+![two files in tabs, two blocks selected with a rectangle, the minimap at the bottom right](docs/interface.png)
 
 - **Tabs** over the canvas, one per open file, in the order they were
   opened: a click goes there, the x or a middle click closes it. A file
@@ -288,6 +289,25 @@ look first, and `cmake -S . -B build && cmake --build build` builds it.
 - **Recent files** on the start screen.
 - **Quitting** with changes not saved asks: save and quit, quit
   anyway, or stay.
+- **Copy and paste** (Ctrl+C, Ctrl+V): the block under the mouse, or a
+  selection, goes to the clipboard as C, and C from the clipboard comes
+  back as blocks: from another file, a browser, a chat. It is read as if
+  it were at the end of the file it goes into, so the file's own types and
+  functions are known; a whole function goes straight into the file, one
+  expression into a slot. What clang still cannot read there (a variable
+  of the function it was copied from) is kept as code lines, never lost.
+  The text of a paste lives after the file's own in memory, so it saves
+  byte for byte the way it was written.
+- **Selection**: drag on empty canvas for a rectangle, Ctrl+A for all;
+  Del deletes them all (one undo), Ctrl+C copies them, Esc lets go.
+- **Minimap** at the bottom right when the file is bigger than the
+  screen: every block in its colour, the screen's part outlined; click or
+  drag in it to go there. Ctrl+M hides it.
+- **Autosave**, the switch next to the zoom: on, a file saves itself a
+  moment after each change.
+- **Panels you can size**: drag the edge of the palette, the files
+  panel or the build log; Ctrl+wheel over the palette makes its blocks
+  bigger or smaller. Remembered for next time.
 
 ## Building
 
@@ -706,6 +726,9 @@ ccratch --list-blocks                    block packs found, and where
 - Ctrl+F: find blocks; Enter / F3: next, Shift: back; Esc: close
 - Ctrl+= / Ctrl+- / Ctrl+0: zoom in, out, back to 100%
 - F1: keys and mouse
+- Ctrl+C / Ctrl+V: copy blocks as code, paste code as blocks
+- Drag on empty canvas: select; Ctrl+A: all; Del: delete them
+- Ctrl+M: minimap
 - Ctrl+Z: undo one drag; Ctrl+Y or Ctrl+Shift+Z: redo. Undoing back to
   the saved state clears the `*`, and an undone change is gone from the
   file too: undo everything and the file saves byte for byte as it was

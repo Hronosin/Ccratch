@@ -1017,7 +1017,9 @@ static void emit_inner(gen *g, ccr_node_id id, unsigned depth)
     for (uint32_t i = 0; i < count && g->ok; ++i) {
         const ccr_node *k = N(g, kids[i]);
         const bool dirty = has_dirty(g, kids[i], 0);
-        if (n->kind == CCR_NODE_TRANSLATION_UNIT && (k->flags & CCR_FLAG_NEW) &&
+        /* pasted: its text is after the file's end, its place a point in it */
+        const bool pasted = !(k->flags & CCR_FLAG_NEW) && k->src_b >= n->src_e && n->src_e > 0;
+        if (n->kind == CCR_NODE_TRANSLATION_UNIT && ((k->flags & CCR_FLAG_NEW) || pasted) &&
             k->place_b == k->place_e && k->place_b >= cur) {
             /* a declaration from the palette: on lines of its own, here */
             put_src(g, cur, k->place_b);
@@ -1027,7 +1029,10 @@ static void emit_inner(gen *g, ccr_node_id id, unsigned depth)
                 puts_(g, "\n");
             if (!directive && g->len > 1 && !(g->buf[g->len - 1] == '\n' && g->buf[g->len - 2] == '\n'))
                 puts_(g, "\n");   /* a blank line before a function or a type */
-            print_new(g, kids[i], depth + 1);
+            if (pasted)
+                emit(g, kids[i], depth + 1);
+            else
+                print_new(g, kids[i], depth + 1);
             puts_(g, "\n");
             continue;
         }

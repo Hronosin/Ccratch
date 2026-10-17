@@ -51,6 +51,7 @@ typedef struct ccr_palette {
     float             scroll, scroll_to;   /* unscaled units from the top */
     int               hot;                 /* item under the mouse, or -1 */
     char              filter[96];          /* typed into the search: only blocks saying it */
+    float             zoom;                /* how big its blocks are drawn (0: CCR_PALETTE_ZOOM) */
     ccr_lang_kind     lang;                /* C's blocks, or CMake's */
     bool              ready;
 } ccr_palette;
@@ -71,6 +72,11 @@ bool ccr_palette_set_lang(ccr_palette *p, ccr_lang_kind lang);
  * included, so a library's block can be found before its #include is
  * there; "" shows everything again. Lays out again if it changed. */
 bool ccr_palette_set_filter(ccr_palette *p, const char *text);
+
+/* Blocks drawn bigger or smaller (Ctrl+wheel over the palette). */
+void ccr_palette_set_zoom(ccr_palette *p, float zoom);
+#define CCR_PALETTE_ZOOM_MIN 0.5f
+#define CCR_PALETTE_ZOOM_MAX 1.3f
 
 /* Wheel scrolling, category clicks, the glide. `area` is the whole palette
  * (strip and flyout), screen coordinates. */

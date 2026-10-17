@@ -792,7 +792,22 @@ const char *ccr_parse_resource_dir(const char **how)
     return NULL;
 }
 
+static bool parse_any(const char *path, const char *text, size_t text_len, const char *const *args,
+                      int arg_count, ccr_ast *out);
+
 bool ccr_parse_file(const char *path, const char *const *args, int arg_count, ccr_ast *out)
+{
+    return parse_any(path, NULL, 0, args, arg_count, out);
+}
+
+bool ccr_parse_text(const char *path, const char *text, size_t len, const char *const *args, int arg_count,
+                    ccr_ast *out)
+{
+    return parse_any(path, text, len, args, arg_count, out);
+}
+
+static bool parse_any(const char *path, const char *text, size_t text_len, const char *const *args,
+                      int arg_count, ccr_ast *out)
 {
     static const char *const c_defaults[]   = { "-std=c11" };
     static const char *const cpp_defaults[] = { "-x", "c++", "-std=c++20" };
@@ -833,8 +848,9 @@ bool ccr_parse_file(const char *path, const char *const *args, int arg_count, cc
                    | CXTranslationUnit_KeepGoing;
 
     CXTranslationUnit tu = NULL;
+    struct CXUnsavedFile unsaved = { path, text, (unsigned long)text_len };
     enum CXErrorCode err = clang_parseTranslationUnit2(
-        index, path, all, all_count, NULL, 0, flags, &tu);
+        index, path, all, all_count, text ? &unsaved : NULL, text ? 1u : 0u, flags, &tu);
     free(all);
 
     if (err != CXError_Success || !tu) {

@@ -1034,15 +1034,11 @@ static bool is_stack_item(const ccr_editor *ed, ccr_node_id id)
            N(ed, N(ed, id)->parent)->kind == CCR_NODE_BLOCK;
 }
 
-bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
+/* Deletes `item`, inside a change. */
+static bool delete_inner(ccr_editor *ed, ccr_node_id item)
 {
-    ccr_editor_settle(ed);
-    if (ed->drag != CCR_DRAG_IDLE)
-        return false;
     if (ccr_editor_is_new_decl(ed, item)) {
-        begin_change(ed);
         remove_new_decl(ed, item);
-        commit_change(ed);
         return true;
     }
     if (!is_stack_item(ed, item)) {
@@ -1051,14 +1047,12 @@ bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
             return false;
         uint32_t si = script_index_of_root(ed, script_root_of(ed, item));
         poof_node(ed, item);
-        begin_change(ed);
         if (vacate(ed, item) != CCR_NONE) {
             ccr_ast_touch(&ed->ast, item);
             ed->ast.nodes[item].flags |= CCR_FLAG_DEAD;
         }
         if (si != UINT32_MAX)
             relayout(ed, si);
-        commit_change(ed);
         return true;
     }
     const ccr_node_id block = N(ed, item)->parent;
@@ -1067,7 +1061,6 @@ bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
     if (si == UINT32_MAX)
         return false;
 
-    begin_change(ed);
     if (is_loose_root(ed, block) && N(ed, block)->first_child == item) {
         /* the top of a loose stack: the whole stack goes */
         poof_script(ed, si);
@@ -1082,8 +1075,33 @@ bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
         ed->ast.nodes[item].flags |= CCR_FLAG_DEAD;
         relayout(ed, si);
     }
-    commit_change(ed);
     return true;
+}
+
+
+bool ccr_editor_delete(ccr_editor *ed, ccr_node_id item)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE)
+        return false;
+    begin_change(ed);
+    const bool done = delete_inner(ed, item);
+    commit_change(ed);
+    return done;
+}
+
+bool ccr_editor_delete_many(ccr_editor *ed, const ccr_node_id *items, int count)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE || count <= 0)
+        return false;
+    begin_change(ed);   /* one undo step for all of them */
+    bool any = false;
+    for (int i = 0; i < count; ++i)
+        if (items[i] < ed->ast.node_count && !(N(ed, items[i])->flags & CCR_FLAG_DEAD))
+            any = delete_inner(ed, items[i]) || any;
+    commit_change(ed);
+    return any;
 }
 
 /* Deep copy of a subtree; the copy has no parent. */
@@ -1143,6 +1161,77 @@ bool ccr_editor_duplicate(ccr_editor *ed, ccr_node_id item, ccr_vec2 mouse)
     ed->carrying = true;
     find_snap(ed);
     return true;
+}
+
+bool ccr_editor_paste(ccr_editor *ed, const ccr_ast *src, const ccr_node_id *items, int count, bool reporter,
+                      ccr_vec2 mouse)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE || count <= 0 || ed->ast.node_count == 0)
+        return false;
+    begin_change(ed);
+    /* its text after the file's: the pasted blocks print their own */
+    const uint32_t base = ccr_ast_append_source(&ed->ast, src->source ? src->source : "", src->source_len);
+    ccr_node_id loose = base == UINT32_MAX ? CCR_NONE : ccr_ast_add(&ed->ast, CCR_NODE_BLOCK, CCR_NONE);
+    if (loose == CCR_NONE) {
+        commit_change(ed);
+        return false;
+    }
+    ccr_ast_touch(&ed->ast, loose);
+    ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE | (reporter ? CCR_FLAG_REPORTER : 0u);
+    for (int i = 0; i < count && (!reporter || i == 0); ++i) {
+        const ccr_node_id k = ccr_ast_import(&ed->ast, src, items[i], base, 0);
+        if (k == CCR_NONE)
+            continue;
+        /* text from elsewhere is often copied from the middle of a line:
+         * its lines' indents say nothing, the place it lands decides */
+        ed->ast.nodes[k].extra_indent = 0;
+        ccr_ast_append(&ed->ast, loose, k);
+    }
+    if (N(ed, loose)->first_child == CCR_NONE || !ccr_layout_cache_reserve(&ed->cache, ed->ast.node_count) ||
+        !push_script(ed, loose, mouse)) {
+        ed->ast.nodes[loose].flags |= CCR_FLAG_DEAD;
+        commit_change(ed);
+        return false;
+    }
+    ed->dragged = ed->script_count - 1;
+    ed->grab = (ccr_vec2){ 16.0f, 16.0f };
+    ed->scripts[ed->dragged].pos = (ccr_vec2){ mouse.x - ed->grab.x, mouse.y - ed->grab.y };
+    ed->drag = CCR_DRAG_MOVING;
+    ed->carrying = true;
+    find_snap(ed);
+    return true;
+}
+
+static void place_in_file(ccr_editor *ed, uint32_t si);
+
+bool ccr_editor_paste_decls(ccr_editor *ed, const ccr_ast *src, const ccr_node_id *items, int count, ccr_vec2 at)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE || count <= 0 || ed->ast.node_count == 0 ||
+        N(ed, 0)->kind != CCR_NODE_TRANSLATION_UNIT)
+        return false;
+    begin_change(ed);
+    const uint32_t base = ccr_ast_append_source(&ed->ast, src->source ? src->source : "", src->source_len);
+    bool any = false;
+    for (int i = 0; i < count && base != UINT32_MAX; ++i) {
+        const ccr_node_id loose = ccr_ast_add(&ed->ast, CCR_NODE_BLOCK, CCR_NONE);
+        const ccr_node_id d = loose == CCR_NONE ? CCR_NONE : ccr_ast_import(&ed->ast, src, items[i], base, 0);
+        if (d == CCR_NONE)
+            break;
+        ccr_ast_touch(&ed->ast, loose);
+        ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE | CCR_FLAG_TOPLEVEL;
+        ccr_ast_append(&ed->ast, loose, d);
+        /* printed anew where it goes: its own text is the part of the
+         * pasted text from its first byte to its last */
+        if (!ccr_layout_cache_reserve(&ed->cache, ed->ast.node_count) ||
+            !push_script(ed, loose, (ccr_vec2){ at.x, at.y + 40.0f * (float)i }))
+            break;
+        place_in_file(ed, ed->script_count - 1);
+        any = true;
+    }
+    commit_change(ed);
+    return any;
 }
 
 bool ccr_editor_toggle_comment(ccr_editor *ed, ccr_node_id item)
@@ -1539,7 +1628,7 @@ static void place_in_file(ccr_editor *ed, uint32_t si)
            : line_start(&ed->ast, f->ext_b < f->src_b && f->ext_e > f->ext_b ? f->ext_b : f->src_b);
         ccr_ast_insert_first(&ed->ast, tu, d);
     } else {
-        at = ed->ast.source_len;   /* an empty file */
+        at = N(ed, tu)->src_e;   /* an empty file (pasted text may follow its end) */
         ccr_ast_append(&ed->ast, tu, d);
     }
     ccr_ast_touch(&ed->ast, d);

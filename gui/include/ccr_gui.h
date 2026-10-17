@@ -48,7 +48,11 @@ typedef enum ccr_key {
     CCR_KEY_ENTER,
     CCR_KEY_EQUAL,     /* = and the keypad's + */
     CCR_KEY_MINUS,     /* - and the keypad's - */
-    CCR_KEY_ZERO
+    CCR_KEY_ZERO,
+    CCR_KEY_C,
+    CCR_KEY_V,
+    CCR_KEY_A,
+    CCR_KEY_M
 } ccr_key;
 
 /* Window and frame lifecycle */
@@ -83,6 +87,12 @@ bool     ccr_gui_shift_down(void);
 /* If a file was dropped onto the window this frame, copies its path into
  * `out` and returns true. Only the first file of a drop is reported. */
 bool     ccr_gui_file_dropped(char *out, unsigned int cap);
+/* The system clipboard, as text (NULL / "" if it holds none). */
+void        ccr_gui_set_clipboard(const char *text);
+const char *ccr_gui_clipboard(void);
+/* The mouse pointer's shape, for edges that can be dragged. */
+typedef enum ccr_cursor { CCR_CURSOR_DEFAULT, CCR_CURSOR_EW, CCR_CURSOR_NS } ccr_cursor;
+void     ccr_gui_set_cursor(ccr_cursor c);
 /* The window's close button was pressed but there is unsaved work: keep
  * the window open (ccr_gui_should_close is false again next frame). */
 void     ccr_gui_cancel_close(void);

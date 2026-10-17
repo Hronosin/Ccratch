@@ -702,3 +702,64 @@ void ccr_ast_finish_ranges(ccr_ast *ast)
         ast->nodes[id].place_e = ast->nodes[id].src_e;
     }
 }
+
+/* ----------------------------------------------- code from elsewhere */
+
+uint32_t ccr_ast_append_source(ccr_ast *ast, const char *text, uint32_t len)
+{
+    if (!text || len > UINT32_MAX / 2 - ast->source_len)
+        return UINT32_MAX;
+    char *grown = realloc(ast->source, (size_t)ast->source_len + len + 1);
+    if (!grown)
+        return UINT32_MAX;
+    ast->source = grown;
+    const uint32_t base = ast->source_len;
+    memcpy(ast->source + base, text, len);
+    ast->source_len += len;
+    ast->source[ast->source_len] = '\0';
+    return base;
+}
+
+static ccr_str reintern(ccr_ast *dst, const ccr_ast *src, ccr_str s)
+{
+    if (!s)
+        return 0;
+    /* copied first: interning may move dst's arena, never src's */
+    return ccr_ast_intern(dst, ccr_ast_str(src, s));
+}
+
+ccr_node_id ccr_ast_import(ccr_ast *dst, const ccr_ast *src, ccr_node_id id, uint32_t base, unsigned depth)
+{
+    if (depth > 4000 || id >= src->node_count)
+        return CCR_NONE;
+    const ccr_node *from = &src->nodes[id];
+    const ccr_node_id to = ccr_ast_add(dst, from->kind, CCR_NONE);
+    if (to == CCR_NONE)
+        return CCR_NONE;
+    ccr_node n = *from;
+    n.parent = n.first_child = n.last_child = n.next_sibling = CCR_NONE;
+    n.flags &= ~(CCR_FLAG_LOOSE | CCR_FLAG_DEAD | CCR_FLAG_BLANK_BEFORE | CCR_FLAG_TOPLEVEL);
+    n.name = reintern(dst, src, from->name);
+    n.type = reintern(dst, src, from->type);
+    n.op = reintern(dst, src, from->op);
+    n.raw = reintern(dst, src, from->raw);
+    n.aux = reintern(dst, src, from->aux);
+    n.indent = reintern(dst, src, from->indent);
+    n.close_indent = reintern(dst, src, from->close_indent);
+    n.extra_indent = reintern(dst, src, from->extra_indent);
+    if (!(from->flags & CCR_FLAG_NEW)) {   /* its text: where it was put in dst */
+        n.src_b += base; n.src_e += base;
+        n.ext_b += base; n.ext_e += base;
+        n.place_b += base; n.place_e += base;
+    }
+    n.line = 0;   /* not a line of this file */
+    dst->nodes[to] = n;
+    ccr_ast_touch(dst, to);
+    for (ccr_node_id c = from->first_child; c != CCR_NONE; c = src->nodes[c].next_sibling) {
+        const ccr_node_id k = ccr_ast_import(dst, src, c, base, depth + 1);
+        if (k == CCR_NONE)
+            return CCR_NONE;
+        ccr_ast_append(dst, to, k);
+    }
+    return to;
+}

@@ -269,4 +269,10 @@ void        ccr_ast_dump(const ccr_ast *ast, FILE *out);
 /* Diagnostics only, one "file:line:col: severity: message" per line. */
 void        ccr_ast_dump_diags(const ccr_ast *ast, FILE *out);
 
+/* Code from another tree (pasted): its text goes after the file's own
+ * (never saved by itself: only the nodes that use it print it), and
+ * ccr_ast_import copies a subtree of `src` whose text starts at `base`. */
+uint32_t    ccr_ast_append_source(ccr_ast *ast, const char *text, uint32_t len);
+ccr_node_id ccr_ast_import(ccr_ast *dst, const ccr_ast *src, ccr_node_id id, uint32_t base, unsigned depth);
+
 #endif /* CCR_AST_H */

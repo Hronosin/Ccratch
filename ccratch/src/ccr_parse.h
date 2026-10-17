@@ -20,6 +20,11 @@
  */
 bool ccr_parse_file(const char *path, const char *const *args, int arg_count, ccr_ast *out);
 
+/* The same for text that is not on disk (or not as it is on disk): it is
+ * read as if it were file `path`, so its #include "..." resolve there. */
+bool ccr_parse_text(const char *path, const char *text, size_t len, const char *const *args, int arg_count,
+                    ccr_ast *out);
+
 /*
  * Where clang's builtin headers (stddef.h, stdarg.h...) are, or NULL to let
  * libclang guess. Checked in order:

@@ -14,6 +14,7 @@
 #include "ccr_job.h"
 #include "ccr_lib.h"
 #include "ccr_palette.h"
+#include "ccr_paste.h"
 #include "ccr_pie.h"
 #include "ccr_theme.h"
 
@@ -56,7 +57,11 @@ static bool load_font(void)
 #define TOPBAR_H     40.0f
 #define TABS_H       32.0f   /* the open files, over the canvas */
 #define PSEARCH_H    40.0f   /* the palette's search field */
-#define PALETTE_W   CCR_PALETTE_W
+/* Panel sizes: dragged at their edges, remembered (see layout_load) */
+static struct {
+    float palette_w, files_w, build_h, palette_zoom;
+} g_lay = { CCR_PALETTE_W, 290.0f, 236.0f, CCR_PALETTE_ZOOM };
+#define PALETTE_W   (g_lay.palette_w)
 #define COL_PALETTE  ccr_th(CCR_C_PALETTE)
 #define STATUSBAR_H  26.0f
 #define PATH_MAX_LEN 4096
@@ -820,7 +825,7 @@ static void files_toggle(const ccr_document *doc)
     }
 }
 
-#define FILES_W 290.0f
+#define FILES_W (g_lay.files_w)
 
 static ccr_rect files_area(int w, int h)
 {
@@ -868,7 +873,9 @@ static bool document_save(ccr_document *doc, const ccr_options *opt)
     snprintf(backup, sizeof backup, "%s~", doc->path);
 
     if (!doc->backed_up) {
-        if (!write_file(backup, doc->ed.ast.source, doc->ed.ast.source_len)) {
+        /* the file as it was: up to its end, not the pasted text after it */
+        const uint32_t file_len = doc->ed.ast.node_count ? doc->ed.ast.nodes[0].src_e : doc->ed.ast.source_len;
+        if (!write_file(backup, doc->ed.ast.source, file_len)) {
             ccr_trf(doc->status, sizeof doc->status, CCR_T_NO_BACKUP, name);
             doc->has_errors = true;
             free(text);
@@ -955,9 +962,10 @@ static const struct { ccr_text text; eula_style style; } g_eula[] = {
     { CCR_T_EULA_C07, EULA_CLAUSE }, { CCR_T_EULA_C08, EULA_CLAUSE }, { CCR_T_EULA_C09, EULA_CLAUSE },
     { CCR_T_EULA_C10, EULA_CLAUSE }, { CCR_T_EULA_C11, EULA_CLAUSE }, { CCR_T_EULA_C12, EULA_CLAUSE },
     { CCR_T_EULA_C13, EULA_CLAUSE }, { CCR_T_EULA_C14, EULA_CLAUSE }, { CCR_T_EULA_C15, EULA_CLAUSE },
+    { CCR_T_EULA_C16, EULA_CLAUSE }, { CCR_T_EULA_C17, EULA_CLAUSE },
     { CCR_T_COUNT, EULA_GAP },
     { CCR_T_EULA_MEME_ZONE, EULA_WARN },
-    { CCR_T_EULA_M01, EULA_CLAUSE }, { CCR_T_EULA_M02, EULA_CLAUSE },
+    { CCR_T_EULA_M01, EULA_CLAUSE }, { CCR_T_EULA_M02, EULA_CLAUSE }, { CCR_T_EULA_M03, EULA_CLAUSE },
     { CCR_T_COUNT, EULA_GAP },
     { CCR_T_EULA_FINAL, EULA_SMALL },
 };
@@ -1020,8 +1028,9 @@ static void print_eula(void)
 
 typedef struct eula_view {
     bool  open;
-    bool  first_run;   /* must be answered: accept, or admit to Rust */
+    bool  first_run;   /* must be answered: accept, admit to Rust, or refuse */
     float scroll;
+    double hurt_at;    /* "I don't want to" was pressed then: it sulks a moment */
 } eula_view;
 
 /*
@@ -1134,11 +1143,34 @@ static void eula_frame(eula_view *ev, int width, int height, ccr_document *doc)
     }
 
     const float by = panel.y + panel.h - buttons_h + 14.0f;
+    if (ev->hurt_at > 0.0) {
+        /* refused: it takes a moment to get over it */
+        const char *hurt = ccr_tr(CCR_T_EULA_HURT);
+        const float fs = 20.0f;
+        ccr_gui_text(hurt, panel.x + (panel.w - ccr_gui_text_width(hurt, fs)) * 0.5f, by + 6.0f, fs,
+                     ccr_th(CCR_C_PANEL_HINT));
+        if (ccr_gui_time() - ev->hurt_at > 2.2 || ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+            ev->open = ev->first_run = false;
+            ev->hurt_at = 0.0;
+        }
+        return;
+    }
     if (ev->first_run) {
-        const ccr_rect rust = { panel.x + panel.w - pad - 180.0f, by, 180.0f, 34.0f };
-        const ccr_rect ok = { rust.x - 12.0f - 180.0f, by, 180.0f, 34.0f };
+        const float bw = 180.0f;
+        const ccr_rect rust = { panel.x + panel.w - pad - bw, by, bw, 34.0f };
+        const ccr_rect ok = { rust.x - 12.0f - bw, by, bw, 34.0f };
+        const ccr_rect no = { panel.x + pad, by, 160.0f, 34.0f };
         bool accepted = ccr_gui_button(ok, ccr_tr(CCR_T_EULA_ACCEPT), button_style(true));
         bool rusted = !accepted && ccr_gui_button(rust, ccr_tr(CCR_T_EULA_RUST), button_style(false));
+        const ccr_button_style plain = *button_style(false);
+        if (!accepted && !rusted && ccr_gui_button(no, ccr_tr(CCR_T_EULA_DECLINE), &plain)) {
+            if (!ccr_config_set("eula", "declined"))
+                fprintf(stderr, "ccratch: could not remember the answer in ~/.config/ccratch\n");
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_EULA_HURT);
+            doc->has_errors = false;
+            ev->hurt_at = ccr_gui_time();
+            return;
+        }
         if (accepted || rusted) {
             if (!ccr_config_set("eula", accepted ? "accepted" : "rust"))
                 fprintf(stderr, "ccratch: could not remember the answer in ~/.config/ccratch\n");
@@ -1546,7 +1578,7 @@ static struct {
     ccr_job_result last;   /* to notice the end */
 } g_bp = { .follow = true, .hot = -1 };
 
-#define BUILD_H   236.0f
+#define BUILD_H   (g_lay.build_h)
 #define LOG_ROW   19.0f
 #define LOG_FONT  14.0f
 
@@ -2225,19 +2257,23 @@ static bool help_frame(int w, int h)
         { NULL, CCR_T_HELP_K_PAN, CCR_T_HELP_PAN },
         { NULL, CCR_T_HELP_K_WHEEL, CCR_T_HELP_ZOOM },
         { NULL, CCR_T_HELP_K_DOUBLE, CCR_T_HELP_FOLD },
+        { NULL, CCR_T_HELP_K_BAND, CCR_T_HELP_SELECT },
+        { NULL, CCR_T_HELP_K_PALZOOM, CCR_T_HELP_PALETTE },
         { "Home", 0, CCR_T_HELP_HOME },
         { "Ctrl+S", 0, CCR_T_HELP_SAVE },
         { "Ctrl+Z / Ctrl+Y", 0, CCR_T_HELP_UNDO },
         { "Del, Ctrl+D, Ctrl+/", 0, CCR_T_HELP_EDIT },
+        { "Ctrl+C, Ctrl+V", 0, CCR_T_HELP_COPY },
         { "Ctrl+F, F3", 0, CCR_T_HELP_FIND },
         { "Ctrl+P, Ctrl+Tab", 0, CCR_T_HELP_FILES },
         { "Ctrl+B, Ctrl+R", 0, CCR_T_HELP_BUILD },
+        { "Ctrl+M", 0, CCR_T_HELP_MINIMAP },
         { "F5", 0, CCR_T_HELP_RELOAD },
         { "F1", 0, CCR_T_HELP_HELP },
     };
     const int n = (int)(sizeof rows / sizeof rows[0]);
     ccr_gui_rect((ccr_rect){ 0, 0, (float)w, (float)h }, ccr_th(CCR_C_BACKDROP));
-    const float row = 30.0f, pw = 700.0f > (float)w - 40.0f ? (float)w - 40.0f : 700.0f;
+    const float row = 27.0f, pw = 760.0f > (float)w - 40.0f ? (float)w - 40.0f : 760.0f;
     const float ph = 90.0f + row * (float)n + 56.0f;
     const ccr_rect panel = { ((float)w - pw) * 0.5f, ((float)h - ph) * 0.5f, pw, ph };
     ccr_gui_rect_rounded((ccr_rect){ panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4 }, 0.04f, COL_ACCENT);
@@ -2245,7 +2281,7 @@ static bool help_frame(int w, int h)
     ccr_gui_text(ccr_tr(CCR_T_HELP_TITLE), panel.x + 28.0f, panel.y + 22.0f, 24.0f, ccr_th(CCR_C_PANEL_TEXT));
     ccr_gui_text(ccr_tr(CCR_T_HELP_CLOSE), panel.x + panel.w - 28.0f - ccr_gui_text_width(ccr_tr(CCR_T_HELP_CLOSE), 14.0f),
                  panel.y + 30.0f, 14.0f, ccr_th(CCR_C_PANEL_HINT));
-    const float kx = panel.x + 28.0f, dx = panel.x + 250.0f;
+    const float kx = panel.x + 28.0f, dx = panel.x + 270.0f;
     float y = panel.y + 74.0f;
     for (int i = 0; i < n; ++i, y += row) {
         const char *keys = rows[i].keys ? rows[i].keys : ccr_tr(rows[i].k);
@@ -2410,6 +2446,415 @@ static void start_screen(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, c
     }
     if (go[0])
         switch_to(doc, cv, viewport, go, opt);
+}
+
+/* ------------------------------------------------- panels you can size */
+
+static void layout_load(void)
+{
+    char v[64];
+    if (ccr_config_get("layout.palette", v, sizeof v)) g_lay.palette_w = (float)atof(v);
+    if (ccr_config_get("layout.files", v, sizeof v))   g_lay.files_w = (float)atof(v);
+    if (ccr_config_get("layout.build", v, sizeof v))   g_lay.build_h = (float)atof(v);
+    if (ccr_config_get("layout.palette_zoom", v, sizeof v)) g_lay.palette_zoom = (float)atof(v);
+}
+
+static void layout_save(void)
+{
+    char v[64];
+    snprintf(v, sizeof v, "%.0f", g_lay.palette_w);
+    bool ok = ccr_config_set("layout.palette", v);
+    snprintf(v, sizeof v, "%.0f", g_lay.files_w);
+    ok = ok && ccr_config_set("layout.files", v);
+    snprintf(v, sizeof v, "%.0f", g_lay.build_h);
+    ok = ok && ccr_config_set("layout.build", v);
+    snprintf(v, sizeof v, "%.2f", g_lay.palette_zoom);
+    ok = ok && ccr_config_set("layout.palette_zoom", v);
+    if (!ok)
+        fprintf(stderr, "ccratch: could not remember the panel sizes in ~/.config/ccratch\n");
+}
+
+static float clampf(float v, float lo, float hi)
+{
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
+/* Sizes that fit the window (a smaller window, or a config from a bigger one). */
+static void layout_fit(int w, int h)
+{
+    g_lay.palette_w = clampf(g_lay.palette_w, CCR_PALETTE_STRIP_W + 150.0f, fmaxf(CCR_PALETTE_STRIP_W + 150.0f, (float)w * 0.5f));
+    g_lay.files_w = clampf(g_lay.files_w, 200.0f, fmaxf(200.0f, (float)w * 0.45f));
+    g_lay.build_h = clampf(g_lay.build_h, 110.0f, fmaxf(110.0f, ((float)h - TOPBAR_H - STATUSBAR_H) * 0.75f));
+    g_lay.palette_zoom = clampf(g_lay.palette_zoom, CCR_PALETTE_ZOOM_MIN, CCR_PALETTE_ZOOM_MAX);
+}
+
+enum { SPLIT_NONE, SPLIT_PALETTE, SPLIT_FILES, SPLIT_BUILD };
+static struct {
+    int   hover, active;
+    float from, size_from;   /* the mouse and the size when the drag began */
+} g_split;
+
+static ccr_rect files_area(int w, int h);
+static ccr_rect build_area(int w, int h);
+
+static int split_at(ccr_vec2 m, int w, int h)
+{
+    const float top = TOPBAR_H, bottom = (float)h - STATUSBAR_H, grip = 4.0f;
+    if (m.y > top && m.y < bottom && fabsf(m.x - PALETTE_W) <= grip)
+        return SPLIT_PALETTE;
+    if (g_files_open && g_files_t >= 1.0f) {
+        const ccr_rect f = files_area(w, h);
+        if (m.y > f.y && m.y < f.y + f.h && fabsf(m.x - f.x) <= grip)
+            return SPLIT_FILES;
+    }
+    if (g_bp.open && g_bp.t >= 1.0f) {
+        const ccr_rect b = build_area(w, h);
+        if (m.x > b.x && m.x < b.x + b.w && fabsf(m.y - b.y) <= grip)
+            return SPLIT_BUILD;
+    }
+    return SPLIT_NONE;
+}
+
+/* Edges grabbed and dragged; true while one has the mouse. */
+static bool splitters_update(int w, int h, bool input)
+{
+    const ccr_vec2 m = ccr_gui_mouse();
+    g_split.hover = input ? split_at(m, w, h) : SPLIT_NONE;
+    if (g_split.active == SPLIT_NONE && g_split.hover != SPLIT_NONE && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+        g_split.active = g_split.hover;
+        g_split.from = g_split.active == SPLIT_BUILD ? m.y : m.x;
+        g_split.size_from = g_split.active == SPLIT_PALETTE ? g_lay.palette_w
+                          : g_split.active == SPLIT_FILES ? g_lay.files_w : g_lay.build_h;
+    }
+    if (g_split.active != SPLIT_NONE) {
+        if (ccr_gui_mouse_down(CCR_MOUSE_LEFT)) {
+            const float d = (g_split.active == SPLIT_BUILD ? m.y : m.x) - g_split.from;
+            if (g_split.active == SPLIT_PALETTE)
+                g_lay.palette_w = g_split.size_from + d;
+            else if (g_split.active == SPLIT_FILES)
+                g_lay.files_w = g_split.size_from - d;   /* its edge is on its left */
+            else
+                g_lay.build_h = g_split.size_from - d;   /* and on its top */
+            layout_fit(w, h);
+        } else {
+            g_split.active = SPLIT_NONE;
+            layout_save();
+        }
+    }
+    const int shown = g_split.active != SPLIT_NONE ? g_split.active : g_split.hover;
+    ccr_gui_set_cursor(shown == SPLIT_BUILD ? CCR_CURSOR_NS : shown != SPLIT_NONE ? CCR_CURSOR_EW : CCR_CURSOR_DEFAULT);
+    return shown != SPLIT_NONE;
+}
+
+/* The edge under the mouse lights up. */
+static void splitters_draw(int w, int h)
+{
+    const int shown = g_split.active != SPLIT_NONE ? g_split.active : g_split.hover;
+    const ccr_color c = COL_ACCENT;
+    if (shown == SPLIT_PALETTE)
+        ccr_gui_rect((ccr_rect){ PALETTE_W - 1.5f, TOPBAR_H, 3.0f, (float)h - TOPBAR_H - STATUSBAR_H }, c);
+    else if (shown == SPLIT_FILES) {
+        const ccr_rect f = files_area(w, h);
+        ccr_gui_rect((ccr_rect){ f.x - 1.5f, f.y, 3.0f, f.h }, c);
+    } else if (shown == SPLIT_BUILD) {
+        const ccr_rect b = build_area(w, h);
+        ccr_gui_rect((ccr_rect){ b.x, b.y - 1.5f, b.w, 3.0f }, c);
+    }
+}
+
+/* ------------------------------------------- copy, paste, select, autosave */
+
+#define SEL_MAX 512
+
+static struct {
+    ccr_node_id nodes[SEL_MAX];
+    int         n;
+    bool        band;          /* a rectangle being dragged out */
+    ccr_vec2    from;          /* world */
+    uint32_t    hist;          /* an edit since: the selection goes */
+    const void *ed;
+} g_sel;
+
+static void sel_clear(void) { g_sel.n = 0; g_sel.band = false; }
+
+static bool selected(ccr_node_id id)
+{
+    for (int i = 0; i < g_sel.n; ++i)
+        if (g_sel.nodes[i] == id)
+            return true;
+    return false;
+}
+
+static bool rects_meet(ccr_rect a, ccr_rect b)
+{
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+/* What the band took in: statements of every stack, and the file's own
+ * declarations; not the ones inside a block already taken. */
+static void sel_from_band(const ccr_document *doc, ccr_rect band)
+{
+    const ccr_editor *ed = &doc->ed;
+    const ccr_ast *a = &ed->ast;
+    g_sel.n = 0;
+    for (ccr_node_id i = 0; i < a->node_count && g_sel.n < SEL_MAX; ++i) {
+        const ccr_node *n = &a->nodes[i];
+        if ((n->flags & CCR_FLAG_DEAD) || n->parent == CCR_NONE)
+            continue;
+        const ccr_node_kind pk = a->nodes[n->parent].kind;
+        if (pk != CCR_NODE_BLOCK && pk != CCR_NODE_TRANSLATION_UNIT)
+            continue;
+        if (n->kind == CCR_NODE_BLOCK && pk == CCR_NODE_TRANSLATION_UNIT)
+            continue;
+        ccr_rect r;
+        if (ccr_editor_node_rect(ed, i, &r) && rects_meet(r, band))
+            g_sel.nodes[g_sel.n++] = i;
+    }
+    /* a block and what is inside it: the block is enough */
+    int k = 0;
+    for (int i = 0; i < g_sel.n; ++i) {
+        bool inner = false;
+        for (ccr_node_id p = a->nodes[g_sel.nodes[i]].parent; p != CCR_NONE && !inner; p = a->nodes[p].parent)
+            inner = selected(p);
+        if (!inner)
+            g_sel.nodes[k++] = g_sel.nodes[i];
+    }
+    g_sel.n = k;
+    g_sel.hist = ed->history_len;
+    g_sel.ed = ed->scripts;
+}
+
+static void sel_draw(const ccr_document *doc, const ccr_canvas *cv)
+{
+    if (!doc->loaded)
+        return;
+    const ccr_color c = COL_ACCENT;
+    for (int i = 0; i < g_sel.n; ++i) {
+        ccr_rect r;
+        if (!ccr_editor_node_rect(&doc->ed, g_sel.nodes[i], &r))
+            continue;
+        const ccr_vec2 a = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x - 4.0f, r.y - 4.0f });
+        const ccr_rect b = { a.x, a.y, (r.w + 8.0f) * cv->zoom, (r.h + 8.0f) * cv->zoom };
+        ccr_gui_rect_rounded(b, 0.2f, (c & 0xFFFFFF00u) | 0x30u);
+        const ccr_vec2 p[5] = { { b.x, b.y }, { b.x + b.w, b.y }, { b.x + b.w, b.y + b.h }, { b.x, b.y + b.h }, { b.x, b.y } };
+        for (int k = 0; k < 4; ++k)
+            ccr_gui_line(p[k], p[k + 1], 2.0f, c);
+    }
+    if (g_sel.band) {
+        const ccr_vec2 m = ccr_canvas_to_world(cv, ccr_gui_mouse());
+        const ccr_vec2 a = ccr_canvas_to_screen(cv, (ccr_vec2){ fminf(g_sel.from.x, m.x), fminf(g_sel.from.y, m.y) });
+        const ccr_vec2 b = ccr_canvas_to_screen(cv, (ccr_vec2){ fmaxf(g_sel.from.x, m.x), fmaxf(g_sel.from.y, m.y) });
+        const ccr_rect r = { a.x, a.y, b.x - a.x, b.y - a.y };
+        ccr_gui_rect(r, (c & 0xFFFFFF00u) | 0x28u);
+        const ccr_vec2 p[5] = { { r.x, r.y }, { r.x + r.w, r.y }, { r.x + r.w, r.y + r.h }, { r.x, r.y + r.h }, { r.x, r.y } };
+        for (int k = 0; k < 4; ++k)
+            ccr_gui_line(p[k], p[k + 1], 1.5f, c);
+    }
+}
+
+/* What Ctrl+C copied, kept here too: a system clipboard that cannot be
+ * read (no clipboard manager, an X11 hiccup) does not lose it. */
+static char *g_copied;
+
+/* Ctrl+C: the selection, or the block under the mouse, as code. */
+static void copy_blocks(ccr_document *doc, ccr_node_id under)
+{
+    ccr_node_id one = under;
+    const ccr_node_id *nodes = g_sel.n ? g_sel.nodes : &one;
+    const int n = g_sel.n ? g_sel.n : (under != CCR_NONE ? 1 : 0);
+    char *text = n ? ccr_copy_text(&doc->ed.ast, nodes, n) : NULL;
+    if (!text) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_COPY_NONE);
+        doc->has_errors = true;
+        return;
+    }
+    ccr_gui_set_clipboard(text);
+    free(g_copied);
+    g_copied = text;
+    ccr_trnf(doc->status, sizeof doc->status, CCR_T_COPIED, (unsigned long)n, (unsigned)n);
+    doc->has_errors = false;
+}
+
+/* Ctrl+V: code from the clipboard (from Ccratch or anywhere), as blocks
+ * stuck to the mouse; functions and types go straight into the file. */
+static void paste_blocks(ccr_document *doc, ccr_vec2 world, const ccr_options *opt)
+{
+    static ccr_snippet snip;   /* big: off the stack */
+    const char *clip = ccr_gui_clipboard();
+    if (!clip || !*clip)
+        clip = g_copied;
+    if (!clip || !*clip) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_PASTE_EMPTY);
+        doc->has_errors = true;
+        return;
+    }
+    const size_t clip_len = strlen(clip);
+    char *code = malloc(clip_len + 1);   /* the clipboard's buffer is not ours */
+    if (code)
+        memcpy(code, clip, clip_len + 1);
+    char *context = NULL, err[256];
+    size_t clen = 0;
+    if (!code || !ccr_codegen(&doc->ed.ast, &context, &clen, err, sizeof err)) {
+        free(code);
+        return;
+    }
+    const char *args[CLANG_ARGS_MAX];
+    const int nargs = clang_args_for(doc->path, opt, args);
+    const bool cmake = doc->ed.ast.lang == CCR_LANG_CMAKE;
+    const bool ok = ccr_snippet_parse(code, context, clen, doc->path, cmake, args, nargs, &snip);
+    free(code);
+    free(context);
+    if (!ok) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_PASTE_EMPTY);
+        doc->has_errors = true;
+        return;
+    }
+    bool done;
+    char said[sizeof doc->status], extra[200] = "";
+    if (snip.toplevel) {
+        done = ccr_editor_paste_decls(&doc->ed, &snip.ast, snip.items, snip.count, world);
+        ccr_trnf(said, sizeof said, CCR_T_PASTED_DECLS, (unsigned long)snip.count, (unsigned)snip.count);
+    } else {
+        done = ccr_editor_paste(&doc->ed, &snip.ast, snip.items, snip.count, snip.reporter, world);
+        ccr_trnf(said, sizeof said, CCR_T_PASTED, (unsigned long)snip.count, (unsigned)snip.count);
+    }
+    if (snip.as_text)
+        ccr_trnf(extra, sizeof extra, CCR_T_PASTED_TEXT, (unsigned long)snip.as_text, (unsigned)snip.as_text);
+    ccr_snippet_free(&snip);
+    if (done) {
+        snprintf(doc->status, sizeof doc->status, "%.300s%s%.200s", said, extra[0] ? " " : "", extra);
+        doc->has_errors = false;
+        sel_clear();
+    }
+}
+
+/* Autosave: on, a moment after the last change, the file saves itself. */
+static struct {
+    bool     on;
+    uint32_t hist;
+    double   changed_at;
+    const void *ed;
+} g_auto;
+
+static void autosave_tick(ccr_document *doc, const ccr_options *opt, bool idle)
+{
+    if (!doc->loaded)
+        return;
+    if (g_auto.ed != (const void *)doc->ed.scripts || g_auto.hist != doc->ed.history_len) {
+        g_auto.ed = doc->ed.scripts;
+        g_auto.hist = doc->ed.history_len;
+        g_auto.changed_at = ccr_gui_time();
+    }
+    if (g_auto.on && idle && ccr_editor_modified(&doc->ed) && ccr_gui_time() - g_auto.changed_at > 1.5 &&
+        doc->ed.drag == CCR_DRAG_IDLE)
+        document_save(doc, opt);
+}
+
+static float autosave_width(void)
+{
+    return ccr_gui_text_width(ccr_tr(g_auto.on ? CCR_T_AUTOSAVE_ON : CCR_T_AUTOSAVE_OFF), 13.0f) + 30.0f;
+}
+
+/* A switch left of the zoom: autosave on and off, remembered. */
+static void autosave_button(float right, int h, bool input)
+{
+    const char *l = ccr_tr(g_auto.on ? CCR_T_AUTOSAVE_ON : CCR_T_AUTOSAVE_OFF);
+    const float bw = autosave_width() - 10.0f;
+    const ccr_rect r = { right - 10.0f - bw, (float)h - STATUSBAR_H + 3.0f, bw, STATUSBAR_H - 6.0f };
+    const ccr_button_style st = g_auto.on ? *button_style(true) : *button_style(false);
+    if (ccr_gui_button(r, "", &st) && input) {
+        g_auto.on = !g_auto.on;
+        if (!ccr_config_set("autosave", g_auto.on ? "on" : "off"))
+            fprintf(stderr, "ccratch: could not remember that in ~/.config/ccratch\n");
+    }
+    ccr_gui_text(l, r.x + (r.w - ccr_gui_text_width(l, 13.0f)) * 0.5f, r.y + (r.h - 13.0f) * 0.5f, 13.0f,
+                 g_auto.on ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT));
+    if (input)
+        tip(r, ccr_tr(CCR_T_TIP_AUTOSAVE));
+}
+
+/* --------------------------------------------------------------- minimap */
+
+static bool g_minimap = true;
+#define MINI_W 190.0f
+#define MINI_H 130.0f
+
+static ccr_rect minimap_area(ccr_rect view)
+{
+    return (ccr_rect){ view.x + view.w - MINI_W - 12.0f, view.y + view.h - MINI_H - 12.0f, MINI_W, MINI_H };
+}
+
+/* Is there more than fits on screen? Only then the map is worth showing. */
+static bool minimap_wanted(const ccr_document *doc, const ccr_canvas *cv, ccr_rect view)
+{
+    if (!g_minimap || !doc->loaded || doc->ed.script_count == 0 || view.w < 500.0f || view.h < 300.0f)
+        return false;
+    const ccr_rect b = ccr_editor_bounds(&doc->ed);
+    return b.w * cv->zoom > view.w || b.h * cv->zoom > view.h;
+}
+
+/* The whole file small; the screen's part of it outlined; a click or a
+ * drag there moves the view. */
+static void minimap_frame(const ccr_document *doc, ccr_canvas *cv, ccr_rect view, bool input)
+{
+    if (!minimap_wanted(doc, cv, view))
+        return;
+    const ccr_rect area = minimap_area(view);
+    ccr_rect b = ccr_editor_bounds(&doc->ed);
+    /* what is on screen counts too: the frame must fit */
+    const ccr_vec2 v0 = ccr_canvas_to_world(cv, (ccr_vec2){ view.x, view.y });
+    const ccr_vec2 v1 = ccr_canvas_to_world(cv, (ccr_vec2){ view.x + view.w, view.y + view.h });
+    const float x0 = fminf(b.x, v0.x), y0 = fminf(b.y, v0.y);
+    const float x1 = fmaxf(b.x + b.w, v1.x), y1 = fmaxf(b.y + b.h, v1.y);
+    b = (ccr_rect){ x0, y0, x1 - x0, y1 - y0 };
+    const float pad = 8.0f;
+    const float k = fminf((area.w - 2 * pad) / fmaxf(b.w, 1.0f), (area.h - 2 * pad) / fmaxf(b.h, 1.0f));
+    const float ox = area.x + pad + ((area.w - 2 * pad) - b.w * k) * 0.5f;
+    const float oy = area.y + pad + ((area.h - 2 * pad) - b.h * k) * 0.5f;
+
+    ccr_gui_rect_rounded((ccr_rect){ area.x - 1, area.y - 1, area.w + 2, area.h + 2 }, 0.08f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(area, 0.08f, (ccr_th(CCR_C_PANEL) & 0xFFFFFF00u) | 0xE8u);
+    ccr_gui_clip_begin(area);
+    for (uint32_t i = 0; i < doc->ed.script_count; ++i) {
+        const ccr_script *sc = &doc->ed.scripts[i];
+        if (sc->blocks.prim_count == 0)
+            continue;
+        /* each block, as its colour: the shape of the code shows */
+        for (uint32_t p = 0; p < sc->blocks.prim_count; ++p) {
+            const ccr_prim *pr = &sc->blocks.prims[p];
+            if (pr->kind != CCR_PRIM_BLOCK && pr->kind != CCR_PRIM_HEX)
+                continue;
+            if (pr->rect.w * k < 1.0f && p > 0)
+                continue;
+            const ccr_rect r = { ox + (sc->pos.x + pr->rect.x - b.x) * k, oy + (sc->pos.y + pr->rect.y - b.y) * k,
+                                 fmaxf(pr->rect.w * k, 1.0f), fmaxf(pr->rect.h * k, 1.0f) };
+            ccr_gui_rect(r, pr->fill);
+        }
+    }
+    const ccr_rect seen = { ox + (v0.x - b.x) * k, oy + (v0.y - b.y) * k, (v1.x - v0.x) * k, (v1.y - v0.y) * k };
+    ccr_gui_rect(seen, (ccr_th(CCR_C_PANEL_TEXT) & 0xFFFFFF00u) | 0x22u);
+    const ccr_vec2 p[5] = { { seen.x, seen.y }, { seen.x + seen.w, seen.y }, { seen.x + seen.w, seen.y + seen.h },
+                            { seen.x, seen.y + seen.h }, { seen.x, seen.y } };
+    for (int q = 0; q < 4; ++q)
+        ccr_gui_line(p[q], p[q + 1], 1.5f, ccr_th(CCR_C_PANEL_TEXT));
+    ccr_gui_clip_end();
+
+    static bool dragging;
+    const ccr_vec2 m = ccr_gui_mouse();
+    if (input && point_in(m, area)) {
+        tip(area, ccr_tr(CCR_T_TIP_MINIMAP));
+        if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+            dragging = true;
+    }
+    if (dragging && ccr_gui_mouse_down(CCR_MOUSE_LEFT)) {
+        /* the point under the mouse comes to the middle of the screen */
+        const ccr_vec2 w = { b.x + (m.x - ox) / k, b.y + (m.y - oy) / k };
+        cv->offset.x = view.x + view.w * 0.5f - w.x * cv->zoom;
+        cv->offset.y = view.y + view.h * 0.5f - w.y * cv->zoom;
+        g_glide.active = false;
+    } else {
+        dragging = false;
+    }
 }
 
 /* ------------------------------------------------------------- tabs */
@@ -3009,6 +3454,13 @@ int ccr_run(int argc, char **argv)
     ccr_lang_pick(opt.lang, stderr);
     ccr_theme_pick(opt.theme, stderr);
     ccr_lib_load(stderr);   /* block packs: libraries as blocks */
+    if (opt.smoke_frames == 0) {   /* tests and screenshots: the sizes they expect */
+        layout_load();
+        char v[16];
+        g_auto.on = ccr_config_get("autosave", v, sizeof v) && strcmp(v, "on") == 0;
+        g_minimap = !(ccr_config_get("minimap", v, sizeof v) && strcmp(v, "off") == 0);
+    }
+    layout_fit(ccr_gui_width(), ccr_gui_height());
     char anim[16];
     g_animate = !opt.no_animations &&
                 !(ccr_config_get("animations", anim, sizeof anim) &&
@@ -3019,6 +3471,7 @@ int ccr_run(int argc, char **argv)
         opt.smoke_frames == 0 && !ccr_config_get("eula", answered, sizeof answered);
     if (!load_font())
         fprintf(stderr, "ccratch: font did not load, falling back to raylib's (ASCII only)\n");
+    g_palette.zoom = g_lay.palette_zoom;
     if (!ccr_palette_init(&g_palette))
         fprintf(stderr, "ccratch: out of memory laying out the palette\n");
     if (!ccr_gui_set_icon_png(ccr_icon_png, ccr_icon_png_size))
@@ -3121,10 +3574,22 @@ int ccr_run(int argc, char **argv)
 
         const ccr_vec2 m = ccr_gui_mouse();
         const ccr_vec2 world = ccr_canvas_to_world(&canvas, m);
-        const bool inside = point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h))) &&
+        /* a panel's edge being grabbed or dragged has the mouse */
+        layout_fit(w, h);
+        const bool on_split = splitters_update(w, h, !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
+                                                     (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE));
+        {   /* a wider palette pushes the blocks along instead of covering them */
+            static float last_pw;
+            if (last_pw > 0.0f && last_pw != PALETTE_W)
+                canvas.offset.x += PALETTE_W - last_pw;
+            last_pw = PALETTE_W;
+        }
+        const bool inside = !on_split && point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h))) &&
                             !(g_bp.t > 0.0f && point_in(m, build_area(w, h))) &&
-                            !(g_find.open && doc.loaded && point_in(m, find_area(visible_view(viewport, w, h))));
-        const bool over_palette = m.x < PALETTE_W && m.y > TOPBAR_H;
+                            !(g_find.open && doc.loaded && point_in(m, find_area(visible_view(viewport, w, h)))) &&
+                            !(minimap_wanted(&doc, &canvas, visible_view(viewport, w, h)) &&
+                              point_in(m, minimap_area(visible_view(viewport, w, h))));
+        const bool over_palette = !on_split && m.x < PALETTE_W && m.y > TOPBAR_H;
         palette_follow(&doc);
         const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
                              g_fpanel.naming == CCR_NAMING_NONE;   /* typing a new file's name */
@@ -3144,7 +3609,7 @@ int ccr_run(int argc, char **argv)
             if (g_files_t < 0.0f) g_files_t = 0.0f;
         }
         const ccr_rect files_r = files_area(w, h);
-        const bool over_files = g_files_t > 0.0f && point_in(m, files_r);
+        const bool over_files = !on_split && g_files_t > 0.0f && point_in(m, files_r);
         if (g_files_open && !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
             (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             ccr_open_file of[MAX_OPEN + 1];
@@ -3158,8 +3623,17 @@ int ccr_run(int argc, char **argv)
             else if (ev == CCR_FILES_CLOSE)
                 close_file(&doc, &canvas, path);
         }
+        /* Ctrl+wheel over the palette: its blocks bigger or smaller */
+        float pal_wheel = ccr_gui_wheel();
+        if (over_palette && ccr_gui_ctrl_down() && pal_wheel != 0.0f && !modal) {
+            g_lay.palette_zoom = clampf(g_lay.palette_zoom * powf(1.08f, pal_wheel), CCR_PALETTE_ZOOM_MIN,
+                                        CCR_PALETTE_ZOOM_MAX);
+            ccr_palette_set_zoom(&g_palette, g_lay.palette_zoom);
+            layout_save();
+            pal_wheel = 0.0f;
+        }
         if (!pie.open && !modal)
-            ccr_palette_update(&g_palette, palette_area(h), m, ccr_gui_wheel(),
+            ccr_palette_update(&g_palette, palette_area(h), m, pal_wheel,
                                over_palette && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT), dt);
 
         /* the pie, while it is open, gets the mouse and Esc to itself */
@@ -3211,6 +3685,24 @@ int ccr_run(int argc, char **argv)
                 document_save(&doc, &opt);
             if (ccr_gui_key_pressed(CCR_KEY_B) || ccr_gui_key_pressed(CCR_KEY_R))
                 build_start(&doc, ccr_gui_key_pressed(CCR_KEY_R), &opt);
+            if (!typing && ccr_gui_key_pressed(CCR_KEY_C))
+                copy_blocks(&doc, inside ? ccr_editor_context(&doc.ed, world).target : CCR_NONE);
+            if (!typing && ccr_gui_key_pressed(CCR_KEY_V) && doc.ed.drag == CCR_DRAG_IDLE) {
+                const ccr_rect vis = visible_view(viewport, w, h);
+                const ccr_vec2 at = inside ? world
+                                  : ccr_canvas_to_world(&canvas, (ccr_vec2){ vis.x + vis.w * 0.5f, vis.y + vis.h * 0.5f });
+                paste_blocks(&doc, at, &opt);
+            }
+            if (!typing && ccr_gui_key_pressed(CCR_KEY_A)) {
+                sel_from_band(&doc, (ccr_rect){ -1e9f, -1e9f, 2e9f, 2e9f });
+                ccr_trnf(doc.status, sizeof doc.status, CCR_T_SELECTED, (unsigned long)g_sel.n, (unsigned)g_sel.n);
+                doc.has_errors = false;
+            }
+            if (ccr_gui_key_pressed(CCR_KEY_M)) {
+                g_minimap = !g_minimap;
+                if (opt.smoke_frames == 0 && !ccr_config_set("minimap", g_minimap ? "on" : "off"))
+                    fprintf(stderr, "ccratch: could not remember that in ~/.config/ccratch\n");
+            }
             /* Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo */
             if (ccr_gui_key_pressed(CCR_KEY_Z) && !typing) {
                 if (ccr_gui_shift_down())
@@ -3221,8 +3713,22 @@ int ccr_run(int argc, char **argv)
             if (ccr_gui_key_pressed(CCR_KEY_Y) && !typing)
                 ccr_editor_redo(&doc.ed);
         }
+        /* the selection: gone when the file changes; Del, Esc */
+        if (doc.loaded && g_sel.n && (g_sel.ed != (const void *)doc.ed.scripts || g_sel.hist != doc.ed.history_len))
+            sel_clear();
+        const bool sel_keys = can_act && !pie.open && !was_open && !typing && g_sel.n > 0;
+        if (sel_keys && ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+            sel_clear();
+        if (sel_keys && ccr_gui_key_pressed(CCR_KEY_DELETE)) {
+            const int n = g_sel.n;
+            if (ccr_editor_delete_many(&doc.ed, g_sel.nodes, n)) {
+                ccr_trnf(doc.status, sizeof doc.status, CCR_T_DELETED, (unsigned long)n, (unsigned)n);
+                doc.has_errors = false;
+            }
+            sel_clear();
+        }
         /* the block under the mouse: Delete, Ctrl+D, Ctrl+/ */
-        if (can_act && !pie.open && !was_open && inside && !typing) {
+        if (can_act && !pie.open && !was_open && inside && !typing && !sel_keys) {
             ccr_action a = CCR_ACTION_NONE;
             if (ccr_gui_key_pressed(CCR_KEY_DELETE))
                 a = CCR_ACTION_DELETE;
@@ -3260,9 +3766,34 @@ int ccr_run(int argc, char **argv)
                       ? ccr_palette_hit(&g_palette, palette_area(h), m, &grab) : -1;
             if (spawn >= 0)
                 ccr_editor_spawn_held(&doc.ed, (ccr_template)spawn, world, grab);
+            /* a press on empty canvas: a selection rectangle; on a block:
+             * the old selection goes */
+            bool band_press = false;
+            if (lmb && inside && !doc.ed.carrying && doc.ed.drag == CCR_DRAG_IDLE) {
+                if (doc.ed.hover_arrow == CCR_NONE && ccr_editor_context(&doc.ed, world).node == CCR_NONE) {
+                    sel_clear();
+                    g_sel.band = band_press = true;
+                    g_sel.from = world;
+                } else if (!g_sel.band) {
+                    sel_clear();
+                }
+            }
+            if (g_sel.band && !ccr_gui_mouse_down(CCR_MOUSE_LEFT)) {
+                const ccr_rect band = { fminf(g_sel.from.x, world.x), fminf(g_sel.from.y, world.y),
+                                        fabsf(world.x - g_sel.from.x), fabsf(world.y - g_sel.from.y) };
+                g_sel.band = false;
+                if (band.w > 4.0f || band.h > 4.0f) {
+                    sel_from_band(&doc, band);
+                    if (g_sel.n) {
+                        ccr_trnf(doc.status, sizeof doc.status, CCR_T_SELECTED, (unsigned long)g_sel.n,
+                                 (unsigned)g_sel.n);
+                        doc.has_errors = false;
+                    }
+                }
+            }
             ccr_editor_input in = {
                 .mouse      = ccr_canvas_to_world(&canvas, m),
-                .pressed    = lmb && (inside || doc.ed.carrying),
+                .pressed    = lmb && (inside || doc.ed.carrying) && !band_press,
                 .down       = ccr_gui_mouse_down(CCR_MOUSE_LEFT),
                 .released   = ccr_gui_mouse_released(CCR_MOUSE_LEFT),
                 .zoom       = canvas.zoom,
@@ -3320,13 +3851,18 @@ int ccr_run(int argc, char **argv)
                 }
             }
         }
+        sel_draw(&doc, &canvas);
+        minimap_frame(&doc, &canvas, visible_view(viewport, w, h),
+                      !modal && !pie.open && !opm.open && te.node == CCR_NONE && !on_split &&
+                      (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE));
+        autosave_tick(&doc, &opt, te.node == CCR_NONE && !modal);
         find_frame(&doc, &canvas, visible_view(viewport, w, h),
                    !modal && !pie.open && !opm.open && te.node == CCR_NONE && g_fpanel.naming == CCR_NAMING_NONE);
         tabs_frame(w, &doc, &canvas, viewport, &opt,
                    !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         mark_tooltip(&doc, &canvas, viewport);
         build_panel(w, h, &doc, &canvas, viewport, &opt,
-                    !modal && !pie.open && !opm.open && te.node == CCR_NONE);
+                    !modal && !pie.open && !opm.open && te.node == CCR_NONE && !on_split);
         if (g_files_t > 0.0f) {
             ccr_open_file of[MAX_OPEN + 1];
             const int nof = open_files(&doc, of);
@@ -3341,6 +3877,7 @@ int ccr_run(int argc, char **argv)
                 g_fpanel.naming = CCR_NAMING_NONE;
             }
         }
+        splitters_draw(w, h);
         const int top = draw_topbar(w, &doc, &eula);
         if ((top & TOP_CMAKE) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             cmake_open(&doc, &canvas, viewport, &opt);
@@ -3354,8 +3891,9 @@ int ccr_run(int argc, char **argv)
             ccr_job_stop(&g_job);
         if (top & TOP_HELP)
             g_help = !g_help;
-        draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f);
-        zoom_widget(w, h, &canvas, &doc, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
+        draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f - autosave_width());
+        const float zx = zoom_widget(w, h, &canvas, &doc, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
+        autosave_button(zx, h, !modal && opt.smoke_frames == 0);
         ccr_pie_draw(&pie);
         if (doc.loaded)
             op_menu_draw(&opm, &doc.ed, m, w, h);
@@ -3380,6 +3918,8 @@ int ccr_run(int argc, char **argv)
     }
 
     ccr_job_free(&g_job);   /* a program still running goes too */
+    free(g_copied);
+    g_copied = NULL;
     document_close(&doc);
     for (int i = 0; i < g_stash_n; ++i) {
         document_close(g_stash[i].doc);
