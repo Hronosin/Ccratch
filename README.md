@@ -454,7 +454,24 @@ tab, as VS Code's Source Control:
   numbers; **Open** opens it as blocks. Each part of the diff has its
   own button: only that part into the index (or out of it), so one
   commit can take half of a file's changes;
-- the **History**: the last commits, who and when.
+- **Stash** beside Commit puts every change aside (new files too) under
+  the message, or under the date if there is none; the stash list under
+  the changes brings one back (**bring back**) or throws it away (`-`);
+- the **History**: the last commits of every branch as a graph, a lane
+  per branch, merges joining them, the branches and tags on their
+  commits. A click on a commit shows its changes, with **Revert** (a new
+  commit that undoes it), **Cherry-pick** (its changes onto this branch)
+  and **Branch from here** (a new branch from it);
+- in the branch list, **merge in** beside a branch merges it into this
+  one. If files conflict, they get their own section: **ours**,
+  **theirs** or **both** (ours, then theirs) settles every conflict of a
+  file at once (or open it, fix it by hand and `+`), and Commit finishes
+  the merge with git's message. A revert or a cherry-pick that conflicts
+  waits the same way. **Give up** gives it all up: the files as before.
+
+A tick under the changes shows who last changed each block: their name,
+how long ago and the commit's message, faint, beside the block (or
+"you, not committed yet").
 
 And on the canvas, as in an editor's gutter: a green bar beside a block
 that is new since the last commit, blue beside one that changed, a red
@@ -465,6 +482,8 @@ list, so they are never a change to commit. A project that is not a
 repository yet gets a button for `git init`.
 
 ![the Git tab: master, staged and unstaged changes; bars beside the blocks that changed](docs/git.png)
+
+![who changed each block beside it; the history of two branches and a merge](docs/git_history.png)
 
 ## Expressions
 

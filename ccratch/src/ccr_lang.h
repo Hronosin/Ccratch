@@ -188,6 +188,41 @@
     X(DBG_TIP,          "dbg.tip",               0, "Debug: build, run under gdb, stop at breakpoints (F8)") \
     X(DBG_KEYS,         "dbg.keys",              0, "F8 continue, F10 step, F11 into, Shift+F11 out, F9 breakpoint") \
     X(HELP_DEBUG,       "help.debug",            0, "debugger: start / continue, breakpoint on the block under the mouse, step, into, out") \
+    X(AGO_NOW,          "ago.now",               0, "just now")                          \
+    X(AGO_MINUTES,      "ago.minutes",           1, "%u minute ago|%u minutes ago")      \
+    X(AGO_HOURS,        "ago.hours",             1, "%u hour ago|%u hours ago")          \
+    X(AGO_DAYS,         "ago.days",              1, "%u day ago|%u days ago")            \
+    X(AGO_WEEKS,        "ago.weeks",             1, "%u week ago|%u weeks ago")          \
+    X(AGO_MONTHS,       "ago.months",            1, "%u month ago|%u months ago")        \
+    X(AGO_YEARS,        "ago.years",             1, "%u year ago|%u years ago")          \
+    X(GIT_OURS,         "git.ours",              0, "ours")                              \
+    X(GIT_THEIRS,       "git.theirs",            0, "theirs")                            \
+    X(GIT_BOTH,         "git.both",              0, "both")                              \
+    X(GIT_RESOLVED,     "git.resolved",          0, "%s resolved and staged")            \
+    X(GIT_MERGE,        "git.merge",             0, "merge in")                          \
+    X(GIT_MERGED_IN,    "git.merged_in",         0, "%s merged in")                      \
+    X(GIT_CONFLICTED,   "git.conflicted",        0, "Merging %s: some files conflict, resolve them below") \
+    X(GIT_MERGING,      "git.merging",           0, "%s: resolve the conflicts, then Commit") \
+    X(GIT_MERGE_READY,  "git.merge_ready",       0, "%s: all resolved, Commit finishes it") \
+    X(GIT_OP_MERGE,     "git.op_merge",          0, "Merging")                           \
+    X(GIT_OP_REVERT,    "git.op_revert",         0, "Reverting")                         \
+    X(GIT_OP_PICK,      "git.op_pick",           0, "Cherry-picking")                    \
+    X(GIT_MERGE_ABORT,  "git.merge_abort",       0, "Give up")                           \
+    X(GIT_MERGED,       "git.merged",            0, "Merged")                            \
+    X(GIT_STASH,        "git.stash",             0, "Stash")                             \
+    X(GIT_STASHED,      "git.stashed",           0, "Stashed")                           \
+    X(GIT_STASHED_NOW,  "git.stashed_now",       0, "Changes put aside: the files are as committed (Stashed, below, brings them back)") \
+    X(GIT_UNSTASH,      "git.unstash",           0, "bring back")                        \
+    X(GIT_DROP_STASH,   "git.drop_stash",        0, "Throw it away")                     \
+    X(TIP_STASH,        "tip.stash",             0, "Put every change aside for now, and get the files as committed") \
+    X(GIT_BLAME,        "git.blame",             0, "who changed each block, beside it") \
+    X(GIT_BLAME_MINE,   "git.blame_mine",        0, "you, not committed yet")            \
+    X(GIT_REVERT,       "git.revert",            0, "Revert")                            \
+    X(GIT_CHERRY,       "git.cherry",            0, "Cherry-pick")                       \
+    X(GIT_BRANCH_HERE,  "git.branch_here",       0, "Branch from here")                  \
+    X(GIT_REVERTED,     "git.reverted",          0, "Undone by a new commit: %s")        \
+    X(GIT_PICKED,       "git.picked",            0, "Brought onto this branch: %s")      \
+    X(GIT_NAME_BRANCH,  "git.name_branch",       0, "Name the branch that starts at %.8s, Enter") \
     X(GIT_TITLE,        "git.title",             0, "Git")                               \
     X(GIT_NO_GIT,       "git.no_git",            0, "git is not installed (sudo apt install git)") \
     X(GIT_NO_REPO,      "git.no_repo",           0, "This project is not in a git repository") \
@@ -230,7 +265,7 @@
     X(TIP_STAGE,        "tip.stage",             0, "Stage")                             \
     X(TIP_UNSTAGE,      "tip.unstage",           0, "Unstage")                           \
     X(TIP_DISCARD,      "tip.discard",           0, "Throw the changes away")            \
-    X(HELP_GIT,         "help.git",              0, "git: what changed (bars beside blocks), commit, branches, push, pull") \
+    X(HELP_GIT,         "help.git",              0, "git: what changed (bars beside blocks), commit, branches, history, stash, merge, push, pull") \
     X(AUTOSAVE_ON,      "autosave.on",           0, "autosave: on")                      \
     X(AUTOSAVE_OFF,     "autosave.off",          0, "autosave: off")                     \
     X(TIP_AUTOSAVE,     "tip.autosave",          0, "Save by itself a moment after every change") \

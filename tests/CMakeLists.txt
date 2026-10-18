@@ -280,3 +280,7 @@ add_test(NAME project_functions COMMAND test_project)
 add_executable(test_rename test_rename.c)
 target_link_libraries(test_rename PRIVATE ccratch_core)
 add_test(NAME rename_project COMMAND test_rename)
+
+add_executable(test_gitlog test_gitlog.c)
+target_link_libraries(test_gitlog PRIVATE ccratch_core)
+add_test(NAME git_history COMMAND test_gitlog)
