@@ -324,6 +324,11 @@ look first, and `cmake -S . -B build && cmake --build build` builds it.
   Files), how Ccratch looks (Theme, language, ?), and making the program go.
 - **Zoom** at the bottom right: - 100% + and "all of it"; Ctrl+= / Ctrl+-
   / Ctrl+0 too.
+- **Rename** (F2) the name under the mouse in every file of the project:
+  a function, a global, a type, an enum's value, a field. clang says
+  which thing it is, so a local of the same name elsewhere stays as it
+  is. The old name comes selected: type the new one, Enter. One Ctrl+Z
+  puts every file back.
 - **F1** (or ?): every key and mouse move on one card.
 - **Recent files** on the start screen.
 - **Quitting** with changes not saved asks: save and quit, quit
@@ -435,7 +440,9 @@ tab, as VS Code's Source Control:
   `-` unstages, the arrow throws its changes away (a second click is
   asked for: that cannot be undone); all of them at once from the
   header. A click on a file shows its diff over the canvas, with line
-  numbers; **Open** opens it as blocks;
+  numbers; **Open** opens it as blocks. Each part of the diff has its
+  own button: only that part into the index (or out of it), so one
+  commit can take half of a file's changes;
 - the **History**: the last commits, who and when.
 
 And on the canvas, as in an editor's gutter: a green bar beside a block

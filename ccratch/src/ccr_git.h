@@ -57,6 +57,12 @@ char *ccr_git_run(const char *root, const char *const *args, int *exit_code);
  * it, added). malloc'd unified diff text. */
 char *ccr_git_diff(const char *root, const char *path, bool staged, bool untracked);
 
+/* The hunks of a diff ccr_git_diff gave (each "@@ ... @@" and its lines). */
+int  ccr_git_hunk_count(const char *diff);
+/* Stages hunk `index` of `diff` alone (a diff of what is not staged), or
+ * with `unstage` takes it out of the index again (a diff of what is). */
+bool ccr_git_apply_hunk(const char *root, const char *diff, int index, bool unstage, char *err, int cap);
+
 /* Quick actions: false with git's words in `err`. */
 bool ccr_git_stage(const char *root, const char *path, char *err, int cap);
 bool ccr_git_unstage(const char *root, const char *path, bool no_commits, char *err, int cap);

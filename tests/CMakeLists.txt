@@ -276,3 +276,7 @@ add_test(NAME git COMMAND test_git)
 add_executable(test_project test_project.c)
 target_link_libraries(test_project PRIVATE ccratch_core)
 add_test(NAME project_functions COMMAND test_project)
+
+add_executable(test_rename test_rename.c)
+target_link_libraries(test_rename PRIVATE ccratch_core)
+add_test(NAME rename_project COMMAND test_rename)

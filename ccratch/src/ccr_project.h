@@ -42,6 +42,10 @@ void ccr_project_scan_start(const char *root, const char *const *clang_args, int
  * caller now). */
 bool ccr_project_scan_take(ccr_project_result *out);
 
+/* The project's .h then .c files (whole paths; build/ and hidden folders
+ * left out), up to `cap`; how many. */
+int ccr_project_files(const char *root, char (*out)[1024], int cap);
+
 /* Waits for a scan going on, and lets go of everything (quitting). */
 void ccr_project_shutdown(void);
 

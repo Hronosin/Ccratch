@@ -144,6 +144,39 @@ int main(void)
     snprintf(path, sizeof path, "%s/junk.c", repo);
     CHECK(access(path, F_OK) != 0, "and gone");
 
+    /* one hunk at a time: two changes far apart, staged one by one */
+    {
+        char big[2048] = "", changed[2048] = "";
+        for (int i = 1; i <= 30; ++i) {
+            char l[64];
+            snprintf(l, sizeof l, "int line%d;\n", i);
+            strcat(big, l);
+            snprintf(l, sizeof l, i == 2 ? "int second;\n" : i == 25 ? "int twenty_fifth;\n" : "int line%d;\n", i);
+            strcat(changed, l);
+        }
+        write_text(repo, "big.c", big);
+        CHECK(ccr_git_stage(repo, "big.c", err, (int)sizeof err) &&
+              ccr_git_commit(repo, "big", false, false, err, (int)sizeof err), "big: %s", err);
+        write_text(repo, "big.c", changed);
+        char *dw = ccr_git_diff(repo, "big.c", false, false);
+        CHECK(dw && ccr_git_hunk_count(dw) == 2, "two hunks: %d", dw ? ccr_git_hunk_count(dw) : -1);
+        CHECK(ccr_git_apply_hunk(repo, dw, 1, false, err, (int)sizeof err), "stage hunk 2: %s", err);
+        free(dw);
+        char *ds = ccr_git_diff(repo, "big.c", true, false);
+        dw = ccr_git_diff(repo, "big.c", false, false);
+        CHECK(ds && ccr_git_hunk_count(ds) == 1 && strstr(ds, "+int twenty_fifth;") && !strstr(ds, "second"),
+              "staged: the second change only:\n%s", ds ? ds : "");
+        CHECK(dw && ccr_git_hunk_count(dw) == 1 && strstr(dw, "+int second;"), "not staged: the first");
+        CHECK(ccr_git_apply_hunk(repo, ds, 0, true, err, (int)sizeof err), "unstage it: %s", err);
+        free(ds);
+        free(dw);
+        ds = ccr_git_diff(repo, "big.c", true, false);
+        CHECK(ds && ccr_git_hunk_count(ds) == 0, "nothing staged again");
+        free(ds);
+        CHECK(!ccr_git_apply_hunk(repo, "", 0, false, err, (int)sizeof err), "no hunk: refused");
+        CHECK(ccr_git_discard(repo, "big.c", false, err, (int)sizeof err), "big back");
+    }
+
     /* Ccratch's backups stay out of it */
     write_text(repo, "main.c~", "old\n");
     ccr_git_exclude_backups(repo);
@@ -183,7 +216,7 @@ int main(void)
           ccr_git_commit(repo, "Second, better", true, false, err, (int)sizeof err), "amend: %s", err);
     ccr_git_commit_info log[8];
     n = ccr_git_log(repo, log, 8);
-    CHECK(n == 1 && strcmp(log[0].subject, "Second, better") == 0 && strcmp(log[0].author, "Test") == 0,
+    CHECK(n == 2 && strcmp(log[0].subject, "Second, better") == 0 && strcmp(log[1].subject, "First") == 0 && strcmp(log[0].author, "Test") == 0,
           "log: %d, %s", n, n ? log[0].subject : "");
 
     /* push to a remote in a folder, a clone commits, pull it back */

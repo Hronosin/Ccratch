@@ -19,9 +19,11 @@
 #include "ccr_palette.h"
 #include "ccr_paste.h"
 #include "ccr_project.h"
+#include "ccr_rename.h"
 #include "ccr_pie.h"
 #include "ccr_theme.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2714,6 +2716,7 @@ static struct {
     char           diff_title[400];
     char           diff_path[CCR_GIT_PATH];
     float          diff_scroll;
+    bool           diff_staged, diff_untracked;   /* which diff it is: what its hunks' buttons do */
     char           marks_for[PATH_MAX_LEN];
 } g_git;
 
@@ -2885,6 +2888,8 @@ static void git_open_diff(const ccr_git_file *f, bool staged)
     g_git.diff = ccr_git_diff(g_git.st.root, f->path, staged, untracked);
     g_git.diff_open = g_git.diff != NULL;
     g_git.diff_scroll = 0.0f;
+    g_git.diff_staged = staged;
+    g_git.diff_untracked = untracked;
     snprintf(g_git.diff_path, sizeof g_git.diff_path, "%s", f->path);
     ccr_trf(g_git.diff_title, sizeof g_git.diff_title,
             untracked ? CCR_T_GIT_DIFF_NEW : staged ? CCR_T_GIT_DIFF_STAGED : CCR_T_GIT_DIFF_WORK, f->path);
@@ -3494,8 +3499,12 @@ static void git_diff_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
     ccr_gui_clip_begin(body);
     float y = body.y - g_git.diff_scroll;
     bool in_header = true;
-    int old_no = 0, new_no = 0;
+    int old_no = 0, new_no = 0, hunk = -1, act = -1;
     char line[600];
+    /* a hunk's button: just this part into the index (or out of it) */
+    const bool hunk_buttons = !g_git.diff_untracked && ccr_git_hunk_count(g_git.diff) > 0;
+    const char *hl = ccr_tr(g_git.diff_staged ? CCR_T_GIT_HUNK_OUT : CCR_T_GIT_HUNK_IN);
+    const float hw = ccr_gui_text_width(hl, 13.0f) + 18.0f;
     for (const char *p = g_git.diff; p && *p;) {
         const char *e = strchr(p, '\n');
         const size_t n = e ? (size_t)(e - p) : strlen(p);
@@ -3503,10 +3512,16 @@ static void git_diff_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
         p = e ? e + 1 : NULL;
         if (strncmp(line, "@@", 2) == 0) {
             in_header = false;
+            ++hunk;
             sscanf(line, "@@ -%d", &old_no);
             const char *plus = strchr(line, '+');
             if (plus)
                 new_no = atoi(plus + 1);
+            if (hunk_buttons && y + row >= body.y && y <= body.y + body.h) {
+                const ccr_rect hb = { body.x + body.w - hw - 6.0f, y - 1.0f, hw, row + 1.0f };
+                if (ccr_gui_button(hb, hl, button_style(!g_git.diff_staged)) && point_in(m, body))
+                    act = hunk;
+            }
         } else if (in_header) {
             continue;
         }
@@ -3551,11 +3566,210 @@ static void git_diff_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
         y += row;
     }
     ccr_gui_clip_end();
+    if (act >= 0 && !close) {
+        char err[512];
+        if (!ccr_git_apply_hunk(g_git.st.root, g_git.diff, act, g_git.diff_staged, err, (int)sizeof err))
+            git_say(err, true);
+        /* the diff again: what is left of it */
+        free(g_git.diff);
+        g_git.diff = ccr_git_diff(g_git.st.root, g_git.diff_path, g_git.diff_staged, false);
+        git_refresh(doc);
+        close = !g_git.diff || ccr_git_hunk_count(g_git.diff) == 0;
+    }
     if (close) {
         g_git.diff_open = false;
         free(g_git.diff);
         g_git.diff = NULL;
     }
+}
+
+/* ------------------------------------------- renaming, project-wide */
+
+/* F2 on a name: a box to type the new one; Enter renames it in every file
+ * of the project. One Ctrl+Z (once the file's own undo has nothing left)
+ * puts every file back. */
+static struct {
+    bool            open;
+    ccr_rename      found;
+    char            buf[128];
+    ccr_vec2        at;          /* where the box is (screen) */
+    ccr_rename_undo undo;        /* the last rename, to take back */
+    char            undo_from[128], undo_to[128];
+} g_ren;
+
+/* The name a node stands for: itself, or the block its word belongs to. */
+static ccr_node_id named_node(const ccr_ast *a, ccr_node_id id)
+{
+    for (int hops = 0; id != CCR_NONE && hops < 3; ++hops, id = a->nodes[id].parent) {
+        const ccr_node *n = &a->nodes[id];
+        switch (n->kind) {
+        case CCR_NODE_REF: case CCR_NODE_CALL: case CCR_NODE_FUNCTION: case CCR_NODE_VAR:
+        case CCR_NODE_MEMBER: case CCR_NODE_TYPEDEF: case CCR_NODE_STRUCT: case CCR_NODE_UNION:
+        case CCR_NODE_ENUM: case CCR_NODE_ENUM_CONST: case CCR_NODE_PARAM: case CCR_NODE_FIELD:
+            if (*ccr_ast_str(a, n->name))
+                return id;
+            break;
+        case CCR_NODE_TEXT:
+            if (!(n->flags & CCR_FLAG_WORD))
+                return CCR_NONE;   /* a slot typed into: no name of the program */
+            break;   /* a block's name or type: the block */
+        default:
+            return CCR_NONE;
+        }
+    }
+    return CCR_NONE;
+}
+
+/* Every open file with changes, saved (renaming works on the files). */
+static bool save_all(ccr_document *doc, const ccr_options *opt)
+{
+    ccr_document *all[MAX_OPEN + 1];
+    int n = 0;
+    if (doc->loaded)
+        all[n++] = doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        all[n++] = g_stash[i].doc;
+    for (int i = 0; i < n; ++i)
+        if (ccr_editor_modified(&all[i]->ed) && !document_save(all[i], opt))
+            return false;
+    return true;
+}
+
+static void rename_begin(ccr_document *doc, ccr_vec2 world, ccr_vec2 screen, const ccr_options *opt)
+{
+    if (!doc->loaded || doc->ed.ast.lang != CCR_LANG_C)
+        return;
+    const ccr_context ctx = ccr_editor_context(&doc->ed, world);
+    ccr_node_id id = named_node(&doc->ed.ast, ctx.text != CCR_NONE ? ctx.text : ctx.node);
+    if (id == CCR_NONE) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_NONE);
+        doc->has_errors = true;
+        return;
+    }
+    char name[128];
+    snprintf(name, sizeof name, "%s", ccr_ast_str(&doc->ed.ast, doc->ed.ast.nodes[id].name));
+    if (!save_all(doc, opt))
+        return;
+    /* where the name is in the file as saved: within its node's text */
+    if (!doc->place || id >= doc->place_n || doc->place[id].b == UINT32_MAX) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_NONE);
+        doc->has_errors = true;
+        return;
+    }
+    char *text = NULL, err[300];
+    size_t len = 0;
+    if (!ccr_codegen(&doc->ed.ast, &text, &len, err, sizeof err))
+        return;
+    const size_t nl = strlen(name);
+    uint32_t off = UINT32_MAX;
+    for (uint32_t i = doc->place[id].b; i + nl <= doc->place[id].e && i + nl <= len; ++i)
+        if (memcmp(text + i, name, nl) == 0 && (i == 0 || !(isalnum((unsigned char)text[i - 1]) || text[i - 1] == '_')) &&
+            !(isalnum((unsigned char)text[i + nl]) || text[i + nl] == '_')) {
+            off = i;
+            break;
+        }
+    free(text);
+    if (off == UINT32_MAX)
+        return;
+    char root[CCR_FILES_PATH];
+    git_dir(doc, root, sizeof root);
+    const char *args[CLANG_ARGS_MAX];
+    const int nargs = clang_args_for(doc->path, opt, args);
+    ccr_rename_free(&g_ren.found);
+    if (!ccr_rename_find(root, doc->path, off, args, nargs, &g_ren.found, err, (int)sizeof err)) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_CANNOT, err);
+        doc->has_errors = true;
+        return;
+    }
+    g_ren.open = true;
+    snprintf(g_ren.buf, sizeof g_ren.buf, "%s", g_ren.found.old_name);
+    g_ren.at = screen;
+    ccr_gui_textbox_select_all();   /* as in any editor: typing replaces the old name */
+}
+
+/* Reads again every open file the rename (or its undo) wrote. */
+static void rename_reload(ccr_document *doc, char (*files)[1024], int count, const ccr_options *opt)
+{
+    ccr_document *all[MAX_OPEN + 1];
+    int n = 0;
+    if (doc->loaded)
+        all[n++] = doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        all[n++] = g_stash[i].doc;
+    for (int i = 0; i < n; ++i)
+        for (int f = 0; f < count; ++f)
+            if (all[i]->loaded && same_file(all[i]->path, files[f])) {
+                reopen_keeping_breaks(all[i], opt);
+                break;
+            }
+    g_proj_dirty = true;
+    g_git_marks_dirty = true;
+}
+
+/* The box: drawn, typed into. */
+static void rename_frame(ccr_document *doc, int w, const ccr_options *opt)
+{
+    if (!g_ren.open)
+        return;
+    char title[300];
+    ccr_trf(title, sizeof title, CCR_T_REN_TITLE, g_ren.found.old_name, g_ren.found.place_count,
+            g_ren.found.file_count);
+    const float bw = fmaxf(340.0f, ccr_gui_text_width(title, 14.0f) + 28.0f);
+    ccr_rect card = { g_ren.at.x - 20.0f, g_ren.at.y + 18.0f, bw, 96.0f };
+    if (card.x + card.w > (float)w - 8.0f)
+        card.x = (float)w - 8.0f - card.w;
+    if (card.x < 8.0f)
+        card.x = 8.0f;
+    ccr_gui_rect_rounded((ccr_rect){ card.x + 3, card.y + 4, card.w, card.h }, 0.1f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ card.x - 2, card.y - 2, card.w + 4, card.h + 4 }, 0.1f, ccr_th(CCR_C_ACCENT));
+    ccr_gui_rect_rounded(card, 0.1f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    ccr_gui_text(title, card.x + 14.0f, card.y + 10.0f, 14.0f, ccr_th(CCR_C_PANEL_TEXT));
+    const ccr_rect box = { card.x + 12.0f, card.y + 32.0f, card.w - 24.0f, 30.0f };
+    ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+    const bool enter = ccr_gui_textbox(box, g_ren.buf, (int)sizeof g_ren.buf, 17.0f);
+    const bool ok = ccr_rename_valid(g_ren.buf);
+    ccr_gui_text(ccr_tr(ok ? CCR_T_REN_HINT : CCR_T_REN_BAD), card.x + 14.0f, card.y + 70.0f, 12.0f,
+                 ok ? ccr_th(CCR_C_PANEL_HINT) : ccr_th(CCR_C_ERROR));
+    if (ccr_gui_key_pressed(CCR_KEY_ESCAPE)) {
+        g_ren.open = false;
+        return;
+    }
+    if (!enter || !ok)
+        return;
+    g_ren.open = false;
+    if (strcmp(g_ren.buf, g_ren.found.old_name) == 0)
+        return;
+    char err[300];
+    ccr_rename_undo_free(&g_ren.undo);
+    if (!ccr_rename_apply(&g_ren.found, g_ren.buf, &g_ren.undo, err, (int)sizeof err)) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_CANNOT, err);
+        doc->has_errors = true;
+        return;
+    }
+    snprintf(g_ren.undo_from, sizeof g_ren.undo_from, "%s", g_ren.found.old_name);
+    snprintf(g_ren.undo_to, sizeof g_ren.undo_to, "%s", g_ren.buf);
+    rename_reload(doc, g_ren.found.files, g_ren.found.file_count, opt);
+    ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_DONE, g_ren.undo_from, g_ren.undo_to,
+            g_ren.found.place_count, g_ren.found.file_count);
+    doc->has_errors = false;
+}
+
+/* Ctrl+Z with nothing left to undo in the file: the last rename goes back. */
+static bool rename_undo(ccr_document *doc, const ccr_options *opt)
+{
+    if (g_ren.undo.count == 0 || (doc->loaded && ccr_editor_can_undo(&doc->ed)))
+        return false;
+    const int n = ccr_rename_undo_apply(&g_ren.undo);
+    if (n < 0) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_UNDO_STALE);
+        doc->has_errors = true;
+    } else {
+        rename_reload(doc, g_ren.undo.files, g_ren.undo.count, opt);
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_UNDONE, g_ren.undo_to, g_ren.undo_from);
+        doc->has_errors = false;
+    }
+    ccr_rename_undo_free(&g_ren.undo);
+    return true;
 }
 
 /* A mark under the mouse: what the compiler said, next to it. */
@@ -3865,6 +4079,7 @@ static bool help_frame(int w, int h)
         { "Ctrl+M", 0, CCR_T_HELP_MINIMAP },
         { "F8, F9, F10, F11", 0, CCR_T_HELP_DEBUG },
         { "Ctrl+G", 0, CCR_T_HELP_GIT },
+        { "F2", 0, CCR_T_HELP_RENAME },
         { "F5", 0, CCR_T_HELP_RELOAD },
         { "F1", 0, CCR_T_HELP_HELP },
     };
@@ -5318,7 +5533,8 @@ int ccr_run(int argc, char **argv)
         if (te.node == CCR_NONE)
             g_drop.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
-        const bool modal = eula.open || g_libs.open || g_quit.open || g_help || g_git.diff_open || g_pick.kind;   /* a dialog has the mouse */
+        const bool modal = eula.open || g_libs.open || g_quit.open || g_help || g_git.diff_open || g_pick.kind ||
+                           g_ren.open;   /* a dialog has the mouse */
         if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open)
             g_help = !g_help;
 
@@ -5496,7 +5712,7 @@ int ccr_run(int argc, char **argv)
             if (ccr_gui_key_pressed(CCR_KEY_Z) && !typing) {
                 if (ccr_gui_shift_down())
                     ccr_editor_redo(&doc.ed);
-                else
+                else if (!rename_undo(&doc, &opt))
                     ccr_editor_undo(&doc.ed);
             }
             if (ccr_gui_key_pressed(CCR_KEY_Y) && !typing)
@@ -5549,6 +5765,8 @@ int ccr_run(int argc, char **argv)
             }
             if (ccr_gui_key_pressed(CCR_KEY_F9) && inside && doc.loaded)
                 dbg_toggle(&doc, world);
+            if (ccr_gui_key_pressed(CCR_KEY_F2) && inside && doc.loaded && doc.ed.drag == CCR_DRAG_IDLE)
+                rename_begin(&doc, world, m, &opt);
             if (ccr_gui_key_pressed(CCR_KEY_F10))
                 ccr_gdb_next(&g_gdb);
             if (ccr_gui_key_pressed(CCR_KEY_F11)) {
@@ -5712,6 +5930,7 @@ int ccr_run(int argc, char **argv)
         const int top = draw_topbar(w, &doc, &eula);
         if (!eula.open && !g_quit.open)
             pick_frame(&doc, w, dt);
+        rename_frame(&doc, w, &opt);
         if ((top & TOP_CMAKE) && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             cmake_open(&doc, &canvas, viewport, &opt);
             te.node = CCR_NONE;
@@ -5763,6 +5982,8 @@ int ccr_run(int argc, char **argv)
     ccr_gdb_free(&g_gdb);
     ccr_project_shutdown();
     ccr_project_result_free(&g_proj);
+    ccr_rename_free(&g_ren.found);
+    ccr_rename_undo_free(&g_ren.undo);
     free(g_copied);
     g_copied = NULL;
     document_close(&doc);

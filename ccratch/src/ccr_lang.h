@@ -54,6 +54,15 @@
     X(INCLUDE_SYSTEM,   "include.system",        0, "%s is a system header, not opening it") \
     X(LIBS_TITLE,       "libs.title",            0, "Libraries")                         \
     X(PROJECT_BLOCKS,   "palette.project",       0, "This project")                      \
+    X(REN_TITLE,        "ren.title",             0, "Rename %s: %d places in %d files")  \
+    X(REN_HINT,         "ren.hint",              0, "Enter renames it everywhere, Esc leaves it") \
+    X(REN_BAD,          "ren.bad",               0, "That is no C name (letters, digits, _; no keyword)") \
+    X(REN_NONE,         "ren.none",              0, "F2 renames a name: point at a function, a variable, a type") \
+    X(REN_CANNOT,       "ren.cannot",            0, "Not renamed: %s")                   \
+    X(REN_DONE,         "ren.done",              0, "Renamed %s to %s: %d places in %d files (Ctrl+Z takes it back)") \
+    X(REN_UNDONE,       "ren.undone",            0, "%s is %s again, in every file")     \
+    X(REN_UNDO_STALE,   "ren.undo_stale",        0, "The files changed since the rename: it stays") \
+    X(HELP_RENAME,      "help.rename",           0, "rename the name under the mouse in every file of the project") \
     X(LIBS_HEADING,     "libs.heading",          0, "A library, as blocks")              \
     X(LIBS_EXPLAIN,     "libs.explain",          0,                                      \
       "Its header is read for the public functions (and its .so or .a, if found, for what it really exports). They become a block pack, the file includes the header, the blocks show in the palette.") \
@@ -198,6 +207,8 @@
     X(GIT_DIFF_WORK,    "git.diff_work",         0, "%s: not staged")                    \
     X(GIT_DIFF_NEW,     "git.diff_new",          0, "%s: new file")                      \
     X(GIT_OPEN,         "git.open",              0, "Open")                              \
+    X(GIT_HUNK_IN,      "git.hunk_in",           0, "+ stage this part")                 \
+    X(GIT_HUNK_OUT,     "git.hunk_out",          0, "- unstage this part")               \
     X(GIT_RELOADED,     "git.reloaded",          0, "%s changed on disk: read again")    \
     X(GIT_KEPT,         "git.kept",              0, "%s changed on disk, but has unsaved changes here: kept as it is") \
     X(GIT_DETACHED,     "git.detached",          0, "(no branch)")                       \

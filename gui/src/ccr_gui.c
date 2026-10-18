@@ -324,6 +324,7 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_M:      return IsKeyPressed(KEY_M);
     case CCR_KEY_UP:     return IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP);
     case CCR_KEY_DOWN:   return IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN);
+    case CCR_KEY_F2:     return IsKeyPressed(KEY_F2);
     case CCR_KEY_F8:     return IsKeyPressed(KEY_F8);
     case CCR_KEY_F9:     return IsKeyPressed(KEY_F9);
     case CCR_KEY_F10:    return IsKeyPressed(KEY_F10);
@@ -390,10 +391,37 @@ bool ccr_gui_button(ccr_rect r, const char *label, const ccr_button_style *st)
  * character queue every frame, so two keys landing in one frame lost one. */
 
 static int g_tb_cursor = -1;   /* byte offset; -1 = put it at the end */
+static bool g_tb_all;          /* all of it selected: what is typed replaces it */
+static int  g_tb_held;         /* a character taken off raylib's queue to look at */
+
+/* Is a character waiting? (It stays waiting: the loop below reads it.) */
+static bool GetCharPressedPeek(void)
+{
+    if (!g_tb_held)
+        g_tb_held = GetCharPressed();
+    return g_tb_held > 0;
+}
+
+static int next_char(void)
+{
+    if (g_tb_held) {
+        const int c = g_tb_held;
+        g_tb_held = 0;
+        return c;
+    }
+    return GetCharPressed();
+}
 
 void ccr_gui_textbox_reset(void)
 {
     g_tb_cursor = -1;
+    g_tb_all = false;
+}
+
+void ccr_gui_textbox_select_all(void)
+{
+    g_tb_cursor = -1;
+    g_tb_all = true;
 }
 
 static bool key_hit(int key)
@@ -438,8 +466,29 @@ bool ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size)
         g_tb_cursor = len;
     int cur = g_tb_cursor;
 
+    /* all of it selected: typing, pasting or erasing replaces it; a
+     * move of the cursor just lets it go */
+    const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl && IsKeyPressed(KEY_A))
+        g_tb_all = true;
+    if (g_tb_all) {
+        const bool erase = key_hit(KEY_BACKSPACE) || key_hit(KEY_DELETE);
+        const bool replace = GetCharPressedPeek() || (ctrl && IsKeyPressed(KEY_V)) || erase;
+        if (replace) {
+            buf[0] = '\0';
+            len = cur = 0;
+            g_tb_all = false;
+            if (erase) {
+                g_tb_cursor = 0;
+                goto drawn;   /* erased: nothing else this frame */
+            }
+        } else if (key_hit(KEY_LEFT) || key_hit(KEY_RIGHT) || IsKeyPressed(KEY_HOME) || IsKeyPressed(KEY_END)) {
+            g_tb_all = false;
+        }
+    }
+
     /* everything typed this frame */
-    for (int cp = GetCharPressed(); cp > 0; cp = GetCharPressed()) {
+    for (int cp = next_char(); cp > 0; cp = next_char()) {
         if (cp < 32)
             continue;
         int n = 0;
@@ -477,6 +526,8 @@ bool ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size)
     if (IsKeyPressed(KEY_HOME)) cur = 0;
     if (IsKeyPressed(KEY_END))  cur = len;
     g_tb_cursor = cur;
+drawn:
+    cur = g_tb_cursor;
 
     /* draw: white field, accent border, text scrolled so the cursor shows */
     Font font = text_font();
@@ -494,6 +545,12 @@ bool ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size)
     DrawRectangleRec((Rectangle){ r.x + 2, r.y + 2, r.w - 4, r.h - 4 }, to_rl(g_tb_fill));
     BeginScissorMode((int)r.x + 2, (int)r.y + 2, (int)r.w - 4, (int)r.h - 4);
     const float ty = r.y + (r.h - font_size) * 0.5f;
+    if (g_tb_all && buf[0]) {   /* selected: on a band of the edge's colour, faint */
+        const float tw = MeasureTextEx(font, buf, font_size, spacing).x;
+        Color band = to_rl(g_tb_edge);
+        band.a = 70;
+        DrawRectangleRec((Rectangle){ r.x + pad - scroll - 1.0f, ty - 1.0f, tw + 2.0f, font_size + 2.0f }, band);
+    }
     DrawTextEx(font, buf, (Vector2){ r.x + pad - scroll, ty }, font_size, spacing,
                to_rl(g_tb_text));
     if (((int)(GetTime() * 2.0)) % 2 == 0)   /* blinking cursor */

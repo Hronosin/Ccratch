@@ -55,6 +55,7 @@ typedef enum ccr_key {
     CCR_KEY_M,
     CCR_KEY_UP,        /* held: repeats */
     CCR_KEY_DOWN,
+    CCR_KEY_F2,
     CCR_KEY_F8,
     CCR_KEY_F9,
     CCR_KEY_F10,
@@ -144,6 +145,8 @@ bool  ccr_gui_textbox(ccr_rect r, char *buf, int cap, float font_size);
 /* Colours of the text box from now on. */
 void  ccr_gui_textbox_colors(ccr_color edge, ccr_color fill, ccr_color text);
 void  ccr_gui_textbox_reset(void);
+/* The next textbox starts with all of its text selected: typing replaces it. */
+void  ccr_gui_textbox_select_all(void);
 
 #ifdef __cplusplus
 }

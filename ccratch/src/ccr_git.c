@@ -367,6 +367,85 @@ int ccr_git_file_hunks(const char *path, ccr_git_hunk *out, int cap)
     return n;
 }
 
+/* ------------------------------------------------------ one hunk only */
+
+/* Where hunk `index` of `diff` starts and ends; the header is [0, first). */
+static bool hunk_range(const char *diff, int index, size_t *first, size_t *b, size_t *e)
+{
+    int seen = -1;
+    *first = *b = *e = 0;
+    bool any = false;
+    for (const char *line = diff; line && *line;) {
+        const char *next = strchr(line, '\n');
+        next = next ? next + 1 : line + strlen(line);
+        const size_t at = (size_t)(line - diff);
+        if (strncmp(line, "@@", 2) == 0) {
+            if (!any) {
+                *first = at;
+                any = true;
+            }
+            ++seen;
+            if (seen == index)
+                *b = at;
+            else if (seen == index + 1) {
+                *e = at;
+                return true;
+            }
+        }
+        line = next;
+    }
+    if (seen >= index && any) {
+        *e = strlen(diff);
+        return true;
+    }
+    return false;
+}
+
+int ccr_git_hunk_count(const char *diff)
+{
+    int n = 0;
+    for (const char *line = diff; line && *line;) {
+        n += strncmp(line, "@@", 2) == 0;
+        line = strchr(line, '\n');
+        if (line)
+            ++line;
+    }
+    return n;
+}
+
+bool ccr_git_apply_hunk(const char *root, const char *diff, int index, bool unstage, char *err, int cap)
+{
+    size_t first, b, e;
+    if (!diff || !hunk_range(diff, index, &first, &b, &e) || first == 0) {
+        snprintf(err, (size_t)cap, "no such part");
+        return false;
+    }
+    /* the file's header, then that one hunk: a patch git can apply alone */
+    char path[] = "/tmp/ccratch_hunk_XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd < 0) {
+        snprintf(err, (size_t)cap, "no temporary file");
+        return false;
+    }
+    FILE *f = fdopen(fd, "w");
+    bool ok = f && fwrite(diff, 1, first, f) == first && fwrite(diff + b, 1, e - b, f) == e - b;
+    if (ok && e > b && diff[e - 1] != '\n')
+        ok = fputc('\n', f) != EOF;
+    if (f)
+        ok = fclose(f) == 0 && ok;
+    else
+        close(fd);
+    if (ok) {
+        const char *args[] = { "apply", "--cached", "--whitespace=nowarn", unstage ? "--reverse" : path,
+                               unstage ? path : NULL, NULL };
+        ok = run_ok(root, args, err, cap);
+    } else {
+        snprintf(err, (size_t)cap, "could not write the patch");
+    }
+    remove(path);
+    return ok;
+}
+
 /* ------------------------------------------------------------ actions */
 
 bool ccr_git_stage(const char *root, const char *path, char *err, int cap)

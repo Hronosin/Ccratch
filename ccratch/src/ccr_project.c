@@ -386,3 +386,21 @@ void ccr_project_shutdown(void)
     g_cache_n = g_cache_cap = 0;
     pthread_mutex_unlock(&g_cache_lock);
 }
+
+int ccr_project_files(const char *root, char (*out)[1024], int cap)
+{
+    char real[1024];
+    if (!root || !realpath(root, real) || cap <= 0)
+        return 0;
+    static char files[MAX_FILES][1024];
+    pthread_mutex_lock(&g_cache_lock);   /* `files` is shared with the scan */
+    int n = 0;
+    walk(real, 0, files, &n, true);
+    walk(real, 0, files, &n, false);
+    if (n > cap)
+        n = cap;
+    for (int i = 0; i < n; ++i)
+        snprintf(out[i], 1024, "%s", files[i]);
+    pthread_mutex_unlock(&g_cache_lock);
+    return n;
+}
