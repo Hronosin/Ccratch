@@ -15,9 +15,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef enum ccr_place_kind {
+    CCR_PLACE_USE,          /* a call, a read, a write */
+    CCR_PLACE_DECLARATION,  /* `void f(int);`, `extern int g;` */
+    CCR_PLACE_DEFINITION    /* the function with its body, the variable itself */
+} ccr_place_kind;
+
 typedef struct ccr_rename_place {
-    int      file;      /* in ccr_rename.files */
-    uint32_t offset;    /* the name's first byte */
+    int            file;      /* in ccr_rename.files */
+    uint32_t       offset;    /* the name's first byte */
+    ccr_place_kind kind;
+    int            line;      /* 1-based, in the file as read */
 } ccr_rename_place;
 
 typedef struct ccr_rename {
@@ -35,6 +43,10 @@ typedef struct ccr_rename {
 bool ccr_rename_find(const char *root, const char *path, uint32_t offset, const char *const *clang_args,
                      int nargs, ccr_rename *out, char *err, int err_cap);
 void ccr_rename_free(ccr_rename *r);
+
+/* Where it is made: its definition, else a declaration (a header's);
+ * the index in places, or -1. */
+int  ccr_rename_definition(const ccr_rename *r);
 
 /* The files as they were, to put back. */
 typedef struct ccr_rename_undo {

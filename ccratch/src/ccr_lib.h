@@ -46,6 +46,7 @@ typedef struct ccr_lib_block {
     char types[CCR_LIB_MAX_PARAMS][64];     /* C types, if the pack says (`types:`) */
     char choices[CCR_LIB_MAX_PARAMS][64];   /* the enum a slot picks from (`choices:`) */
     char include[160];    /* its own header, if not the pack's (the project's functions) */
+    char doc[256];        /* what its comment says (the project's functions), one line */
     int  pack;
 } ccr_lib_block;
 

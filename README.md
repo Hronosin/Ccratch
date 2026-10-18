@@ -324,6 +324,17 @@ look first, and `cmake -S . -B build && cmake --build build` builds it.
   Files), how Ccratch looks (Theme, language, ?), and making the program go.
 - **Zoom** at the bottom right: - 100% + and "all of it"; Ctrl+= / Ctrl+-
   / Ctrl+0 too.
+- **To where it is made** (F12, or Ctrl+click on a name): a call, a
+  variable, a type, in whatever file of the project; the file opens and
+  the view glides to the block. Standing on the definition already, it
+  lists where it is used instead. **Alt+Left / Alt+Right**: back and
+  forward, as in a browser.
+- **Where it is used** (Shift+F12): a list at the top right of every
+  place in the project that names it, marked made here / declared /
+  used, with its line of code; a click goes there.
+- **A call under the mouse** tells what it is after a moment: its
+  signature, the comment above it, and where it comes from (this file,
+  `"util.h"`, a library).
 - **Rename** (F2) the name under the mouse in every file of the project:
   a function, a global, a type, an enum's value, a field. clang says
   which thing it is, so a local of the same name elsewhere stays as it

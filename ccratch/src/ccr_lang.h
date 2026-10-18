@@ -54,6 +54,19 @@
     X(INCLUDE_SYSTEM,   "include.system",        0, "%s is a system header, not opening it") \
     X(LIBS_TITLE,       "libs.title",            0, "Libraries")                         \
     X(PROJECT_BLOCKS,   "palette.project",       0, "This project")                      \
+    X(NAV_NONE,         "nav.none",              0, "No name under the mouse to go to")  \
+    X(NAV_UNSAVED,      "nav.unsaved",           0, "This block is not in the file yet: save first") \
+    X(NAV_CANNOT,       "nav.cannot",            0, "Cannot tell: %s")                   \
+    X(NAV_NO_DEF,       "nav.no_def",            0, "%s is made nowhere in the project") \
+    X(NAV_WENT,         "nav.went",              0, "%s: %s, line %d (Alt+Left: back)")  \
+    X(NAV_REFS,         "nav.refs",              0, "%s: %d places in %d files")         \
+    X(NAV_KIND_DEF,     "nav.kind_def",          0, "made here")                         \
+    X(NAV_KIND_DECL,    "nav.kind_decl",         0, "declared")                          \
+    X(NAV_KIND_USE,     "nav.kind_use",          0, "used")                              \
+    X(NAV_FROM,         "nav.from",              0, "from %s")                           \
+    X(NAV_FROM_HERE,    "nav.from_here",         0, "in this file")                      \
+    X(NAV_HINT,         "nav.hint",              0, "Ctrl+click or F12: go there, Shift+F12: where it is used") \
+    X(HELP_NAV,         "help.nav",              0, "to where it is made (also Ctrl+click), where it is used, back and forward") \
     X(REN_TITLE,        "ren.title",             0, "Rename %s: %d places in %d files")  \
     X(REN_HINT,         "ren.hint",              0, "Enter renames it everywhere, Esc leaves it") \
     X(REN_BAD,          "ren.bad",               0, "That is no C name (letters, digits, _; no keyword)") \

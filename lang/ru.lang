@@ -122,6 +122,19 @@ status.theme = Тема: %s
 
 # libraries as blocks
 palette.project = Этот проект
+nav.none = Под мышью нет имени, к которому можно перейти
+nav.unsaved = Этого блока ещё нет в файле: сначала сохрани
+nav.cannot = Не понять: %s
+nav.no_def = %s нигде в проекте не определено
+nav.went = %s: %s, строка %d (Alt+стрелка влево: назад)
+nav.refs = %s: %d мест в %d файлах
+nav.kind_def = определено
+nav.kind_decl = объявлено
+nav.kind_use = используется
+nav.from = из %s
+nav.from_here = в этом файле
+nav.hint = Ctrl+клик или F12: перейти, Shift+F12: где используется
+help.nav = к определению (и Ctrl+клик), где используется, назад и вперёд
 ren.title = Переименовать %s: %d мест в %d файлах
 ren.hint = Enter: переименовать везде, Esc: оставить
 ren.bad = Это не имя в C (буквы, цифры, _; не ключевое слово)

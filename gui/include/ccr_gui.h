@@ -56,6 +56,9 @@ typedef enum ccr_key {
     CCR_KEY_UP,        /* held: repeats */
     CCR_KEY_DOWN,
     CCR_KEY_F2,
+    CCR_KEY_F12,
+    CCR_KEY_LEFT,      /* held: repeats */
+    CCR_KEY_RIGHT,
     CCR_KEY_F8,
     CCR_KEY_F9,
     CCR_KEY_F10,
@@ -92,6 +95,7 @@ bool     ccr_gui_mouse_released(ccr_mouse_button button);  /* went up this frame
 bool     ccr_gui_key_pressed(ccr_key key);
 bool     ccr_gui_ctrl_down(void);
 bool     ccr_gui_shift_down(void);
+bool     ccr_gui_alt_down(void);
 
 /* If a file was dropped onto the window this frame, copies its path into
  * `out` and returns true. Only the first file of a drop is reported. */

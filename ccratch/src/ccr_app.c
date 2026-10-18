@@ -3772,6 +3772,405 @@ static bool rename_undo(ccr_document *doc, const ccr_options *opt)
     return true;
 }
 
+/* -------------------------------------- going between files: definitions */
+
+/* F12 or Ctrl+click on a name: to where it is made, in whatever file;
+ * Shift+F12: every place it is named, in a list; Alt+Left / Alt+Right:
+ * back and forward, as in a browser. A call under the mouse tells what
+ * it is: its signature, its comment, where it comes from. */
+#define NAV_MAX 64
+
+typedef struct nav_spot {
+    char       path[PATH_MAX_LEN];
+    ccr_canvas view;
+} nav_spot;
+
+static struct {
+    nav_spot back[NAV_MAX], fwd[NAV_MAX];
+    int      nback, nfwd;
+} g_nav;
+
+static struct {
+    bool       open;
+    ccr_rename found;
+    char     (*lines)[160];   /* each place's line of code */
+    int        hot;
+    float      scroll;
+} g_refs = { .hot = -1 };
+
+static void nav_push(nav_spot *stack, int *n, const ccr_document *doc, const ccr_canvas *cv)
+{
+    if (!doc->loaded)
+        return;
+    if (*n == NAV_MAX) {   /* full: the oldest goes */
+        memmove(stack, stack + 1, (NAV_MAX - 1) * sizeof *stack);
+        --*n;
+    }
+    snprintf(stack[*n].path, sizeof stack[0].path, "%s", doc->path);
+    stack[*n].view = *cv;
+    ++*n;
+}
+
+/* Back (or forward): the file and the view as they were. */
+static void nav_go(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt, bool back)
+{
+    nav_spot *from = back ? g_nav.back : g_nav.fwd, *to = back ? g_nav.fwd : g_nav.back;
+    int *nfrom = back ? &g_nav.nback : &g_nav.nfwd, *nto = back ? &g_nav.nfwd : &g_nav.nback;
+    if (*nfrom == 0)
+        return;
+    const nav_spot s = from[--*nfrom];
+    nav_push(to, nto, doc, cv);
+    if (!switch_to(doc, cv, viewport, s.path, opt))
+        return;
+    g_glide.active = true;   /* glide there, not jump */
+    g_glide.from = *cv;
+    g_glide.to = s.view;
+    g_glide.t = g_animate ? 0.0f : 1.0f;
+}
+
+/* Where the name of `id` starts in the file on disk (as last saved);
+ * false if it is not there yet (a block never saved). */
+static bool name_offset(const ccr_document *doc, ccr_node_id id, uint32_t *out)
+{
+    if (!doc->place || id >= doc->place_n || doc->place[id].b == UINT32_MAX)
+        return false;
+    const char *name = ccr_ast_str(&doc->ed.ast, doc->ed.ast.nodes[id].name);
+    const size_t nl = strlen(name);
+    FILE *f = fopen(doc->path, "rb");
+    if (!f || !nl) {
+        if (f)
+            fclose(f);
+        return false;
+    }
+    const uint32_t b = doc->place[id].b, e = doc->place[id].e;
+    char *text = malloc((size_t)(e - b) + 1);
+    const bool ok = text && fseek(f, (long)b, SEEK_SET) == 0 && fread(text, 1, e - b, f) == (size_t)(e - b);
+    fclose(f);
+    bool found = false;
+    for (uint32_t i = 0; ok && i + nl <= e - b; ++i)
+        if (memcmp(text + i, name, nl) == 0 && (i == 0 || !(isalnum((unsigned char)text[i - 1]) || text[i - 1] == '_')) &&
+            (i + nl == e - b || !(isalnum((unsigned char)text[i + nl]) || text[i + nl] == '_'))) {
+            *out = b + i;
+            found = true;
+            break;
+        }
+    free(text);
+    return found;
+}
+
+/* What the name under the mouse is, everywhere in the project. */
+static bool nav_find(ccr_document *doc, ccr_vec2 world, const ccr_options *opt, ccr_rename *out)
+{
+    memset(out, 0, sizeof *out);
+    if (!doc->loaded || doc->ed.ast.lang != CCR_LANG_C)
+        return false;
+    const ccr_context ctx = ccr_editor_context(&doc->ed, world);
+    const ccr_node_id id = named_node(&doc->ed.ast, ctx.text != CCR_NONE ? ctx.text : ctx.node);
+    uint32_t off;
+    if (id == CCR_NONE || !name_offset(doc, id, &off)) {
+        ccr_trf(doc->status, sizeof doc->status, id == CCR_NONE ? CCR_T_NAV_NONE : CCR_T_NAV_UNSAVED);
+        doc->has_errors = true;
+        return false;
+    }
+    char root[CCR_FILES_PATH], err[300];
+    git_dir(doc, root, sizeof root);
+    const char *args[CLANG_ARGS_MAX];
+    const int nargs = clang_args_for(doc->path, opt, args);
+    if (!ccr_rename_find(root, doc->path, off, args, nargs, out, err, (int)sizeof err)) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_NAV_CANNOT, err);
+        doc->has_errors = true;
+        return false;
+    }
+    return true;
+}
+
+/* Opens place `i` of `r` and glides to its block. */
+static void nav_open_place(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt,
+                           const ccr_rename *r, int i)
+{
+    const ccr_rename_place *p = &r->places[i];
+    char path[PATH_MAX_LEN];
+    snprintf(path, sizeof path, "%s", r->files[p->file]);
+    if (!switch_to(doc, cv, viewport, path, opt))
+        return;
+    /* the column, from the line's start in the file */
+    uint32_t col = 1;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        uint32_t ls = 0;
+        for (uint32_t b = 0; b < p->offset; ++b) {
+            const int c = fgetc(f);
+            if (c == EOF)
+                break;
+            if (c == '\n')
+                ls = b + 1;
+        }
+        col = p->offset - ls + 1;
+        fclose(f);
+    }
+    ccr_node_id at = locate(doc, (uint32_t)p->line, col);
+    /* the block that holds it: its statement, or the declaration itself */
+    while (at != CCR_NONE && doc->ed.ast.nodes[at].parent != CCR_NONE &&
+           doc->ed.ast.nodes[doc->ed.ast.nodes[at].parent].kind != CCR_NODE_BLOCK &&
+           doc->ed.ast.nodes[doc->ed.ast.nodes[at].parent].kind != CCR_NODE_TRANSLATION_UNIT)
+        at = doc->ed.ast.nodes[at].parent;
+    if (at != CCR_NONE)
+        glide_to_node(cv, doc, visible_view(viewport, ccr_gui_width(), ccr_gui_height()), at);
+}
+
+static void refs_close(void)
+{
+    g_refs.open = false;
+    ccr_rename_free(&g_refs.found);
+    free(g_refs.lines);
+    g_refs.lines = NULL;
+}
+
+/* Shift+F12: the list of every place. */
+static void refs_open(ccr_document *doc, ccr_vec2 world, const ccr_options *opt)
+{
+    ccr_rename r;
+    if (!nav_find(doc, world, opt, &r))
+        return;
+    refs_close();
+    g_refs.found = r;
+    g_refs.lines = calloc((size_t)(r.place_count ? r.place_count : 1), sizeof *g_refs.lines);
+    for (int i = 0; g_refs.lines && i < r.place_count; ++i) {   /* each place's line, trimmed */
+        FILE *f = fopen(r.files[r.places[i].file], "rb");
+        if (!f)
+            continue;
+        char line[1024];
+        int no = 0;
+        while (fgets(line, sizeof line, f))
+            if (++no == r.places[i].line)
+                break;
+        fclose(f);
+        line[strcspn(line, "\r\n")] = '\0';
+        const char *t = line;
+        while (*t == ' ' || *t == '\t')
+            ++t;
+        snprintf(g_refs.lines[i], sizeof g_refs.lines[0], "%.159s", t);
+    }
+    g_refs.open = true;
+    g_refs.hot = -1;
+    g_refs.scroll = 0.0f;
+}
+
+/* F12 / Ctrl+click: off to where it is made; already there: the list. */
+static void goto_definition(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, ccr_vec2 world,
+                            const ccr_options *opt)
+{
+    ccr_rename r;
+    if (!nav_find(doc, world, opt, &r))
+        return;
+    const int d = ccr_rename_definition(&r);
+    if (d < 0) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_NAV_NO_DEF, r.old_name);
+        doc->has_errors = true;
+        ccr_rename_free(&r);
+        return;
+    }
+    /* standing on it already: where it is used is the more useful answer */
+    uint32_t here = UINT32_MAX;
+    const ccr_context ctx = ccr_editor_context(&doc->ed, world);
+    const ccr_node_id id = named_node(&doc->ed.ast, ctx.text != CCR_NONE ? ctx.text : ctx.node);
+    if (id != CCR_NONE)
+        name_offset(doc, id, &here);
+    if (same_file(r.files[r.places[d].file], doc->path) && r.places[d].offset == here) {
+        ccr_rename_free(&r);
+        refs_open(doc, world, opt);
+        return;
+    }
+    g_nav.nfwd = 0;
+    nav_push(g_nav.back, &g_nav.nback, doc, cv);
+    nav_open_place(doc, cv, viewport, opt, &r, d);
+    ccr_trf(doc->status, sizeof doc->status, CCR_T_NAV_WENT, r.old_name, base_name(r.files[r.places[d].file]),
+            r.places[d].line);
+    doc->has_errors = false;
+    ccr_rename_free(&r);
+}
+
+static ccr_rect refs_area(ccr_rect vis)
+{
+    const float w = 460.0f > vis.w - 24.0f ? vis.w - 24.0f : 460.0f;
+    const int n = g_refs.found.place_count < 12 ? g_refs.found.place_count : 12;
+    return (ccr_rect){ vis.x + vis.w - w - 12.0f, vis.y + 12.0f, w, 44.0f + 40.0f * (float)n + 8.0f };
+}
+
+/* The list: a card at the top right of the canvas. */
+static void refs_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt, bool input)
+{
+    if (!g_refs.open)
+        return;
+    const ccr_rect vis = visible_view(viewport, ccr_gui_width(), ccr_gui_height());
+    const ccr_rect r = refs_area(vis);
+    const ccr_vec2 m = ccr_gui_mouse();
+    ccr_gui_rect_rounded((ccr_rect){ r.x + 3, r.y + 4, r.w, r.h }, 0.05f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ r.x - 1, r.y - 1, r.w + 2, r.h + 2 }, 0.05f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(r, 0.05f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    char title[300];
+    ccr_trf(title, sizeof title, CCR_T_NAV_REFS, g_refs.found.old_name, g_refs.found.place_count,
+            g_refs.found.file_count);
+    ccr_gui_text(title, r.x + 14.0f, r.y + 12.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
+    const ccr_button_style plain = *button_style(false);
+    bool close = ccr_gui_button((ccr_rect){ r.x + r.w - 34.0f, r.y + 8.0f, 26.0f, 24.0f }, "x", &plain) && input;
+    if (input && ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+        close = true;
+    const ccr_rect list = { r.x + 6.0f, r.y + 42.0f, r.w - 12.0f, r.h - 48.0f };
+    const float row = 40.0f;
+    const float max_scroll = (float)g_refs.found.place_count * row > list.h ? (float)g_refs.found.place_count * row - list.h : 0.0f;
+    if (input && point_in(m, list))
+        g_refs.scroll -= ccr_gui_wheel() * row;
+    g_refs.scroll = g_refs.scroll < 0.0f ? 0.0f : g_refs.scroll > max_scroll ? max_scroll : g_refs.scroll;
+    int go = -1;
+    ccr_gui_clip_begin(list);
+    for (int i = 0; i < g_refs.found.place_count; ++i) {
+        const ccr_rename_place *p = &g_refs.found.places[i];
+        const ccr_rect it = { list.x, list.y + (float)i * row - g_refs.scroll, list.w, row - 2.0f };
+        if (it.y + row < list.y || it.y > list.y + list.h)
+            continue;
+        const bool over = input && point_in(m, it) && point_in(m, list);
+        if (over)
+            ccr_gui_rect_rounded(it, 0.2f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x50u);
+        if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+            go = i;
+        /* what kind of place: made here, declared, or used */
+        const ccr_text kt = p->kind == CCR_PLACE_DEFINITION ? CCR_T_NAV_KIND_DEF
+                          : p->kind == CCR_PLACE_DECLARATION ? CCR_T_NAV_KIND_DECL : CCR_T_NAV_KIND_USE;
+        const ccr_color kc = p->kind == CCR_PLACE_DEFINITION ? 0x3FB950FFu
+                           : p->kind == CCR_PLACE_DECLARATION ? 0xA371F7FFu : 0x4C9BE8FFu;
+        char where[300];
+        snprintf(where, sizeof where, "%s:%d", base_name(g_refs.found.files[p->file]), p->line);
+        ccr_gui_text(where, it.x + 8.0f, it.y + 3.0f, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+        const float kw = ccr_gui_text_width(ccr_tr(kt), 12.0f) + 12.0f;
+        ccr_gui_rect_rounded((ccr_rect){ it.x + it.w - kw - 6.0f, it.y + 3.0f, kw, 16.0f }, 0.5f, kc);
+        ccr_gui_text(ccr_tr(kt), it.x + it.w - kw, it.y + 4.0f, 12.0f, 0xFFFFFFFFu);
+        ccr_gui_clip_begin((ccr_rect){ it.x, it.y, it.w - 8.0f, it.h });
+        if (g_refs.lines)
+            ccr_gui_text(g_refs.lines[i], it.x + 8.0f, it.y + 19.0f, 14.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_clip_end();
+    }
+    ccr_gui_clip_end();
+    if (go >= 0) {
+        g_nav.nfwd = 0;
+        nav_push(g_nav.back, &g_nav.nback, doc, cv);
+        nav_open_place(doc, cv, viewport, opt, &g_refs.found, go);
+    }
+    if (close)
+        refs_close();
+}
+
+/* Is the mouse over the list (it has the clicks there, not the canvas)? */
+static bool refs_has_mouse(ccr_rect viewport)
+{
+    return g_refs.open &&
+           point_in(ccr_gui_mouse(), refs_area(visible_view(viewport, ccr_gui_width(), ccr_gui_height())));
+}
+
+/* A call under the mouse: what it is, in a card. */
+static void call_tooltip(const ccr_document *doc, const ccr_canvas *cv, ccr_rect viewport)
+{
+    static ccr_node_id last = CCR_NONE;
+    static double since;
+    if (!doc->loaded || doc->ed.drag != CCR_DRAG_IDLE || doc->ed.ast.lang != CCR_LANG_C) {
+        last = CCR_NONE;
+        return;
+    }
+    const ccr_vec2 m = ccr_gui_mouse();
+    const ccr_rect vis = visible_view(viewport, ccr_gui_width(), ccr_gui_height());
+    if (!point_in(m, vis) || refs_has_mouse(viewport)) {
+        last = CCR_NONE;
+        return;
+    }
+    const ccr_vec2 world = ccr_canvas_to_world(cv, m);
+    const ccr_ast *a = &doc->ed.ast;
+    const ccr_node_id n = ccr_editor_context(&doc->ed, world).node;
+    if (n == CCR_NONE || a->nodes[n].kind != CCR_NODE_CALL || ccr_editor_mark_at(&doc->ed, world) >= 0) {
+        last = CCR_NONE;
+        return;
+    }
+    if (n != last) {
+        last = n;
+        since = ccr_gui_time();
+    }
+    if (ccr_gui_time() - since < 0.6)
+        return;
+    const char *name = ccr_ast_str(a, a->nodes[n].name);
+    char sig[400] = "", doc_text[600] = "", from[300] = "";
+    /* the file's own function: its text, and the comment above it */
+    for (ccr_node_id c = a->node_count ? a->nodes[0].first_child : CCR_NONE; c != CCR_NONE; c = a->nodes[c].next_sibling) {
+        const ccr_node *f = &a->nodes[c];
+        if (f->kind != CCR_NODE_FUNCTION || strcmp(ccr_ast_str(a, f->name), name) != 0)
+            continue;
+        size_t k = (size_t)snprintf(sig, sizeof sig, "%s %s(", ccr_ast_str(a, f->aux), name);
+        bool first = true;
+        for (ccr_node_id p = f->first_child; p != CCR_NONE && k < sizeof sig; p = a->nodes[p].next_sibling)
+            if (a->nodes[p].kind == CCR_NODE_PARAM) {
+                k += (size_t)snprintf(sig + k, sizeof sig - k, "%s%s %s", first ? "" : ", ",
+                                      ccr_ast_str(a, a->nodes[p].type), ccr_ast_str(a, a->nodes[p].name));
+                first = false;
+            }
+        if (k < sizeof sig)
+            snprintf(sig + k, sizeof sig - k, first ? "void)" : ")");
+        if (f->ext_b < f->src_b && f->src_b <= a->source_len) {   /* its comment, on one line */
+            size_t dk = 0;
+            bool space = false;
+            for (uint32_t i = f->ext_b; i < f->src_b && dk + 2 < sizeof doc_text; ++i) {
+                const char ch = a->source[i];
+                if (ch == '/' || ch == '*') { space = dk > 0; continue; }
+                if (isspace((unsigned char)ch)) { space = dk > 0; continue; }
+                if (space) doc_text[dk++] = ' ';
+                space = false;
+                doc_text[dk++] = ch;
+            }
+            doc_text[dk] = '\0';
+        }
+        ccr_trf(from, sizeof from, CCR_T_NAV_FROM_HERE);
+        break;
+    }
+    if (!sig[0]) {   /* another file's, or a library's */
+        int nargs = 0;
+        for (ccr_node_id c = a->nodes[n].first_child; c != CCR_NONE; c = a->nodes[c].next_sibling)
+            ++nargs;
+        const ccr_lib_block *b = ccr_lib_find(name, nargs);
+        if (!b)
+            return;
+        size_t k = (size_t)snprintf(sig, sizeof sig, "%s %s(", b->returns, name);
+        for (int i = 0; i < b->nparams && k < sizeof sig; ++i)
+            k += (size_t)snprintf(sig + k, sizeof sig - k, "%s%s%s%s", i ? ", " : "", b->types[i],
+                                  b->types[i][0] ? " " : "", b->params[i]);
+        if (k < sizeof sig)
+            snprintf(sig + k, sizeof sig - k, b->nparams ? ")" : "void)");
+        snprintf(doc_text, sizeof doc_text, "%s", b->doc);
+        const ccr_lib_pack *pk = ccr_lib_pack_at(b->pack);
+        if (b->include[0])
+            ccr_trf(from, sizeof from, CCR_T_NAV_FROM, b->include);
+        else if (pk)
+            ccr_trf(from, sizeof from, CCR_T_NAV_FROM, pk->include[0] ? pk->include : pk->name);
+    }
+    const float fs = 15.0f, pad = 10.0f, maxw = 560.0f;
+    char hint[400];
+    snprintf(hint, sizeof hint, "%s%s%s", from, from[0] ? "  ·  " : "", ccr_tr(CCR_T_NAV_HINT));
+    float w = fmaxf(ccr_gui_text_width(sig, fs), ccr_gui_text_width(hint, 12.0f));
+    if (w > maxw) w = maxw;
+    const float dh = doc_text[0] ? wrap_text(doc_text, 0, 0, w < 260.0f ? 260.0f : w, 14.0f, 0, false) : 0.0f;
+    if (doc_text[0] && w < 260.0f) w = 260.0f;
+    const float h = pad * 2.0f + 20.0f + (doc_text[0] ? dh + 6.0f : 0.0f) + 20.0f;
+    ccr_rect box = { m.x + 16.0f, m.y + 18.0f, w + pad * 2.0f, h };
+    if (box.x + box.w > vis.x + vis.w) box.x = vis.x + vis.w - box.w - 4.0f;
+    if (box.y + box.h > vis.y + vis.h) box.y = m.y - box.h - 10.0f;
+    ccr_gui_rect_rounded((ccr_rect){ box.x - 1, box.y - 1, box.w + 2, box.h + 2 }, 0.15f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(box, 0.15f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    ccr_gui_clip_begin(box);
+    float y = box.y + pad - 2.0f;
+    ccr_gui_text(sig, box.x + pad, y, fs, ccr_th(CCR_C_PANEL_TEXT));
+    y += 22.0f;
+    if (doc_text[0])
+        y += wrap_text(doc_text, box.x + pad, y, w, 14.0f, ccr_th(CCR_C_PANEL_TEXT), true) + 6.0f;
+    ccr_gui_text(hint, box.x + pad, y, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+    ccr_gui_clip_end();
+}
+
 /* A mark under the mouse: what the compiler said, next to it. */
 static void mark_tooltip(const ccr_document *doc, const ccr_canvas *cv, ccr_rect viewport)
 {
@@ -4080,6 +4479,7 @@ static bool help_frame(int w, int h)
         { "F8, F9, F10, F11", 0, CCR_T_HELP_DEBUG },
         { "Ctrl+G", 0, CCR_T_HELP_GIT },
         { "F2", 0, CCR_T_HELP_RENAME },
+        { "F12, Shift+F12, Alt+<-", 0, CCR_T_HELP_NAV },
         { "F5", 0, CCR_T_HELP_RELOAD },
         { "F1", 0, CCR_T_HELP_HELP },
     };
@@ -5583,7 +5983,7 @@ int ccr_run(int argc, char **argv)
                 canvas.offset.x += PALETTE_W - last_pw;
             last_pw = PALETTE_W;
         }
-        const bool inside = !on_split && point_in(m, viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h))) &&
+        const bool inside = !on_split && point_in(m, viewport) && !refs_has_mouse(viewport) && !(g_files_t > 0.0f && point_in(m, files_area(w, h))) &&
                             !(g_bp.t > 0.0f && point_in(m, build_area(w, h))) &&
                             !(g_find.open && doc.loaded && point_in(m, find_area(visible_view(viewport, w, h)))) &&
                             !(minimap_wanted(&doc, &canvas, visible_view(viewport, w, h)) &&
@@ -5767,6 +6167,16 @@ int ccr_run(int argc, char **argv)
                 dbg_toggle(&doc, world);
             if (ccr_gui_key_pressed(CCR_KEY_F2) && inside && doc.loaded && doc.ed.drag == CCR_DRAG_IDLE)
                 rename_begin(&doc, world, m, &opt);
+            if (ccr_gui_key_pressed(CCR_KEY_F12) && inside && doc.loaded && doc.ed.drag == CCR_DRAG_IDLE) {
+                if (shift)
+                    refs_open(&doc, world, &opt);
+                else
+                    goto_definition(&doc, &canvas, viewport, world, &opt);
+            }
+            if (ccr_gui_alt_down() && ccr_gui_key_pressed(CCR_KEY_LEFT))
+                nav_go(&doc, &canvas, viewport, &opt, true);
+            if (ccr_gui_alt_down() && ccr_gui_key_pressed(CCR_KEY_RIGHT))
+                nav_go(&doc, &canvas, viewport, &opt, false);
             if (ccr_gui_key_pressed(CCR_KEY_F10))
                 ccr_gdb_next(&g_gdb);
             if (ccr_gui_key_pressed(CCR_KEY_F11)) {
@@ -5790,7 +6200,12 @@ int ccr_run(int argc, char **argv)
         if (can_act && !pie.open && !was_open) {
             /* a carried copy (Duplicate) lands on a click anywhere, the
              * palette included, where it is thrown away */
-            const bool lmb = ccr_gui_mouse_pressed(CCR_MOUSE_LEFT);
+            bool lmb = ccr_gui_mouse_pressed(CCR_MOUSE_LEFT);
+            /* Ctrl+click on a name: to where it is made (no drag, no select) */
+            if (lmb && ccr_gui_ctrl_down() && inside && !doc.ed.carrying && doc.ed.drag == CCR_DRAG_IDLE) {
+                goto_definition(&doc, &canvas, viewport, world, &opt);
+                lmb = false;
+            }
             ccr_vec2 grab;
             int spawn = (over_palette && lmb && !doc.ed.carrying)
                       ? ccr_palette_hit(&g_palette, palette_area(h), m, &grab) : -1;
@@ -5872,6 +6287,9 @@ int ccr_run(int argc, char **argv)
         tabs_frame(w, &doc, &canvas, viewport, &opt,
                    !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         mark_tooltip(&doc, &canvas, viewport);
+        if (!modal && !pie.open && !opm.open && te.node == CCR_NONE)
+            call_tooltip(&doc, &canvas, viewport);
+        refs_frame(&doc, &canvas, viewport, &opt, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         /* the text box over the slot being edited */
         if (te.node != CCR_NONE) {
             ccr_rect r;
@@ -5984,6 +6402,7 @@ int ccr_run(int argc, char **argv)
     ccr_project_result_free(&g_proj);
     ccr_rename_free(&g_ren.found);
     ccr_rename_undo_free(&g_ren.undo);
+    refs_close();
     free(g_copied);
     g_copied = NULL;
     document_close(&doc);

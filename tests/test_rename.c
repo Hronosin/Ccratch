@@ -87,6 +87,18 @@ int main(void)
           "find add: %s", err);
     CHECK(strcmp(r.old_name, "add") == 0 && r.file_count == 3 && r.place_count == 4,
           "add: %s in %d files, %d places (want 3, 4)", r.old_name, r.file_count, r.place_count);
+    /* what each place is: the definition in util.c, the declaration in
+     * util.h, two calls in main.c */
+    int defs = 0, decls = 0, uses = 0;
+    for (int i = 0; i < r.place_count; ++i) {
+        defs += r.places[i].kind == CCR_PLACE_DEFINITION;
+        decls += r.places[i].kind == CCR_PLACE_DECLARATION;
+        uses += r.places[i].kind == CCR_PLACE_USE;
+    }
+    CHECK(defs == 1 && decls == 1 && uses == 2, "kinds: %d definitions, %d declarations, %d uses", defs, decls, uses);
+    const int d = ccr_rename_definition(&r);
+    CHECK(d >= 0 && strstr(r.files[r.places[d].file], "util.c") && r.places[d].line == 2,
+          "the definition: %s:%d", d >= 0 ? r.files[r.places[d].file] : "-", d >= 0 ? r.places[d].line : 0);
     ccr_rename_undo undo;
     CHECK(!ccr_rename_apply(&r, "int", &undo, err, (int)sizeof err), "a keyword is refused");
     CHECK(ccr_rename_apply(&r, "sum", &undo, err, (int)sizeof err), "apply: %s", err);

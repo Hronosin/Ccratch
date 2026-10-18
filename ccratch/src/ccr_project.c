@@ -131,6 +131,25 @@ static void make_block(const ccr_api_func *f, const char *include, ccr_lib_block
     snprintf(b->call, sizeof b->call, "%s", f->name);
     snprintf(b->returns, sizeof b->returns, "%.63s", f->ret[0] ? f->ret : "void");
     snprintf(b->include, sizeof b->include, "%s", include);
+    /* its comment, without the slashes and stars, on one line */
+    size_t dk = 0;
+    bool space = false;
+    for (const char *c = f->doc; *c && dk + 2 < sizeof b->doc; ++c) {
+        if (*c == '/' || *c == '*' || *c == '!' || *c == '<') {
+            if (dk && !space && (c[1] == ' ' || c[1] == '\n'))
+                space = true;
+            continue;
+        }
+        if (isspace((unsigned char)*c)) {
+            space = dk > 0;
+            continue;
+        }
+        if (space)
+            b->doc[dk++] = ' ';
+        space = false;
+        b->doc[dk++] = *c;
+    }
+    b->doc[dk] = '\0';
     size_t len = (size_t)snprintf(b->text, sizeof b->text, "%s (", f->name);
     for (int k = 0; k < f->nparams && k < CCR_LIB_MAX_PARAMS; ++k) {
         char name[32];

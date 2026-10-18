@@ -124,22 +124,31 @@ typedef struct collect_ctx {
     const char *text;
     size_t      text_len;
     uint32_t   *offsets;
+    uint8_t    *kinds;
     int         count, cap;
 } collect_ctx;
 
-static void add_offset(collect_ctx *c, uint32_t off)
+static void add_offset(collect_ctx *c, uint32_t off, ccr_place_kind kind)
 {
     for (int i = 0; i < c->count; ++i)
-        if (c->offsets[i] == off)
+        if (c->offsets[i] == off) {
+            if ((int)kind > (int)c->kinds[i])
+                c->kinds[i] = (uint8_t)kind;
             return;
+        }
     if (c->count == c->cap) {
         const int cap = c->cap ? c->cap * 2 : 32;
         uint32_t *v = realloc(c->offsets, (size_t)cap * sizeof *v);
         if (!v)
             return;
         c->offsets = v;
+        uint8_t *k = realloc(c->kinds, (size_t)cap * sizeof *k);
+        if (!k)
+            return;
+        c->kinds = k;
         c->cap = cap;
     }
+    c->kinds[c->count] = (uint8_t)kind;
     c->offsets[c->count++] = off;
 }
 
@@ -164,7 +173,10 @@ static enum CXChildVisitResult collect(CXCursor cur, CXCursor parent, CXClientDa
         if (at + c->name_len <= c->text_len && memcmp(c->text + at, c->name, c->name_len) == 0 &&
             (at == 0 || !ident_char(c->text[at - 1])) &&
             (at + c->name_len == c->text_len || !ident_char(c->text[at + c->name_len]))) {
-            add_offset(c, (uint32_t)at);
+            const bool decl = clang_isDeclaration(clang_getCursorKind(cur));   /* else a use of it */
+            add_offset(c, (uint32_t)at, !decl ? CCR_PLACE_USE
+                                        : clang_isCursorDefinition(cur) ? CCR_PLACE_DEFINITION
+                                                                        : CCR_PLACE_DECLARATION);
             break;
         }
         if (at > off && (c->text[at] == ';' || c->text[at] == '{' || c->text[at] == '('))
@@ -175,9 +187,11 @@ static enum CXChildVisitResult collect(CXCursor cur, CXCursor parent, CXClientDa
 
 /* Every place `usr` is named in file `path`, as offsets into `text`. */
 static int places_in(CXIndex index, const char *path, const char *root, const char *const *args, int nargs,
-                     const char *usr, const char *name, const char *text, size_t len, uint32_t **out)
+                     const char *usr, const char *name, const char *text, size_t len, uint32_t **out,
+                     uint8_t **kinds)
 {
     *out = NULL;
+    *kinds = NULL;
     /* the name is not even there: no need to ask clang */
     if (!strstr(text, name))
         return 0;
@@ -189,6 +203,7 @@ static int places_in(CXIndex index, const char *path, const char *root, const ch
     clang_visitChildren(clang_getTranslationUnitCursor(tu), collect, &c);
     clang_disposeTranslationUnit(tu);
     *out = c.offsets;
+    *kinds = c.kinds;
     return c.count;
 }
 
@@ -261,19 +276,26 @@ bool ccr_rename_find(const char *root, const char *path, uint32_t offset, const 
         if (!ftext)
             continue;
         uint32_t *offs = NULL;
+        uint8_t *kinds = NULL;
         const int n = places_in(index, files[i], real_root, clang_args, nargs, out->usr, out->old_name, ftext,
-                                flen, &offs);
+                                flen, &offs, &kinds);
         if (n > 0) {
             const int fi = out->file_count++;
             snprintf(out->files[fi], sizeof out->files[fi], "%s", files[i]);
             ccr_rename_place *v = realloc(out->places, (size_t)(out->place_count + n) * sizeof *v);
             if (v) {
                 out->places = v;
-                for (int k = 0; k < n; ++k)
-                    out->places[out->place_count++] = (ccr_rename_place){ fi, offs[k] };
+                for (int k = 0; k < n; ++k) {
+                    int line = 1;
+                    for (uint32_t b = 0; b < offs[k] && b < flen; ++b)
+                        line += ftext[b] == '\n';
+                    out->places[out->place_count++] =
+                        (ccr_rename_place){ fi, offs[k], (ccr_place_kind)kinds[k], line };
+                }
             }
         }
         free(offs);
+        free(kinds);
         free(ftext);
     }
     free(files);
@@ -283,6 +305,16 @@ bool ccr_rename_find(const char *root, const char *path, uint32_t offset, const 
         return false;
     }
     return true;
+}
+
+int ccr_rename_definition(const ccr_rename *r)
+{
+    int best = -1;
+    for (int i = 0; i < r->place_count; ++i)
+        if (r->places[i].kind != CCR_PLACE_USE &&
+            (best < 0 || (int)r->places[i].kind > (int)r->places[best].kind))
+            best = i;
+    return best;
 }
 
 void ccr_rename_free(ccr_rename *r)
