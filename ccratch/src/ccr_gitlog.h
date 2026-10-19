@@ -76,6 +76,8 @@ bool ccr_git_blame(const char *path, ccr_blame *out);
 void ccr_git_blame_free(ccr_blame *b);
 /* "2 hours ago", "3 days ago" in the interface language. */
 void ccr_git_ago(int64_t when, char *out, int cap);
+/* "18.10.2026 11:59", local time. */
+void ccr_git_date(int64_t when, char *out, int cap);
 
 /* ------------------------------------------------------------ stash */
 

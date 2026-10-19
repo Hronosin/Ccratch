@@ -214,6 +214,8 @@ ccr_rect ccr_editor_bounds(const ccr_editor *ed);
 
 /* World rectangle of a node's first block, for tests and "jump to". */
 bool ccr_editor_node_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out);
+/* Its first row only (a hat with the row under it, an if's top arm). */
+bool ccr_editor_node_head_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out);
 
 /* Lays every script out again (the theme changed its colours). */
 void ccr_editor_relayout_all(ccr_editor *ed);

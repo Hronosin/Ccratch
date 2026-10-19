@@ -1519,6 +1519,32 @@ bool ccr_blocks_find(const ccr_blocks *b, ccr_node_id node, ccr_rect *out)
     return false;
 }
 
+bool ccr_blocks_find_head(const ccr_blocks *b, ccr_node_id node, ccr_rect *out)
+{
+    bool found = false;
+    ccr_rect u = { 0 }, first = { 0 };
+    for (uint32_t i = 0; i < b->prim_count; ++i) {
+        const ccr_prim *p = &b->prims[i];
+        if (p->node != node || p->kind == CCR_PRIM_TEXT || p->kind == CCR_PRIM_TAB)
+            continue;
+        if (!found) {
+            first = u = p->rect;
+            found = true;
+            continue;
+        }
+        if (p->rect.y >= first.y + first.h - 0.5f)
+            continue;   /* starts below the first piece: an arm, a foot */
+        const float x1 = fmaxf(u.x + u.w, p->rect.x + p->rect.w), y1 = fmaxf(u.y + u.h, p->rect.y + p->rect.h);
+        u.x = fminf(u.x, p->rect.x);
+        u.y = fminf(u.y, p->rect.y);
+        u.w = x1 - u.x;
+        u.h = y1 - u.y;
+    }
+    if (found)
+        *out = u;
+    return found;
+}
+
 /* --------------------------------------------------------- drawing */
 
 static bool overlaps(ccr_rect a, ccr_rect b)

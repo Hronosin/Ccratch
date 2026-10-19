@@ -94,7 +94,8 @@ void ccr_gui_set_cursor(ccr_cursor c)
         return;
     now = (int)c;
     SetMouseCursor(c == CCR_CURSOR_EW ? MOUSE_CURSOR_RESIZE_EW
-                   : c == CCR_CURSOR_NS ? MOUSE_CURSOR_RESIZE_NS : MOUSE_CURSOR_DEFAULT);
+                   : c == CCR_CURSOR_NS ? MOUSE_CURSOR_RESIZE_NS
+                   : c == CCR_CURSOR_HAND ? MOUSE_CURSOR_POINTING_HAND : MOUSE_CURSOR_DEFAULT);
 }
 
 void ccr_gui_cancel_close(void)

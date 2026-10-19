@@ -644,6 +644,20 @@ bool ccr_editor_node_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out)
     return true;
 }
 
+bool ccr_editor_node_head_rect(const ccr_editor *ed, ccr_node_id node, ccr_rect *out)
+{
+    if (node >= ed->ast.node_count)
+        return false;
+    uint32_t i = script_index_of_root(ed, script_root_of(ed, node));
+    if (i == UINT32_MAX)
+        return false;
+    ccr_rect r;
+    if (!ccr_blocks_find_head(&ed->scripts[i].blocks, node, &r))
+        return false;
+    *out = (ccr_rect){ r.x + ed->scripts[i].pos.x, r.y + ed->scripts[i].pos.y, r.w, r.h };
+    return true;
+}
+
 void ccr_editor_relayout_all(ccr_editor *ed)
 {
     ccr_editor_settle(ed);

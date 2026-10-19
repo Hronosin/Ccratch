@@ -469,9 +469,12 @@ tab, as VS Code's Source Control:
   the merge with git's message. A revert or a cherry-pick that conflicts
   waits the same way. **Give up** gives it all up: the files as before.
 
-A tick under the changes shows who last changed each block: their name,
-how long ago and the commit's message, faint, beside the block (or
-"you, not committed yet").
+A tick under the changes shows who last changed each block: a round
+badge with the author's initials (each author their own colour) beside
+the first block of every run from one commit; a ring for blocks you
+changed and have not committed. Rest the mouse on a block and a card
+slides out of its badge: who, how long ago and when, the commit's
+message. A click on the badge opens that commit.
 
 And on the canvas, as in an editor's gutter: a green bar beside a block
 that is new since the last commit, blue beside one that changed, a red
@@ -483,7 +486,7 @@ repository yet gets a button for `git init`.
 
 ![the Git tab: master, staged and unstaged changes; bars beside the blocks that changed](docs/git.png)
 
-![who changed each block beside it; the history of two branches and a merge](docs/git_history.png)
+![author badges beside the blocks, the card of one, and the history of two branches with a merge](docs/git_history.png)
 
 ## Expressions
 

@@ -265,6 +265,17 @@ void ccr_git_blame_free(ccr_blame *b)
     memset(b, 0, sizeof *b);
 }
 
+void ccr_git_date(int64_t when, char *out, int cap)
+{
+    const time_t t = (time_t)when;
+    struct tm tmv;
+    if (cap <= 0)
+        return;
+    out[0] = '\0';
+    if (localtime_r(&t, &tmv))
+        strftime(out, (size_t)cap, "%d.%m.%Y %H:%M", &tmv);
+}
+
 void ccr_git_ago(int64_t when, char *out, int cap)
 {
     const int64_t now = (int64_t)time(NULL);

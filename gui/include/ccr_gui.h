@@ -104,7 +104,7 @@ bool     ccr_gui_file_dropped(char *out, unsigned int cap);
 void        ccr_gui_set_clipboard(const char *text);
 const char *ccr_gui_clipboard(void);
 /* The mouse pointer's shape, for edges that can be dragged. */
-typedef enum ccr_cursor { CCR_CURSOR_DEFAULT, CCR_CURSOR_EW, CCR_CURSOR_NS } ccr_cursor;
+typedef enum ccr_cursor { CCR_CURSOR_DEFAULT, CCR_CURSOR_EW, CCR_CURSOR_NS, CCR_CURSOR_HAND } ccr_cursor;
 void     ccr_gui_set_cursor(ccr_cursor c);
 /* The window's close button was pressed but there is unsaved work: keep
  * the window open (ccr_gui_should_close is false again next frame). */

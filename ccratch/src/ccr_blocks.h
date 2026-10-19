@@ -107,6 +107,9 @@ bool ccr_blocks_hit_text(const ccr_blocks *b, ccr_vec2 local, ccr_node_id *node,
 
 /* Rectangle of the first primitive drawn for `node`, if any. */
 bool ccr_blocks_find(const ccr_blocks *b, ccr_node_id node, ccr_rect *out);
+/* The node's first row: its pieces there together (a hat and the row
+ * under it, an if's top arm). */
+bool ccr_blocks_find_head(const ccr_blocks *b, ccr_node_id node, ccr_rect *out);
 
 /* The script's outline in one flat colour: a shadow under a lifted stack. */
 void ccr_blocks_draw_shadow(const ccr_blocks *b, const ccr_canvas *cv, ccr_rect viewport,

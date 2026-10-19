@@ -3009,34 +3009,62 @@ static void git_net(ccr_document *doc, ccr_git_net what)
     (void)doc;
 }
 
-/* Who last changed each block of the file on screen (blame), a line of
- * text per block, drawn faintly to its right. */
+/* Who last changed each block of the file on screen (blame): a round
+ * badge with the author's initials beside the first block of each run of
+ * blocks from the same commit, and a card that slides out of it when the
+ * mouse rests on a block: who, when, the commit and its message. A click
+ * on the badge opens the commit. */
+static bool g_hand;   /* something clickable under the mouse: the hand cursor */
+
 static struct {
-    ccr_node_id *nodes;
-    char       (*texts)[140];
-    bool        *mine;      /* not committed yet */
-    int          n;
-} g_blame;
+    ccr_blame_commit *commits;
+    int               commit_count;
+    ccr_node_id      *nodes;
+    int              *commit;      /* per entry: an index in commits */
+    bool             *badge;       /* the first of its run: a badge */
+    int               n;
+    int               hover;       /* the entry the card is about, -1 */
+    double            since;       /* when the mouse came to it */
+    float             open;        /* 0..1: how far out the card is */
+} g_blame = { .hover = -1 };
 
 static void blame_clear(void)
 {
+    free(g_blame.commits);
     free(g_blame.nodes);
-    free(g_blame.texts);
-    free(g_blame.mine);
+    free(g_blame.commit);
+    free(g_blame.badge);
     memset(&g_blame, 0, sizeof g_blame);
+    g_blame.hover = -1;
 }
 
 static void blame_read(const ccr_document *doc)
 {
+    /* read again every few seconds: the card stays as it is */
+    const ccr_node_id was = g_blame.hover >= 0 ? g_blame.nodes[g_blame.hover] : CCR_NONE;
+    const double since = g_blame.since;
+    const float open = g_blame.open;
     blame_clear();
     ccr_blame b;
     if (!doc->loaded || !doc->place || !doc->line_at || !ccr_git_blame(doc->path, &b))
         return;
     const ccr_ast *a = &doc->ed.ast;
+    g_blame.commits = b.commit_count ? malloc((size_t)b.commit_count * sizeof *g_blame.commits) : NULL;
     g_blame.nodes = malloc(a->node_count * sizeof *g_blame.nodes);
-    g_blame.texts = malloc(a->node_count * sizeof *g_blame.texts);
-    g_blame.mine = malloc(a->node_count * sizeof *g_blame.mine);
-    for (uint32_t i = 1; g_blame.nodes && g_blame.texts && g_blame.mine && i < a->node_count && i < doc->place_n; ++i) {
+    g_blame.commit = malloc(a->node_count * sizeof *g_blame.commit);
+    g_blame.badge = malloc(a->node_count * sizeof *g_blame.badge);
+    int *lines = malloc(a->node_count * sizeof *lines);
+    ccr_node_id *tops = malloc(a->node_count * sizeof *tops);
+    if (!g_blame.commits || !g_blame.nodes || !g_blame.commit || !g_blame.badge || !lines || !tops) {
+        free(lines);
+        free(tops);
+        ccr_git_blame_free(&b);
+        blame_clear();
+        return;
+    }
+    memcpy(g_blame.commits, b.commits, (size_t)b.commit_count * sizeof *g_blame.commits);
+    g_blame.commit_count = b.commit_count;
+    for (uint32_t i = 1; i < a->node_count && i < doc->place_n; ++i) {
         const ccr_node *n = &a->nodes[i];
         if (n->parent == CCR_NONE || n->kind == CCR_NODE_BLOCK || (n->flags & CCR_FLAG_DEAD))
             continue;
@@ -3048,33 +3076,271 @@ static void blame_read(const ccr_document *doc)
         const int line = place_line(doc, i);
         if (line <= 0 || line > b.line_count)
             continue;
-        const ccr_blame_commit *c = &b.commits[b.line_commit[line - 1]];
-        char ago[64];
-        ccr_git_ago(c->time, ago, (int)sizeof ago);
-        if (c->uncommitted)
-            ccr_trf(g_blame.texts[g_blame.n], sizeof g_blame.texts[0], CCR_T_GIT_BLAME_MINE);
-        else
-            snprintf(g_blame.texts[g_blame.n], sizeof g_blame.texts[0], "%.40s, %.30s  %.60s", c->author, ago,
-                     c->summary);
-        g_blame.mine[g_blame.n] = c->uncommitted;
-        g_blame.nodes[g_blame.n++] = i;
+        const int c = b.line_commit[line - 1];
+        lines[g_blame.n] = line;
+        ccr_node_id top = i;
+        while (a->nodes[top].parent != CCR_NONE && a->nodes[a->nodes[top].parent].kind != CCR_NODE_TRANSLATION_UNIT)
+            top = a->nodes[top].parent;
+        tops[g_blame.n] = top;
+        if (i == was) {
+            g_blame.hover = g_blame.n;
+            g_blame.since = since;
+            g_blame.open = open;
+        }
+        g_blame.nodes[g_blame.n] = i;
+        g_blame.commit[g_blame.n++] = c;
     }
+    /* a badge where the commit changes from the block above it (the one
+     * just before it in the file, in the same stack) */
+    for (int e = 0; e < g_blame.n; ++e) {
+        int above = -1;
+        for (int k = 0; k < g_blame.n; ++k)
+            if (k != e && tops[k] == tops[e] && lines[k] < lines[e] && (above < 0 || lines[k] > lines[above]))
+                above = k;
+        g_blame.badge[e] = above < 0 || g_blame.commit[above] != g_blame.commit[e];
+    }
+    free(lines);
+    free(tops);
     ccr_git_blame_free(&b);
 }
 
+/* An author's own colour: the same name, the same colour. */
+static ccr_color blame_color(const char *author)
+{
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)author; *p; ++p)
+        h = (h ^ *p) * 16777619u;
+    const float hue = (float)(h % 360u) / 60.0f, s = 0.55f, v = 0.82f;
+    const float c = v * s, x = c * (1.0f - fabsf(fmodf(hue, 2.0f) - 1.0f)), m = v - c;
+    float r = 0, g = 0, bl = 0;
+    switch ((int)hue) {
+    case 0: r = c; g = x; break;
+    case 1: r = x; g = c; break;
+    case 2: g = c; bl = x; break;
+    case 3: g = x; bl = c; break;
+    case 4: r = x; bl = c; break;
+    default: r = c; bl = x; break;
+    }
+    return ((ccr_color)((r + m) * 255.0f) << 24) | ((ccr_color)((g + m) * 255.0f) << 16) |
+           ((ccr_color)((bl + m) * 255.0f) << 8) | 0xFFu;
+}
+
+/* "Hronosin" -> "H", "Ada Lovelace" -> "AL" (whole UTF-8 letters). */
+static void blame_initials(const char *author, char *out, size_t cap)
+{
+    size_t o = 0;
+    bool start = true;
+    int got = 0;
+    for (const unsigned char *p = (const unsigned char *)author; *p && got < 2; ++p) {
+        if (*p == ' ' || *p == '.' || *p == '-' || *p == '_') {
+            start = true;
+            continue;
+        }
+        if (start && (*p & 0xC0) != 0x80) {
+            size_t len = *p < 0x80 ? 1 : (*p >> 5) == 6 ? 2 : (*p >> 4) == 14 ? 3 : 4;
+            if (o + len + 1 > cap)
+                break;
+            for (size_t k = 0; k < len && p[k]; ++k)
+                out[o++] = (char)((len == 1 && p[k] >= 'a' && p[k] <= 'z') ? p[k] - 32 : p[k]);
+            ++got;
+        }
+        start = false;
+    }
+    out[o] = '\0';
+}
+
+/* Where entry i's badge is, on screen. */
+static bool blame_badge_at(const ccr_document *doc, const ccr_canvas *cv, int i, ccr_vec2 *center, float *radius)
+{
+    ccr_rect r;
+    if (!ccr_editor_node_head_rect(&doc->ed, g_blame.nodes[i], &r))
+        return false;
+    const float z = cv->zoom < 1.0f ? cv->zoom : 1.0f;
+    *radius = 12.0f * z;
+    /* beside the block's first row, in the middle of its last 46 (a hat's
+     * bump is above that) */
+    const float row = r.h < 46.0f ? r.h : 46.0f;
+    const ccr_vec2 at = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x + r.w, r.y + r.h - row * 0.5f });
+    *center = (ccr_vec2){ at.x + 10.0f * z + *radius, at.y };
+    return true;
+}
+
+static void blame_badge(ccr_vec2 c, float rad, const ccr_blame_commit *bc, bool hot)
+{
+    if (bc->uncommitted) {
+        ccr_gui_circle(c, rad + (hot ? 2.0f : 1.0f), ccr_th(CCR_C_ACCENT));
+        ccr_gui_circle(c, rad - 2.0f, ccr_th(CCR_C_BG));
+        ccr_gui_circle(c, rad * 0.32f, ccr_th(CCR_C_ACCENT));
+        return;
+    }
+    if (hot)
+        ccr_gui_circle(c, rad + 2.5f, ccr_th(CCR_C_PANEL_TEXT));
+    ccr_gui_circle(c, rad, blame_color(bc->author));
+    char ini[16];
+    blame_initials(bc->author, ini, sizeof ini);
+    const float fs = rad * (ini[1] && ((unsigned char)ini[0] < 0x80 ? ini[1] : 1) ? 0.95f : 1.15f);
+    ccr_gui_text(ini, c.x - ccr_gui_text_width(ini, fs) * 0.5f, c.y - fs * 0.55f, fs, 0x1A1A22FFu);
+}
+
+/* The badges, over the canvas. */
 static void blame_draw(const ccr_document *doc, const ccr_canvas *cv)
 {
-    if (!g_git.blame_on || !doc->loaded || cv->zoom < 0.45f)
+    if (!g_git.blame_on || !doc->loaded || cv->zoom < 0.35f)
         return;
-    const float fs = 13.0f * (cv->zoom < 1.0f ? cv->zoom : 1.0f);
     for (int i = 0; i < g_blame.n; ++i) {
-        ccr_rect r;
-        if (!ccr_editor_node_rect(&doc->ed, g_blame.nodes[i], &r))
+        if (!g_blame.badge[i] && i != g_blame.hover)
             continue;
-        const ccr_vec2 at = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x + r.w + 14.0f, r.y + 12.0f });
-        ccr_gui_text(g_blame.texts[i], at.x, at.y, fs,
-                     g_blame.mine[i] ? (ccr_th(CCR_C_ACCENT) & 0xFFFFFF00u) | 0xB0u
-                                     : (ccr_th(CCR_C_HINT) & 0xFFFFFF00u) | 0xC0u);
+        ccr_vec2 c;
+        float rad;
+        if (!blame_badge_at(doc, cv, i, &c, &rad))
+            continue;
+        const ccr_blame_commit *bc = &g_blame.commits[g_blame.commit[i]];
+        if (!g_blame.badge[i])   /* not its own badge: a small dot while the card is about it */
+            ccr_gui_circle(c, rad * 0.45f, bc->uncommitted ? ccr_th(CCR_C_ACCENT) : blame_color(bc->author));
+        else
+            blame_badge(c, rad, bc, i == g_blame.hover && g_blame.open > 0.5f);
+    }
+}
+
+/* The card, over everything on the canvas: which block the mouse is on
+ * (the innermost), a moment's wait, then it slides out of the badge. */
+static void blame_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewport, bool interactive, float dt)
+{
+    if (!g_git.blame_on || !doc->loaded || g_blame.n == 0 || cv->zoom < 0.35f) {
+        g_blame.hover = -1;
+        g_blame.open = 0.0f;
+        return;
+    }
+    const ccr_vec2 m = ccr_gui_mouse();
+    const ccr_rect vis = visible_view(viewport, ccr_gui_width(), ccr_gui_height());
+    int over = -1;
+    bool on_badge = false;
+    if (interactive && doc->ed.drag == CCR_DRAG_IDLE && point_in(m, vis)) {
+        const ccr_vec2 world = ccr_canvas_to_world(cv, m);
+        float best = 1e30f;
+        for (int i = 0; i < g_blame.n; ++i) {
+            ccr_vec2 c;
+            float rad;
+            if (blame_badge_at(doc, cv, i, &c, &rad) && g_blame.badge[i]) {
+                const float dx = m.x - c.x, dy = m.y - c.y;
+                if (dx * dx + dy * dy <= (rad + 3.0f) * (rad + 3.0f)) {
+                    over = i;
+                    on_badge = true;
+                    break;
+                }
+            }
+            ccr_rect r;
+            if (!ccr_editor_node_rect(&doc->ed, g_blame.nodes[i], &r) || !point_in(world, r))
+                continue;
+            if (r.w * r.h < best) {   /* the innermost block */
+                best = r.w * r.h;
+                over = i;
+            }
+        }
+        /* a call inside the block has its own card (F12's): that one wins */
+        if (over >= 0 && !on_badge) {
+            const ccr_node_id n = ccr_editor_context(&doc->ed, world).node;
+            if (n != CCR_NONE && n != g_blame.nodes[over] && doc->ed.ast.nodes[n].kind == CCR_NODE_CALL)
+                over = -1;
+        }
+    }
+    if (over != g_blame.hover) {
+        if (over >= 0 && g_blame.hover >= 0 && g_blame.open > 0.9f &&
+            g_blame.commit[over] == g_blame.commit[g_blame.hover]) {
+            g_blame.hover = over;            /* the same commit: the card stays out */
+        } else {
+            g_blame.hover = over;
+            g_blame.since = ccr_gui_time();
+            g_blame.open = 0.0f;
+        }
+    }
+    if (g_blame.hover < 0)
+        return;
+    const double wait = on_badge ? 0.05 : 0.35;
+    if (ccr_gui_time() - g_blame.since < wait)
+        return;
+    g_blame.open = fminf(1.0f, g_blame.open + dt * 7.0f);
+    const float t = 1.0f - (1.0f - g_blame.open) * (1.0f - g_blame.open);   /* eases out */
+
+    ccr_vec2 c;
+    float rad;
+    if (!blame_badge_at(doc, cv, g_blame.hover, &c, &rad))
+        return;
+    const ccr_blame_commit *bc = &g_blame.commits[g_blame.commit[g_blame.hover]];
+
+    char who[200], when[160], sub[200], hint[160];
+    if (bc->uncommitted) {
+        snprintf(who, sizeof who, "%s", ccr_tr(CCR_T_GIT_BLAME_MINE));
+        when[0] = '\0';
+        snprintf(sub, sizeof sub, "%s", ccr_tr(CCR_T_GIT_BLAME_MINE_HINT));
+        hint[0] = '\0';
+    } else {
+        snprintf(who, sizeof who, "%s", bc->author);
+        ccr_git_ago(bc->time, when, (int)sizeof when);
+        char date[48];
+        ccr_git_date(bc->time, date, (int)sizeof date);
+        const size_t wl = strlen(when);
+        snprintf(when + wl, sizeof when - wl, " · %s", date);
+        snprintf(sub, sizeof sub, "%s", bc->summary);
+        snprintf(hint, sizeof hint, "%.7s  ·  %s", bc->hash, ccr_tr(CCR_T_GIT_BLAME_OPEN));
+    }
+    const float pad = 12.0f, av = 34.0f, fs = 15.0f;
+    float w = fmaxf(ccr_gui_text_width(who, fs), ccr_gui_text_width(when, 12.5f));
+    w = fmaxf(w + av + 10.0f, ccr_gui_text_width(hint, 12.0f));
+    w = fmaxf(w, fminf(ccr_gui_text_width(sub, 14.0f), 380.0f));
+    w = fminf(fmaxf(w, 220.0f), 400.0f);
+    const float sh = wrap_text(sub, 0, 0, w, 14.0f, 0, false);
+    const float h = pad * 2.0f + av + 8.0f + sh + (hint[0] ? 22.0f : 0.0f);
+    ccr_rect box = { c.x + rad + 8.0f, c.y - rad - 4.0f, w + pad * 2.0f, h };
+    bool left = false;
+    if (box.x + box.w > vis.x + vis.w - 4.0f) {   /* no room on the right: out to the left of the block */
+        ccr_rect r;
+        if (ccr_editor_node_rect(&doc->ed, g_blame.nodes[g_blame.hover], &r))
+            box.x = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x, r.y }).x - box.w - 10.0f;
+        left = true;
+        if (box.x < vis.x + 4.0f)
+            box.x = vis.x + 4.0f;
+    }
+    if (box.y + box.h > vis.y + vis.h - 4.0f)
+        box.y = vis.y + vis.h - 4.0f - box.h;
+    if (box.y < vis.y + 4.0f)
+        box.y = vis.y + 4.0f;
+    /* slides out: the visible part grows from the badge's side */
+    const float shown = box.w * t;
+    ccr_rect clip = box;
+    clip.w = shown;
+    if (left)
+        clip.x = box.x + box.w - shown;
+    const float slide = (1.0f - t) * 18.0f * (left ? 1.0f : -1.0f);
+    ccr_gui_clip_begin((ccr_rect){ clip.x - 3, clip.y - 3, clip.w + 6, clip.h + 6 });
+    ccr_rect b2 = box;
+    b2.x += slide;
+    ccr_gui_rect_rounded((ccr_rect){ b2.x + 3, b2.y + 4, b2.w, b2.h }, 0.12f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ b2.x - 1, b2.y - 1, b2.w + 2, b2.h + 2 }, 0.12f,
+                         bc->uncommitted ? ccr_th(CCR_C_ACCENT) : blame_color(bc->author));
+    ccr_gui_rect_rounded(b2, 0.12f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    float x = b2.x + pad, y = b2.y + pad;
+    blame_badge((ccr_vec2){ x + av * 0.5f, y + av * 0.5f }, av * 0.5f, bc, false);
+    ccr_gui_text(who, x + av + 10.0f, y + 1.0f, fs, ccr_th(CCR_C_PANEL_TEXT));
+    ccr_gui_text(when, x + av + 10.0f, y + 20.0f, 12.5f, ccr_th(CCR_C_PANEL_HINT));
+    y += av + 8.0f;
+    y += wrap_text(sub, x, y, w, 14.0f, ccr_th(CCR_C_PANEL_TEXT), true);
+    if (hint[0])
+        ccr_gui_text(hint, x, y + 6.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+    ccr_gui_clip_end();
+
+    if (on_badge && !bc->uncommitted) {
+        g_hand = true;
+        if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+            ccr_graph_row row;
+            memset(&row, 0, sizeof row);
+            snprintf(row.hash, sizeof row.hash, "%s", bc->hash);
+            snprintf(row.short_hash, sizeof row.short_hash, "%.7s", bc->hash);
+            snprintf(row.subject, sizeof row.subject, "%s", bc->summary);
+            git_open_commit(&row);
+            g_blame.hover = -1;
+            g_blame.open = 0.0f;
+        }
     }
 }
 
@@ -4445,7 +4711,8 @@ static void call_tooltip(const ccr_document *doc, const ccr_canvas *cv, ccr_rect
     const ccr_vec2 world = ccr_canvas_to_world(cv, m);
     const ccr_ast *a = &doc->ed.ast;
     const ccr_node_id n = ccr_editor_context(&doc->ed, world).node;
-    if (n == CCR_NONE || a->nodes[n].kind != CCR_NODE_CALL || ccr_editor_mark_at(&doc->ed, world) >= 0) {
+    if (n == CCR_NONE || a->nodes[n].kind != CCR_NODE_CALL || ccr_editor_mark_at(&doc->ed, world) >= 0 ||
+        (g_blame.hover >= 0 && g_blame.nodes[g_blame.hover] == n)) {   /* the blame card is about it */
         last = CCR_NONE;
         return;
     }
@@ -5115,7 +5382,9 @@ static bool splitters_update(int w, int h, bool input)
         }
     }
     const int shown = g_split.active != SPLIT_NONE ? g_split.active : g_split.hover;
-    ccr_gui_set_cursor(shown == SPLIT_BUILD ? CCR_CURSOR_NS : shown != SPLIT_NONE ? CCR_CURSOR_EW : CCR_CURSOR_DEFAULT);
+    ccr_gui_set_cursor(shown == SPLIT_BUILD ? CCR_CURSOR_NS : shown != SPLIT_NONE ? CCR_CURSOR_EW
+                       : g_hand ? CCR_CURSOR_HAND : CCR_CURSOR_DEFAULT);
+    g_hand = false;   /* whoever wants the hand asks again next frame */
     return shown != SPLIT_NONE;
 }
 
@@ -6648,6 +6917,7 @@ int ccr_run(int argc, char **argv)
         tabs_frame(w, &doc, &canvas, viewport, &opt,
                    !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         mark_tooltip(&doc, &canvas, viewport);
+        blame_card(&doc, &canvas, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE, dt);
         if (!modal && !pie.open && !opm.open && te.node == CCR_NONE)
             call_tooltip(&doc, &canvas, viewport);
         refs_frame(&doc, &canvas, viewport, &opt, !modal && !pie.open && !opm.open && te.node == CCR_NONE);

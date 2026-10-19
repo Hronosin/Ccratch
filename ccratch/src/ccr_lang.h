@@ -215,8 +215,10 @@
     X(GIT_UNSTASH,      "git.unstash",           0, "bring back")                        \
     X(GIT_DROP_STASH,   "git.drop_stash",        0, "Throw it away")                     \
     X(TIP_STASH,        "tip.stash",             0, "Put every change aside for now, and get the files as committed") \
-    X(GIT_BLAME,        "git.blame",             0, "who changed each block, beside it") \
-    X(GIT_BLAME_MINE,   "git.blame_mine",        0, "you, not committed yet")            \
+    X(GIT_BLAME,        "git.blame",             0, "who changed each block (point at one)") \
+    X(GIT_BLAME_MINE,   "git.blame_mine",        0, "You, not committed yet")            \
+    X(GIT_BLAME_MINE_HINT, "git.blame_mine_hint", 0, "This block changed since the last commit.") \
+    X(GIT_BLAME_OPEN,   "git.blame_open",        0, "click the badge: the whole commit") \
     X(GIT_REVERT,       "git.revert",            0, "Revert")                            \
     X(GIT_CHERRY,       "git.cherry",            0, "Cherry-pick")                       \
     X(GIT_BRANCH_HERE,  "git.branch_here",       0, "Branch from here")                  \
