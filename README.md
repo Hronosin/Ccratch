@@ -818,6 +818,28 @@ cmake/      dependencies, fetched from git by tag; FindLibClang
 
 ## Build
 
+### The lazy way
+
+```sh
+./run.sh            # builds it if it is not built (or the code changed), then starts it
+./run.sh game.c     # ...with a file open
+./build.sh          # only build (release; or: debug, paranoid, clean)
+./build.sh deps     # install what building needs: dnf, apt, pacman or zypper
+```
+
+They find missing tools before anything starts and offer to install
+them, start the build again by themselves after the folder was moved, and
+can be double-clicked in a file manager: a terminal opens to show the
+build (and stays open if it fails), then the window. The build goes to
+`build/release`.
+
+On Windows, `run.cmd` and `build.cmd` do the same inside WSL (Ccratch is a
+Linux program: it talks to the compiler, gdb and git the Unix way). With
+no WSL yet they say how to get it (`wsl --install`); Windows 11 shows the
+window like any other. A `.c` file dropped onto `run.cmd` opens.
+
+### By hand
+
 Needs GCC (or Clang), CMake 3.21+, libclang, and the X11/OpenGL dev headers
 raylib uses. On Fedora:
 

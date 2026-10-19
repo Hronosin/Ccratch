@@ -200,7 +200,7 @@ ccr_node_id ccr_template_build(ccr_ast *ast, ccr_template t, ccr_node_id parent)
             snprintf(spec, sizeof spec, "target_link_libraries(${PROJECT_NAME} PRIVATE %s)", pk->link);
         return ccr_cmake_build_command(ast, parent, spec);
     }
-    if (ccr_tcat_is_cmake(ccr_template_category(t))) {
+    if ((unsigned)t < CCR_TEMPLATE_COUNT && ccr_tcat_is_cmake(ccr_template_category(t))) {
         const char *spec = g_labels[t];
         if (t == CCR_TEMPLATE_CM_LINE)
             return ccr_template_text(ast, parent, "");

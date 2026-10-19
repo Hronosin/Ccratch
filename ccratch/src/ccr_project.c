@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -232,8 +233,8 @@ static void add_api(ccr_project_result *r, const ccr_api *api, const char *inclu
 bool ccr_project_read(const char *root, const char *const *clang_args, int nargs, ccr_project_result *out)
 {
     memset(out, 0, sizeof *out);
-    char real[1024];
-    if (!root || !realpath(root, real))
+    char real[PATH_MAX];   /* realpath writes up to PATH_MAX, whatever comes back */
+    if (!root || !realpath(root, real) || strlen(real) >= 1024)
         return false;
     static char files[MAX_FILES][1024];   /* only ever one scan at a time: the lock */
     pthread_mutex_lock(&g_cache_lock);
@@ -248,7 +249,7 @@ bool ccr_project_read(const char *root, const char *const *clang_args, int nargs
     /* -I the project and its include/: a header there reads */
     const char *args[96];
     int na = 0;
-    char inc1[1100], inc2[1100];
+    char inc1[PATH_MAX + 16], inc2[PATH_MAX + 16];
     snprintf(inc1, sizeof inc1, "-I%s", real);
     snprintf(inc2, sizeof inc2, "-I%s/include", real);
     args[na++] = inc1;
@@ -408,8 +409,8 @@ void ccr_project_shutdown(void)
 
 int ccr_project_files(const char *root, char (*out)[1024], int cap)
 {
-    char real[1024];
-    if (!root || !realpath(root, real) || cap <= 0)
+    char real[PATH_MAX];
+    if (!root || !realpath(root, real) || strlen(real) >= 1024 || cap <= 0)
         return 0;
     static char files[MAX_FILES][1024];
     pthread_mutex_lock(&g_cache_lock);   /* `files` is shared with the scan */

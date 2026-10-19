@@ -288,3 +288,6 @@ add_test(NAME rename_project COMMAND test_rename)
 add_executable(test_gitlog test_gitlog.c)
 target_link_libraries(test_gitlog PRIVATE ccratch_core)
 add_test(NAME git_history COMMAND test_gitlog)
+
+# build.sh and run.sh at least parse (they are for people who never open them)
+add_test(NAME scripts_parse COMMAND bash -n ${PROJECT_SOURCE_DIR}/build.sh ${PROJECT_SOURCE_DIR}/run.sh)
