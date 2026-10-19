@@ -4,6 +4,8 @@
 #include "ccr_lang.h"
 #include "ccr_theme.h"
 
+#include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -464,11 +466,39 @@ void ccr_palette_draw(const ccr_palette *p, ccr_rect area, bool trash)
         ccr_gui_circle(dot, r + 1.5f, ccr_th_cat(tc, CCR_EDGE));
         ccr_gui_circle(dot, r, ccr_th_cat(tc, CCR_FILL));
         const char *name = p->cats[c].name;
+        const float room = row.w - 6.0f;
         float size = LABEL_SIZE;
-        while (size > 8.0f && ccr_gui_text_width(name, size) > row.w - 6.0f)
-            size -= 0.5f;
-        ccr_gui_text(name, row.x + (row.w - ccr_gui_text_width(name, size)) * 0.5f,
-                     dot.y + r + 4.0f, size, ccr_th(CCR_C_PALETTE_TEXT));
+        /* too long for one line at a readable size: two, split at the space
+         * that makes them most even */
+        const char *split = NULL;
+        if (ccr_gui_text_width(name, LABEL_SIZE * 0.85f) > room) {
+            float best = 1e9f;
+            for (const char *sp = strchr(name, ' '); sp; sp = strchr(sp + 1, ' ')) {
+                char a[96];
+                snprintf(a, sizeof a, "%.*s", (int)(sp - name), name);
+                const float w = fmaxf(ccr_gui_text_width(a, LABEL_SIZE), ccr_gui_text_width(sp + 1, LABEL_SIZE));
+                if (w < best) {
+                    best = w;
+                    split = sp;
+                }
+            }
+        }
+        if (split) {
+            char a[96];
+            snprintf(a, sizeof a, "%.*s", (int)(split - name), name);
+            const char *b = split + 1;
+            while (size > 8.0f && fmaxf(ccr_gui_text_width(a, size), ccr_gui_text_width(b, size)) > room)
+                size -= 0.5f;
+            const float y0 = dot.y + r + 3.0f;
+            ccr_gui_text(a, row.x + (row.w - ccr_gui_text_width(a, size)) * 0.5f, y0, size, ccr_th(CCR_C_PALETTE_TEXT));
+            ccr_gui_text(b, row.x + (row.w - ccr_gui_text_width(b, size)) * 0.5f, y0 + size * 1.05f, size,
+                         ccr_th(CCR_C_PALETTE_TEXT));
+        } else {
+            while (size > 8.0f && ccr_gui_text_width(name, size) > room)
+                size -= 0.5f;
+            ccr_gui_text(name, row.x + (row.w - ccr_gui_text_width(name, size)) * 0.5f,
+                         dot.y + r + 4.0f, size, ccr_th(CCR_C_PALETTE_TEXT));
+        }
     }
 
     /* the flyout: headings and real blocks */

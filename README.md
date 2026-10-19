@@ -633,8 +633,10 @@ The block actions work on the block under the mouse, keys included:
 
 ## Languages
 
-The interface comes in English (built in) and Russian, and anyone can add
-a language without touching the code: a pack is one text file.
+The interface speaks English (built in), Russian, Ukrainian, Belarusian,
+Kazakh, Uzbek, Kyrgyz, Tajik, Azerbaijani, Armenian, Finnish, Japanese,
+Chinese (simplified) and Korean, and anyone can add a language without
+touching the code: a pack is one text file.
 
 ```
 @name   = Русский
@@ -644,27 +646,56 @@ pie.save = Сохранить
 status.loaded_errors = %s: %u ошибка ...|%s: %u ошибки ...|%s: %u ошибок ...
 ```
 
-- The **EN / RU** button in the top bar drops a list of the languages
-  found, each in its own words; a click switches and remembers it
-  (in `~/.config/ccratch/config`). Otherwise Ccratch starts in the system
+- The language button in the top bar drops a list of the languages found,
+  each in its own words; a click switches and remembers it (in
+  `~/.config/ccratch/config`). Otherwise Ccratch starts in the system
   language (`$LANG`), or the one given with `--lang ru` / `$CCRATCH_LANG`.
 - Packs are looked for in `$CCRATCH_LANG_DIR`, `~/.local/share/ccratch/lang/`
   and `share/ccratch/lang/` next to the program. The ones in `lang/` here
   are copied there on every build.
-- To translate: `ccratch --lang-template > uk.lang`, translate the right
-  side, then `ccratch --check-lang uk.lang` lists what is missing or broken.
+- To translate: `ccratch --lang-template > de.lang`, translate the right
+  side, then `ccratch --check-lang de.lang` lists what is missing or broken.
 - Plurals have a form per case, split by `|`, as many as the language needs
-  (`slavic`: 1 ошибка, 2 ошибки, 5 ошибок).
+  (`slavic`: 1 ошибка, 2 ошибки, 5 ошибок; `none` for Japanese, Turkic
+  languages...).
 - Anything a pack leaves out or gets wrong falls back to English. A pack
   cannot crash Ccratch: a translation must use exactly the `%s`/`%u` of the
   English, or it is refused.
 
-C on the blocks (`if`, `while`, `struct`) stays C, and the command line
-stays English.
+### Human language
+
+Under the list, **Human language** says everything without programmers'
+words, for people who do not program: Commit is **Save a version**, Push
+and Pull are **Upload** and **Download**, a breakpoint is a **stop sign**,
+the debugger is **Step by step**, Build is **Make the program**. Every
+language above has it. Such a pack is `CODE-plain.lang`, and gives only
+what it says differently:
+
+```
+@name = Русский, по-человечески
+@base = ru
+git.commit = Сохранить версию
+```
+
+`--lang ru-plain` starts in it; the little dot on the language button says
+it is on.
+
+![the language list in Japanese, two columns, and Human language ticked: the top bar says 「プログラムを作る」](docs/languages.png)
+
+### Letters
 
 Text is drawn with Nunito (SIL Open Font License, `assets/fonts/`), built
-into the program with Latin, Cyrillic and Latin Extended-A, so packs for
-most European languages need no extra font.
+into the program with Latin (and its extensions) and Cyrillic, so packs
+for most European and Cyrillic languages need nothing more. A pack in
+another script names a font with `@font`: Japanese, Chinese, Korean and
+Armenian come with Noto Sans (OFL), cut down to the characters the shipped
+packs use (`tools/make_font.py`; the test `font_coverage` fails if a pack
+gets a character no font draws). A pack of your own can bring its font
+as a file next to it: `@font = NotoSansThai.ttf`. Lines of Chinese and
+Japanese break between characters, never before 。 or after 「.
+
+C on the blocks (`if`, `while`, `struct`) stays C, and the command line
+stays English.
 
 ## Files
 

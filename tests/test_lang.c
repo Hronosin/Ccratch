@@ -173,6 +173,71 @@ static void test_locale(void)
     CHECK(strcmp(ccr_lang_code(), "en") == 0, "C locale is not English");
 }
 
+/* Plain words: CODE-plain.lang changes a few strings of CODE; with plain
+ * words on, picking CODE gets them, and the list shows CODE once. */
+static void test_plain(void)
+{
+    write_file("lang/xs-plain.lang",
+               "@name = Slavic, plainly\n@base = xs\n"
+               "status.not_saved = Not kept: %s\n");
+    write_file("lang/en-plain.lang", "@base = en\n@name = English, plainly\npie.save = Keep\n");
+    ccr_lang_set_plain(true);
+    CHECK(ccr_lang_use("xs", stderr) && ccr_lang_in_plain_words(), "xs-plain did not load");
+    CHECK(strcmp(ccr_lang_code(), "xs") == 0, "the code is xs, not %s", ccr_lang_code());
+    CHECK(strcmp(ccr_tr(CCR_T_NOT_SAVED), "Not kept: %s") == 0, "the plain string: %s", ccr_tr(CCR_T_NOT_SAVED));
+    char out[64];
+    ccr_trnf(out, sizeof out, CCR_T_BAR_LOOSE, 3, 3u);
+    CHECK(strcmp(out, "3 few") == 0, "the base's string, with its plurals: '%s'", out);
+    CHECK(strcmp(ccr_tr(CCR_T_SAVED), "Saved %s (original in %s~).") == 0, "English under both");
+    CHECK(ccr_lang_use("en", NULL) && strcmp(ccr_tr(CCR_T_PIE_SAVE), "Keep") == 0 &&
+          strcmp(ccr_tr(CCR_T_PIE_DELETE), "Delete") == 0, "English in plain words");
+    ccr_lang_set_plain(false);
+    CHECK(ccr_lang_use("xs", NULL) && !ccr_lang_in_plain_words() &&
+          strcmp(ccr_tr(CCR_T_NOT_SAVED), "Not saved: %s") == 0, "plain words off");
+    CHECK(ccr_lang_use("xs-plain", NULL) && ccr_lang_in_plain_words() && strcmp(ccr_lang_code(), "xs") == 0,
+          "--lang xs-plain");
+
+    ccr_lang_info langs[16];
+    const int n = ccr_lang_scan(langs, 16);
+    bool listed_plain = false, xs_has = false, en_has = false;
+    for (int i = 0; i < n; ++i) {
+        listed_plain |= strstr(langs[i].code, "-plain") != NULL;
+        xs_has |= strcmp(langs[i].code, "xs") == 0 && langs[i].has_plain;
+        en_has |= strcmp(langs[i].code, "en") == 0 && langs[i].has_plain;
+    }
+    CHECK(!listed_plain && xs_has && en_has, "the list: plain packs %s, xs %d, en %d",
+          listed_plain ? "listed" : "not listed", xs_has, en_has);
+
+    char path[1024];
+    snprintf(path, sizeof path, "%s/lang/xs-plain.lang", g_dir);
+    FILE *devnull = fopen("/dev/null", "w");
+    /* the base fills in what it leaves out, but xs itself misses most */
+    CHECK(ccr_lang_check(path, devnull) > 0, "xs is incomplete, so is xs-plain");
+    write_file("lang/xx-plain.lang", "@base = nope\npie.save = Keep\n");
+    snprintf(path, sizeof path, "%s/lang/xx-plain.lang", g_dir);
+    CHECK(ccr_lang_check(path, devnull) > 0, "a base that is nowhere is a problem");
+    fclose(devnull);
+    ccr_lang_use("en", NULL);
+}
+
+/* The characters the font needs: every letter above ASCII, once, sorted. */
+static void test_codepoints(void)
+{
+    write_file("lang/xc.lang", "@name = Ñoño\n@font = noto-jp\npie.save = 保存ñ\npie.delete = ñ保\n");
+    CHECK(ccr_lang_use("xc", NULL), "xc did not load");
+    CHECK(strcmp(ccr_lang_font(), "noto-jp") == 0, "font: %s", ccr_lang_font());
+    int cps[64];
+    const int n = ccr_lang_codepoints(cps, 64);
+    bool sorted = true, has = false;
+    for (int i = 1; i < n; ++i)
+        sorted &= cps[i - 1] < cps[i];
+    for (int i = 0; i < n; ++i)
+        has |= cps[i] == 0x4FDD;
+    CHECK(sorted && has, "%d code points, sorted %d, 保 %d", n, sorted, has);
+    ccr_lang_use("en", NULL);
+    CHECK(ccr_lang_font()[0] == '\0', "English needs no font of its own");
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -203,6 +268,8 @@ int main(int argc, char **argv)
     test_scan();
     test_remembered();
     test_locale();
+    test_plain();
+    test_codepoints();
     ccr_lang_reset();
 
     if (g_failures)

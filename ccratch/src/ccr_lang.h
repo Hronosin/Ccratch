@@ -36,6 +36,7 @@
 #define CCR_STRINGS(X)                                                                   \
     /* window */                                                                         \
     X(BUILD,            "topbar.build",          0, "Build")                             \
+    X(CMAKE_BUTTON,     "topbar.cmake",          0, "CMake")                             \
     X(PALETTE_TITLE,    "palette.title",         0, "Blocks")                            \
     X(PALETTE_DROP,     "palette.drop",          0, "drop to delete")                    \
     X(TEMPLATE_CODE,    "palette.code_line",     0, "code line")                         \
@@ -341,6 +342,8 @@
     X(PICK_THEMES,      "pick.themes",           0, "Themes") \
     X(PICK_LANGS,       "pick.langs",            0, "Language")                          \
     X(PICK_BUILTIN,     "pick.builtin",          0, ", built in")                        \
+    X(PICK_PLAIN,       "pick.plain",            0, "Human language")                    \
+    X(PICK_PLAIN_HINT,  "pick.plain_hint",       0, "Everything said in plain words, for people who don't program") \
     X(PICK_THEME_HINT,  "pick.theme_hint",       0, "Your own: a .theme file in ~/.local/share/ccratch/themes (ccratch --check-theme checks it)") \
     X(PICK_LANG_HINT,   "pick.lang_hint",        0, "Your own: ccratch --lang-template > CODE.lang, translated, in ~/.local/share/ccratch/lang") \
     X(THEME_STATUS,     "status.theme",          0, "Theme: %s")                         \
@@ -451,20 +454,42 @@ typedef struct ccr_lang_info {
     char code[16];          /* file name without .lang: "ru", "pt-BR" */
     char name[64];          /* @name, in the language itself */
     char path[1024];        /* "" for built-in English */
+    bool has_plain;         /* a CODE-plain pack says it in plain words */
+    char font[64];          /* its @font, if it names a built-in one ("noto-jp") */
 } ccr_lang_info;
 
 /* Looks for packs: $CCRATCH_LANG_DIR, ~/.local/share/ccratch/lang, then
  * share/ccratch/lang next to the program. Built-in English is always
- * first. A pack found earlier wins over one with the same code later. */
+ * first. A pack found earlier wins over one with the same code later.
+ * CODE-plain packs are not listed: they set `has_plain` on CODE. */
 int  ccr_lang_scan(ccr_lang_info *out, int cap);
 
 /* Switches to a language by code ("en" or a pack). Problems are written to
- * `log` if it is not NULL. False if no such pack: English stays. */
+ * `log` if it is not NULL. False if no such pack: English stays. In plain
+ * words (ccr_lang_set_plain), CODE-plain is used if there is one. */
 bool ccr_lang_use(const char *code, FILE *log);
 
-/* The language in use. */
+/*
+ * Plain words: "human language" for people who do not program. A pack
+ * CODE-plain.lang says `@base = CODE` and gives only the strings it puts
+ * differently (commit -> save a version...); the rest is CODE's.
+ */
+void ccr_lang_set_plain(bool on);
+bool ccr_lang_plain(void);
+bool ccr_lang_save_plain(bool on);
+/* Is the text now in plain words (the language has them)? */
+bool ccr_lang_in_plain_words(void);
+
+/* The language in use (its code without -plain). */
 const char *ccr_lang_code(void);
 const char *ccr_lang_name(void);
+
+/* @font of the pack in use: the name of a built-in font for its letters
+ * ("noto-jp"...), a font file, or "" (Ccratch's own font has them all). */
+const char *ccr_lang_font(void);
+/* Every code point above ASCII in the strings now in use, ascending (the
+ * letters the font needs). How many, at most `cap`. */
+int ccr_lang_codepoints(int *out, int cap);
 
 /*
  * The language to start in: --lang, else $CCRATCH_LANG, else the one saved

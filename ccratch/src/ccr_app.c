@@ -12,6 +12,7 @@
 #include "ccr_lang.h"
 #include "ccr_parse.h"
 #include "ccr_files.h"
+#include "ccr_fonts.h"
 #include "ccr_gdb.h"
 #include "ccr_git.h"
 #include "ccr_gitlog.h"
@@ -44,21 +45,132 @@ extern const unsigned char ccr_icon_png[];
 extern const unsigned int  ccr_icon_png_size;
 extern const unsigned char ccr_font_ttf[];
 extern const unsigned int  ccr_font_ttf_size;
+/* Fonts for letters Nunito has not, with only what the shipped packs use
+ * (tools/make_font.py); a pack names one with @font. */
+extern const unsigned char ccr_font_jp_ttf[], ccr_font_sc_ttf[], ccr_font_kr_ttf[], ccr_font_hy_ttf[];
+extern const unsigned int  ccr_font_jp_ttf_size, ccr_font_sc_ttf_size, ccr_font_kr_ttf_size, ccr_font_hy_ttf_size;
 
-/* Characters the font is rasterized for; tools/make_font.py keeps these. */
-static const int g_font_ranges[][2] = {
-    { 0x0020, 0x007E }, { 0x00A0, 0x017F }, { 0x0400, 0x04FF },
-    { 0x2010, 0x2027 }, { 0x2030, 0x203A }, { 0x2116, 0x2116 }, { 0x2190, 0x2193 },
+static const struct {
+    const char          *name;
+    const unsigned char *ttf;
+    const unsigned int  *size;
+} g_extra_fonts[] = {
+    { "noto-jp", ccr_font_jp_ttf, &ccr_font_jp_ttf_size },
+    { "noto-sc", ccr_font_sc_ttf, &ccr_font_sc_ttf_size },
+    { "noto-kr", ccr_font_kr_ttf, &ccr_font_kr_ttf_size },
+    { "noto-armenian", ccr_font_hy_ttf, &ccr_font_hy_ttf_size },
 };
 
+/* Reads a whole (font) file; NULL if it cannot. */
+static unsigned char *read_whole(const char *path, unsigned int *size)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    unsigned char *buf = NULL;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        const long n = ftell(f);
+        if (n > 0 && n < (64L << 20) && fseek(f, 0, SEEK_SET) == 0 && (buf = malloc((size_t)n)) != NULL &&
+            fread(buf, 1, (size_t)n, f) != (size_t)n) {
+            free(buf);
+            buf = NULL;
+        }
+        *size = buf ? (unsigned int)n : 0;
+    }
+    fclose(f);
+    return buf;
+}
+
+/* Which characters come from which font. */
+#define FONT_PARTS 6
+typedef struct font_plan {
+    int         base[1400];             /* Nunito's */
+    int         n;
+    const char *font[FONT_PARTS];       /* [1..]: the other fonts by name */
+    int         cps[FONT_PARTS][4096];
+    int         count[FONT_PARTS];
+} font_plan;
+
+static void add_cp(int *list, int *n, int cap, int c)
+{
+    for (int k = 0; k < *n; ++k)
+        if (list[k] == c)
+            return;
+    if (*n < cap)
+        list[(*n)++] = c;
+}
+
+/* `c` wants the font `want`: Nunito's if it has it, else that one's. */
+static void plan_char(font_plan *fp, int c, const char *want)
+{
+    if (ccr_font_in(c, CCR_FONT_ALWAYS, CCR_FONT_N_ALWAYS))
+        return;   /* always there */
+    if (ccr_font_in(c, CCR_FONT_MORE, CCR_FONT_N_MORE)) {
+        add_cp(fp->base, &fp->n, 1400, c);
+        return;
+    }
+    if (!want || !*want)
+        return;   /* nobody has it: a box */
+    int p = 1;
+    while (p < FONT_PARTS && fp->font[p] && strcmp(fp->font[p], want) != 0)
+        ++p;
+    if (p == FONT_PARTS)
+        return;
+    fp->font[p] = want;
+    add_cp(fp->cps[p], &fp->count[p], 4096, c);
+}
+
+static unsigned utf8_at(const char *p, int *len);
+
+/* The font for the language in use: Nunito, and the pack's @font for the
+ * letters Nunito has not; and the letters of every language's own name,
+ * for the list to pick from. Again whenever the language changes. */
 static bool load_font(void)
 {
-    static int cps[1024];
-    int n = 0;
-    for (size_t r = 0; r < sizeof g_font_ranges / sizeof g_font_ranges[0]; ++r)
-        for (int c = g_font_ranges[r][0]; c <= g_font_ranges[r][1] && n < 1024; ++c)
-            cps[n++] = c;
-    return ccr_gui_load_font(ccr_font_ttf, ccr_font_ttf_size, 48.0f, cps, n);
+    static font_plan fp;
+    static int lang[4096];
+    static ccr_lang_info langs[64];
+    memset(&fp, 0, sizeof fp);
+    for (size_t r = 0; r < CCR_FONT_N_ALWAYS; ++r)
+        for (int c = CCR_FONT_ALWAYS[r][0]; c <= CCR_FONT_ALWAYS[r][1] && fp.n < 1400; ++c)
+            fp.base[fp.n++] = c;
+    const char *want = ccr_lang_font();
+    const int nl = ccr_lang_codepoints(lang, 4096);
+    for (int i = 0; i < nl; ++i)
+        plan_char(&fp, lang[i], want);
+    const int nn = ccr_lang_scan(langs, 64);
+    for (int i = 0; i < nn; ++i)
+        for (const char *p = langs[i].name; *p;) {
+            int len;
+            const unsigned c = utf8_at(p, &len);
+            p += len;
+            plan_char(&fp, (int)c, langs[i].font);
+        }
+
+    ccr_font_part parts[FONT_PARTS];
+    unsigned char *files[FONT_PARTS] = { NULL };
+    int np = 0;
+    parts[np++] = (ccr_font_part){ ccr_font_ttf, ccr_font_ttf_size, fp.base, fp.n };
+    for (int p = 1; p < FONT_PARTS && fp.font[p]; ++p) {
+        ccr_font_part part = { NULL, 0, fp.cps[p], fp.count[p] };
+        for (size_t i = 0; i < sizeof g_extra_fonts / sizeof g_extra_fonts[0]; ++i)
+            if (strcmp(g_extra_fonts[i].name, fp.font[p]) == 0) {
+                part.ttf = g_extra_fonts[i].ttf;
+                part.size = *g_extra_fonts[i].size;
+            }
+        if (!part.ttf) {
+            files[p] = read_whole(fp.font[p], &part.size);
+            part.ttf = files[p];
+            if (!files[p])
+                fprintf(stderr, "ccratch: no font %s (neither built in nor a file I can read)\n", fp.font[p]);
+        }
+        if (part.ttf && part.count > 0)
+            parts[np++] = part;
+    }
+    const bool ok = ccr_gui_load_fonts(parts, np, 48.0f);
+    for (int p = 0; p < FONT_PARTS; ++p)
+        free(files[p]);
+    return ok;
 }
 
 #define TOPBAR_H     40.0f
@@ -999,6 +1111,92 @@ static const struct { ccr_text text; eula_style style; } g_eula[] = {
 };
 #define EULA_ITEMS ((int)(sizeof g_eula / sizeof g_eula[0]))
 
+/* ---------------------------------------------- breaking text into lines
+ *
+ * Words break at spaces. Chinese and Japanese have none: a line may break
+ * after any of their characters, but not before a closing mark (。、」).
+ */
+static unsigned utf8_at(const char *p, int *len)
+{
+    const unsigned char *s = (const unsigned char *)p;
+    if (s[0] < 0x80) { *len = 1; return s[0]; }
+    if ((s[0] >> 5) == 6 && s[1]) { *len = 2; return ((s[0] & 0x1Fu) << 6) | (s[1] & 0x3Fu); }
+    if ((s[0] >> 4) == 14 && s[1] && s[2]) {
+        *len = 3;
+        return ((s[0] & 0x0Fu) << 12) | ((s[1] & 0x3Fu) << 6) | (s[2] & 0x3Fu);
+    }
+    if ((s[0] >> 3) == 30 && s[1] && s[2] && s[3]) {
+        *len = 4;
+        return ((s[0] & 0x07u) << 18) | ((s[1] & 0x3Fu) << 12) | ((s[2] & 0x3Fu) << 6) | (s[3] & 0x3Fu);
+    }
+    *len = 1;
+    return 0xFFFD;
+}
+
+static bool cjk_char(unsigned c)
+{
+    return (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFF00 && c <= 0xFFEF);
+}
+
+static bool closing_mark(unsigned c)
+{
+    static const unsigned marks[] = { 0x3001, 0x3002, 0x3009, 0x300B, 0x300D, 0x300F, 0x3011, 0x30FC, 0xFF01,
+                                      0xFF09, 0xFF0C, 0xFF0E, 0xFF1A, 0xFF1B, 0xFF1F, 0xFF3D, 0xFF5D,
+                                      ')', ',', '.', ':', ';', '!', '?' };
+    for (size_t i = 0; i < sizeof marks / sizeof marks[0]; ++i)
+        if (marks[i] == c)
+            return true;
+    return false;
+}
+
+static bool opening_mark(unsigned c)
+{
+    static const unsigned marks[] = { 0x3008, 0x300A, 0x300C, 0x300E, 0x3010, 0xFF08, 0xFF3B, 0xFF5B, 0x201C, 0x2018,
+                                      0x00AB, '(', '[' };
+    for (size_t i = 0; i < sizeof marks / sizeof marks[0]; ++i)
+        if (marks[i] == c)
+            return true;
+    return false;
+}
+
+/* The next piece a line can end after: a word, or one CJK character (with
+ * the closing marks after it). *spaced: a space came before it. Returns
+ * its end; p == end at the end of the text. */
+static const char *next_piece(const char *p, const char **start, bool *spaced)
+{
+    *spaced = false;
+    while (*p == ' ') {
+        ++p;
+        *spaced = true;
+    }
+    *start = p;
+    if (!*p)
+        return p;
+    int len;
+    unsigned c = utf8_at(p, &len), last = c;
+    if (cjk_char(c)) {
+        p += len;
+    } else {
+        while (*p && *p != ' ') {
+            c = utf8_at(p, &len);
+            if (cjk_char(c) && !closing_mark(c) && !opening_mark(c))
+                break;
+            p += len;
+            last = c;
+            if (opening_mark(c))
+                break;
+        }
+    }
+    while (*p && closing_mark(utf8_at(p, &len)))   /* never a line that starts with 。 */
+        p += len;
+    if (opening_mark(last) && *p && *p != ' ') {   /* nor one that ends with 「 */
+        const char *more;
+        bool spaced_more;
+        p = next_piece(p, &more, &spaced_more);
+    }
+    return p;
+}
+
 /* --eula: the same, in the terminal, wrapped at 76 letters; lines after
  * the first start with `indent`. */
 static void print_wrapped(const char *prefix, const char *text, const char *indent, int width)
@@ -1007,24 +1205,26 @@ static void print_wrapped(const char *prefix, const char *text, const char *inde
     int col = (int)strlen(prefix);
     bool first = true;
     fputs(prefix, stdout);
-    for (const char *p = text; *p;) {
-        while (*p == ' ')
-            ++p;
-        const char *w = p;
-        int letters = 0;
-        for (; *p && *p != ' '; ++p)
-            letters += ((unsigned char)*p & 0xC0) != 0x80;   /* UTF-8: count letters */
-        if (p == w)
-            break;
-        if (!first && col + 1 + letters > width) {
+    const char *start;
+    bool spaced;
+    for (const char *p = text, *e; (e = next_piece(p, &start, &spaced)) != start; p = e) {
+        int cols = 0;   /* in the terminal: a letter is one column, a CJK character two */
+        for (const char *q = start; q < e;) {
+            int len;
+            const unsigned c = utf8_at(q, &len);
+            cols += cjk_char(c) || (c >= 0xAC00 && c <= 0xD7AF) ? 2 : 1;
+            q += len;
+        }
+        const int gap = !first && spaced ? 1 : 0;
+        if (!first && col + gap + cols > width) {
             printf("\n%s", indent);
             col = indent_n;
-        } else if (!first) {
+        } else if (gap) {
             fputc(' ', stdout);
             ++col;
         }
-        fwrite(w, 1, (size_t)(p - w), stdout);
-        col += letters;
+        fwrite(start, 1, (size_t)(e - start), stdout);
+        col += cols;
         first = false;
     }
     fputc('\n', stdout);
@@ -1071,25 +1271,23 @@ static float wrap_text(const char *text, float x, float y, float w, float size, 
     const float lh = size * 1.3f;
     char line[1200] = "", trial[2400];
     float h = 0.0f;
-    for (const char *p = text; *p;) {
-        const char *word = p;
-        while (*p && *p != ' ')
-            ++p;
-        snprintf(trial, sizeof trial, "%s%s%.*s", line, *line ? " " : "", (int)(p - word), word);
+    const char *start;
+    bool spaced;
+    for (const char *p = text, *e; (e = next_piece(p, &start, &spaced)) != start; p = e) {
+        const int n = (int)(e - start);
+        snprintf(trial, sizeof trial, "%s%s%.*s", line, *line && spaced ? " " : "", n, start);
         if (*line && ccr_gui_text_width(trial, size) > w) {
             if (draw)
                 ccr_gui_text(line, x, y + h, size, c);
             h += lh;
-            snprintf(line, sizeof line, "%.*s", (int)(p - word), word);
+            snprintf(line, sizeof line, "%.*s", n, start);
         } else {
-            size_t n = strlen(trial);   /* a word longer than a line just runs on */
-            if (n >= sizeof line)
-                n = sizeof line - 1;
-            memcpy(line, trial, n);
-            line[n] = '\0';
+            size_t k = strlen(trial);   /* a word longer than a line just runs on */
+            if (k >= sizeof line)
+                k = sizeof line - 1;
+            memcpy(line, trial, k);
+            line[k] = '\0';
         }
-        while (*p == ' ')
-            ++p;
     }
     if (*line) {
         if (draw)
@@ -1228,6 +1426,7 @@ static void use_language(ccr_document *doc, const char *code)
     ccr_theme_use(theme, NULL);   /* theme names come in this language too */
     ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
     doc->has_errors = false;
+    load_font();   /* its letters */
     /* C keywords stay, but pack blocks speak this language now */
     libs_reload(doc);
 }
@@ -1261,7 +1460,7 @@ static struct {
     ccr_theme_info themes[32];
     ccr_color      swatch[32][PICK_SWATCHES];
     int            n_themes;
-    ccr_lang_info  langs[32];
+    ccr_lang_info  langs[64];
     int            n_langs;
     float          t;              /* 0..1 opening */
 } g_pick = { .hot = -1 };
@@ -1298,7 +1497,7 @@ static void pick_open(int kind, ccr_rect button)
             if (strcmp(g_pick.themes[i].code, g_pick.was) == 0)
                 g_pick.hot = i;
     } else {
-        g_pick.n_langs = ccr_lang_scan(g_pick.langs, 32);
+        g_pick.n_langs = ccr_lang_scan(g_pick.langs, 64);
         for (int i = 0; i < g_pick.n_langs; ++i)
             if (strcmp(g_pick.langs[i].code, ccr_lang_code()) == 0)
                 g_pick.hot = i;
@@ -1315,11 +1514,15 @@ static void pick_frame(ccr_document *doc, int w, float dt)
     g_pick.t = g_pick.t + dt / 0.12f > 1.0f ? 1.0f : g_pick.t + dt / 0.12f;
     const bool themes = g_pick.kind == 1;
     const int n = themes ? g_pick.n_themes : g_pick.n_langs;
+    /* many languages: two columns; and under them, plain words on or off */
+    const int cols = !themes && n > 8 ? 2 : 1;
+    const int rows = (n + cols - 1) / cols;
     const float row = themes ? 46.0f : 36.0f, pad = 8.0f, head = 34.0f, foot = 44.0f;
-    const float cw = 320.0f;
+    const float plain_h = themes ? 0.0f : 52.0f;
+    const float cw = cols == 2 ? 480.0f : 320.0f;
     const float ease = 1.0f - (1.0f - g_pick.t) * (1.0f - g_pick.t);
     ccr_rect card = { g_pick.button.x + g_pick.button.w - cw, g_pick.button.y + g_pick.button.h + 6.0f, cw,
-                      head + row * (float)n + pad + foot };
+                      head + row * (float)rows + pad + plain_h + foot };
     if (card.x < 8.0f)
         card.x = 8.0f;
     if (card.x + card.w > (float)w - 8.0f)
@@ -1342,8 +1545,11 @@ static void pick_frame(ccr_document *doc, int w, float dt)
     if (ccr_gui_key_pressed(CCR_KEY_ENTER) && g_pick.hot >= 0)
         choose = g_pick.hot;
 
+    const float colw = (card.w - pad * 2.0f) / (float)cols;
     for (int i = 0; i < n; ++i) {
-        const ccr_rect r = { card.x + pad, card.y + head + row * (float)i, card.w - pad * 2.0f, row - 4.0f };
+        const int ci = i / rows, ri = i % rows;   /* down the first column, then the second */
+        const ccr_rect r = { card.x + pad + colw * (float)ci, card.y + head + row * (float)ri, colw - (cols > 1 ? 4.0f : 0.0f),
+                             row - 4.0f };
         const bool over = point_in(m, r);
         if (over && (m.x != 0.0f || m.y != 0.0f))
             g_pick.hot = i;
@@ -1374,6 +1580,31 @@ static void pick_frame(ccr_document *doc, int w, float dt)
                      g_pick.langs[i].path[0] ? "" : ccr_tr(CCR_T_PICK_BUILTIN));
             const float cwid = ccr_gui_text_width(code, 12.0f);
             ccr_gui_text(code, r.x + r.w - cwid - 8.0f, r.y + 10.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+        }
+    }
+    /* plain words: the same language, without the programmers' words */
+    if (!themes) {
+        const ccr_rect pr = { card.x + pad, card.y + head + row * (float)rows + pad - 4.0f, card.w - pad * 2.0f, plain_h - 6.0f };
+        const bool on = ccr_lang_plain(), over = point_in(m, pr);
+        ccr_gui_rect((ccr_rect){ pr.x + 4.0f, pr.y - 3.0f, pr.w - 8.0f, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+        if (over)
+            ccr_gui_rect_rounded(pr, 0.2f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x33u);
+        const ccr_rect box = { pr.x + 10.0f, pr.y + 9.0f, 16.0f, 16.0f };
+        ccr_gui_rect_rounded(box, 0.3f, on ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_FIELD_EDGE));
+        if (!on)
+            ccr_gui_rect_rounded((ccr_rect){ box.x + 2, box.y + 2, box.w - 4, box.h - 4 }, 0.3f, ccr_th(CCR_C_FIELD));
+        else
+            ccr_gui_circle((ccr_vec2){ box.x + 8.0f, box.y + 8.0f }, 3.0f, 0xFFFFFFFFu);
+        ccr_gui_text(ccr_tr(CCR_T_PICK_PLAIN), pr.x + 36.0f, pr.y + 5.0f, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_text(ccr_tr(CCR_T_PICK_PLAIN_HINT), pr.x + 36.0f, pr.y + 26.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+        if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+            ccr_lang_set_plain(!on);
+            if (!ccr_lang_save_plain(!on))
+                fprintf(stderr, "ccratch: could not remember plain words in ~/.config/ccratch\n");
+            char now[16];
+            snprintf(now, sizeof now, "%s", ccr_lang_code());
+            use_language(doc, now);
+            return;   /* the list stays open, in the new words */
         }
     }
     /* how to make one more */
@@ -6060,6 +6291,7 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
         clicked |= TOP_HELP;
     char code[24];
     snprintf(code, sizeof code, "%s", ccr_lang_code());
+    code[strcspn(code, "-_")] = '\0';   /* zh-CN: ZH */
     for (char *c = code; *c; ++c)
         if (*c >= 'a' && *c <= 'z')
             *c = (char)(*c - 'a' + 'A');
@@ -6069,6 +6301,9 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     if (ccr_gui_button(lb, "", g_pick.kind == 2 ? &main_ : bs) && !modal)
         pick_open(2, lb);
     ccr_gui_text(code, lb.x + 12.0f, lb.y + 5.0f, 16.0f, g_pick.kind == 2 ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT));
+    if (ccr_lang_in_plain_words())   /* in plain words: a little smile of a dot */
+        ccr_gui_circle((ccr_vec2){ lb.x + 14.0f + ccr_gui_text_width(code, 16.0f), lb.y + 7.0f }, 3.0f,
+                       ccr_th(CCR_C_ACCENT));
     drop_arrow(lb, g_pick.kind == 2);
     const float tw = ccr_gui_text_width(ccr_tr(CCR_T_THEME_BUTTON), 16.0f) + 38.0f;
     x -= gap + tw;
@@ -6086,8 +6321,10 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
 
     /* the project */
     char git_label[48];
-    snprintf(git_label, sizeof git_label, g_git.have && g_git.st.count ? "Git  %d" : "Git",
-             g_git.have ? g_git.st.count : 0);
+    if (g_git.have && g_git.st.count)
+        snprintf(git_label, sizeof git_label, "%s  %d", ccr_tr(CCR_T_GIT_TITLE), g_git.st.count);
+    else
+        snprintf(git_label, sizeof git_label, "%s", ccr_tr(CCR_T_GIT_TITLE));
     const float gw = ccr_gui_text_width(git_label, 16.0f) + 24.0f;
     x -= gw;
     const ccr_rect gb = { x, y, gw, bh };
@@ -6110,10 +6347,11 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
         if (g_libs.open) g_libs.open = false;
         else libs_open(doc);
     }
-    const float cw = ccr_gui_text_width("CMake", 16.0f) + 24.0f;
+    const float cw = ccr_gui_text_width(ccr_tr(CCR_T_CMAKE_BUTTON), 16.0f) + 24.0f;
     const bool on_cmake = doc->loaded && doc->ed.ast.lang == CCR_LANG_CMAKE;
     x -= gap + cw;
-    if (ccr_gui_button((ccr_rect){ x, y, cw, bh }, "CMake", on_cmake ? &main_ : bs) && !modal && !g_libs.open)
+    if (ccr_gui_button((ccr_rect){ x, y, cw, bh }, ccr_tr(CCR_T_CMAKE_BUTTON), on_cmake ? &main_ : bs) && !modal &&
+        !g_libs.open)
         clicked |= TOP_CMAKE;
     return clicked;
 }

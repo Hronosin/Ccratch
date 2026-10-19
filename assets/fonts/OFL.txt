@@ -1,4 +1,10 @@
 Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito)
+  (nunito-ccratch.ttf)
+(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+  (noto-jp-ccratch.ttf, noto-sc-ccratch.ttf, noto-kr-ccratch.ttf: Noto Sans JP,
+  SC and KR, cut down to the characters Ccratch's language packs use)
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/armenian)
+  (noto-armenian-ccratch.ttf: Noto Sans Armenian, cut down the same way)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

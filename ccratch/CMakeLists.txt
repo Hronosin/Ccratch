@@ -23,6 +23,23 @@ add_custom_command(
     DEPENDS ${CCR_FONT_SRC} ${PROJECT_SOURCE_DIR}/cmake/embed.cmake
     COMMENT "Embedding the font")
 
+# And the fonts for letters Nunito has not (Japanese, Chinese, Korean,
+# Armenian), only with what the shipped packs use.
+set(CCR_EXTRA_FONT_C)
+foreach(pair "jp;noto-jp" "sc;noto-sc" "kr;noto-kr" "hy;noto-armenian")
+    list(GET pair 0 id)
+    list(GET pair 1 file)
+    set(src ${PROJECT_SOURCE_DIR}/assets/fonts/${file}-ccratch.ttf)
+    set(out ${CMAKE_CURRENT_BINARY_DIR}/generated/ccr_font_${id}.c)
+    add_custom_command(
+        OUTPUT  ${out}
+        COMMAND ${CMAKE_COMMAND} -DINPUT=${src} -DOUTPUT=${out}
+                -DNAME=ccr_font_${id}_ttf -P ${PROJECT_SOURCE_DIR}/cmake/embed.cmake
+        DEPENDS ${src} ${PROJECT_SOURCE_DIR}/cmake/embed.cmake
+        COMMENT "Embedding ${file}")
+    list(APPEND CCR_EXTRA_FONT_C ${out})
+endforeach()
+
 # The code, compiled once. libccratch.so is made from it, and so are the
 # tests, which need the internals the .so keeps hidden.
 add_library(ccratch_core OBJECT
@@ -57,7 +74,8 @@ add_library(ccratch_core OBJECT
     src/ccr_yaml.c
     src/ccr_theme.c
     ${CCR_ICON_C}
-    ${CCR_FONT_C})
+    ${CCR_FONT_C}
+    ${CCR_EXTRA_FONT_C})
 
 target_include_directories(ccratch_core
     PUBLIC ${PROJECT_SOURCE_DIR}/include src)

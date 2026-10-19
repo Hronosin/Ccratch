@@ -4,6 +4,7 @@
 #include <rlgl.h>
 #include <GLFW/glfw3.h>
 
+#include <stdlib.h>
 #include <string.h>
 
 static Texture2D g_shapes_tex;
@@ -129,11 +130,56 @@ bool ccr_gui_screenshot(const char *path)
 bool ccr_gui_load_font(const unsigned char *ttf, unsigned int size, float base_size,
                        const int *codepoints, int count)
 {
-    if (!ttf || size == 0 || size > (unsigned int)INT32_MAX || count <= 0)
+    const ccr_font_part part = { ttf, size, codepoints, count };
+    return ccr_gui_load_fonts(&part, 1, base_size);
+}
+
+bool ccr_gui_load_fonts(const ccr_font_part *parts, int n, float base_size)
+{
+    int total = 0;
+    for (int i = 0; i < n; ++i) {
+        if (!parts[i].ttf || parts[i].size == 0 || parts[i].size > (unsigned int)INT32_MAX || parts[i].count < 0)
+            return false;
+        total += parts[i].count;
+    }
+    if (total <= 0)
         return false;
-    Font f = LoadFontFromMemory(".ttf", ttf, (int)size, (int)base_size, (int *)codepoints, count);
-    if (f.texture.id == 0 || f.glyphCount <= 0 || f.texture.id == GetFontDefault().texture.id)
+    /* each part's glyphs, then one atlas for all of them */
+    GlyphInfo *glyphs = RL_CALLOC((size_t)total, sizeof *glyphs);
+    if (!glyphs)
         return false;
+    int got = 0;
+    for (int i = 0; i < n; ++i) {
+        if (parts[i].count == 0)
+            continue;
+        GlyphInfo *g = LoadFontData(parts[i].ttf, (int)parts[i].size, (int)base_size, (int *)parts[i].codepoints,
+                                    parts[i].count, FONT_DEFAULT);
+        if (!g)
+            continue;   /* that font could not be read: its letters show as boxes */
+        memcpy(glyphs + got, g, (size_t)parts[i].count * sizeof *g);
+        got += parts[i].count;
+        RL_FREE(g);
+    }
+    if (got == 0) {
+        RL_FREE(glyphs);
+        return false;
+    }
+    Font f = { 0 };
+    f.baseSize = (int)base_size;
+    f.glyphCount = got;
+    f.glyphPadding = 4;
+    f.glyphs = glyphs;
+    Image atlas = GenImageFontAtlas(f.glyphs, &f.recs, f.glyphCount, f.baseSize, f.glyphPadding, 0);
+    f.texture = LoadTextureFromImage(atlas);
+    for (int i = 0; i < f.glyphCount; ++i) {
+        UnloadImage(f.glyphs[i].image);
+        f.glyphs[i].image = ImageFromImage(atlas, f.recs[i]);
+    }
+    UnloadImage(atlas);
+    if (f.texture.id == 0) {
+        UnloadFont(f);
+        return false;
+    }
     /* drawn at many sizes (the canvas zooms): mipmaps keep small text smooth */
     GenTextureMipmaps(&f.texture);
     SetTextureFilter(f.texture, TEXTURE_FILTER_TRILINEAR);

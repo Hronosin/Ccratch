@@ -74,14 +74,21 @@ typedef struct table {
     char           *arena;                       /* owns the text */
     const char     *form[CCR_T_COUNT][MAX_FORMS];
     int             nforms[CCR_T_COUNT];         /* 0: not given, use English */
+    bool            from_base[CCR_T_COUNT];      /* given by the @base pack, not this one */
     ccr_plural_rule rule;
     char            code[16];
     char            name[64];
+    char           *base_arena;                  /* @base: the pack under this one */
+    char            font[1024];                  /* @font: a built-in name or a file */
 } table;
 
 static table g_en;      /* built-in English, made on first use */
 static table g_pack;    /* the pack in use, if any */
 static bool  g_en_ready, g_pack_used;
+static bool  g_plain;   /* in plain words, where a language has them */
+static char  g_code[16] = "en";   /* the language asked for, without -plain */
+
+static bool find_pack(const char *code, char *path, size_t cap);
 
 /* Splits "a|b|c" (in place) into forms. */
 static int split_forms(char *s, const char **out)
@@ -158,14 +165,74 @@ int ccr_trnf(char *out, size_t cap, ccr_text id, unsigned long n, ...)
     return r;
 }
 
-const char *ccr_lang_code(void) { english_ready(); return g_pack_used ? g_pack.code : g_en.code; }
+const char *ccr_lang_code(void) { return g_code; }
+const char *ccr_lang_font(void) { return g_pack_used ? g_pack.font : ""; }
+bool ccr_lang_plain(void) { return g_plain; }
+bool ccr_lang_in_plain_words(void)
+{
+    const size_t n = strlen(g_pack.code);
+    return g_pack_used && n > 6 && strcmp(g_pack.code + n - 6, "-plain") == 0;
+}
+
+/* The next code point of UTF-8 text (0 at its end). */
+static unsigned next_cp(const char **p)
+{
+    const unsigned char *s = (const unsigned char *)*p;
+    unsigned c = *s;
+    int n = c < 0x80 ? 0 : (c >> 5) == 6 ? 1 : (c >> 4) == 14 ? 2 : (c >> 3) == 30 ? 3 : 0;
+    if (c >= 0x80 && n == 0) {   /* not UTF-8: a byte on its own */
+        ++*p;
+        return 0xFFFD;
+    }
+    c &= n == 0 ? 0x7Fu : n == 1 ? 0x1Fu : n == 2 ? 0x0Fu : 0x07u;
+    ++s;
+    for (int i = 0; i < n; ++i, ++s) {
+        if ((*s & 0xC0) != 0x80) {
+            *p = (const char *)s;
+            return 0xFFFD;
+        }
+        c = (c << 6) | (*s & 0x3Fu);
+    }
+    *p = (const char *)s;
+    return c;
+}
+
+static int cmp_int(const void *a, const void *b)
+{
+    const int x = *(const int *)a, y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
+int ccr_lang_codepoints(int *out, int cap)
+{
+    english_ready();
+    int n = 0;
+    for (int id = 0; id < CCR_T_COUNT; ++id) {
+        const table *t = (g_pack_used && g_pack.nforms[id] > 0) ? &g_pack : &g_en;
+        for (int f = 0; f < t->nforms[id]; ++f)
+            for (const char *p = t->form[id][f]; p && *p;) {
+                const unsigned c = next_cp(&p);
+                if (c < 0x80 || c == 0xFFFD)
+                    continue;
+                bool seen = false;
+                for (int k = 0; k < n && !seen; ++k)
+                    seen = out[k] == (int)c;
+                if (!seen && n < cap)
+                    out[n++] = (int)c;
+            }
+    }
+    qsort(out, (size_t)n, sizeof *out, cmp_int);
+    return n;
+}
 const char *ccr_lang_name(void) { english_ready(); return g_pack_used ? g_pack.name : g_en.name; }
 
 void ccr_lang_reset(void)
 {
     free(g_pack.arena);
+    free(g_pack.base_arena);
     memset(&g_pack, 0, sizeof g_pack);
     g_pack_used = false;
+    snprintf(g_code, sizeof g_code, "en");
 }
 
 /* ---------------------------------------------------- format checking */
@@ -290,7 +357,7 @@ static bool code_from_path(const char *path, char *code, size_t cap);
  * count; a broken string is dropped (English is used), the rest is kept.
  * With `strict`, keys the pack leaves out are problems too.
  */
-static int load_pack(table *t, const char *path, FILE *log, bool strict, bool *ok)
+static int load_pack(table *t, const char *path, FILE *log, bool strict, bool *ok, int depth)
 {
     *ok = false;
     memset(t, 0, sizeof *t);
@@ -303,7 +370,7 @@ static int load_pack(table *t, const char *path, FILE *log, bool strict, bool *o
     english_ready();
 
     int problems = 0;
-    bool rule_given = false;
+    bool rule_given = false, base_en = false;
     unsigned line_no = 0;
     char *next = t->arena;
     if ((unsigned char)next[0] == 0xEF && (unsigned char)next[1] == 0xBB &&
@@ -345,6 +412,60 @@ static int load_pack(table *t, const char *path, FILE *log, bool strict, bool *o
         if (*key == '@') {
             if (strcmp(key, "@name") == 0) {
                 snprintf(t->name, sizeof t->name, "%s", val);
+            } else if (strcmp(key, "@base") == 0) {
+                /* the pack this one changes a few strings of: the same
+                 * folder first, then wherever packs are found */
+                char bpath[1024];
+                if (depth > 0) {
+                    PROBLEM("@base in a pack that is itself a base: one level only");
+                } else if (t->base_arena) {
+                    PROBLEM("@base given twice");
+                } else if (strcmp(val, "en") == 0) {
+                    base_en = true;   /* the built-in English: filled in at the end */
+                } else {
+                    const char *slash = strrchr(path, '/');
+                    bool found = false;
+                    if (slash && (size_t)(slash - path) + strlen(val) + 7 < sizeof bpath) {
+                        snprintf(bpath, sizeof bpath, "%.*s/%s.lang", (int)(slash - path), path, val);
+                        found = access(bpath, R_OK) == 0;
+                    }
+                    if (!found)
+                        found = find_pack(val, bpath, sizeof bpath);
+                    table b;
+                    bool bok = false;
+                    if (!found) {
+                        PROBLEM("@base %s: no such pack", val);
+                    } else {
+                        problems += load_pack(&b, bpath, log, false, &bok, depth + 1);
+                        if (bok) {
+                            for (int i = 0; i < CCR_T_COUNT; ++i)
+                                if (!t->nforms[i] && b.nforms[i]) {
+                                    t->nforms[i] = b.nforms[i];
+                                    for (int f = 0; f < b.nforms[i]; ++f)
+                                        t->form[i][f] = b.form[i][f];
+                                    t->from_base[i] = true;
+                                }
+                            if (!rule_given)
+                                t->rule = b.rule;
+                            if (!t->font[0])
+                                snprintf(t->font, sizeof t->font, "%s", b.font);
+                            t->base_arena = b.arena;
+                            free(b.base_arena);
+                        } else {
+                            free(b.arena);
+                        }
+                    }
+                }
+            } else if (strcmp(key, "@font") == 0) {
+                /* a built-in font's name, or a .ttf/.otf next to the pack */
+                const size_t vl = strlen(val);
+                const bool file = strchr(val, '/') ||
+                                  (vl > 4 && (strcmp(val + vl - 4, ".ttf") == 0 || strcmp(val + vl - 4, ".otf") == 0));
+                const char *slash = strrchr(path, '/');
+                if (file && val[0] != '/' && slash)
+                    snprintf(t->font, sizeof t->font, "%.*s/%s", (int)(slash - path), path, val);
+                else
+                    snprintf(t->font, sizeof t->font, "%s", val);
             } else if (strcmp(key, "@plural") == 0) {
                 size_t i = 0;
                 for (; i < sizeof g_rules / sizeof g_rules[0]; ++i)
@@ -368,8 +489,9 @@ static int load_pack(table *t, const char *path, FILE *log, bool strict, bool *o
             PROBLEM("unknown key '%s' (from a newer or older Ccratch?)", key);
             continue;
         }
-        if (t->nforms[id])
+        if (t->nforms[id] && !t->from_base[id])
             PROBLEM("'%s' given twice, the last one wins", key);
+        t->from_base[id] = false;
 
         const char *forms[MAX_FORMS];
         int n = g_entries[id].plural ? split_forms(val, forms) : 1;
@@ -408,6 +530,14 @@ static int load_pack(table *t, const char *path, FILE *log, bool strict, bool *o
     }
 #undef PROBLEM
 
+    if (base_en)
+        for (int i = 0; i < CCR_T_COUNT; ++i)
+            if (!t->nforms[i]) {
+                t->nforms[i] = g_en.nforms[i];
+                for (int f = 0; f < g_en.nforms[i]; ++f)
+                    t->form[i][f] = g_en.form[i][f];
+                t->from_base[i] = true;
+            }
     if (strict) {
         line_no = 0;
         for (int i = 0; i < CCR_T_COUNT; ++i)
@@ -444,10 +574,11 @@ int ccr_lang_check(const char *path, FILE *out)
 {
     table t;
     bool ok;
-    int problems = load_pack(&t, path, out, true, &ok);
+    int problems = load_pack(&t, path, out, true, &ok, 0);
     if (ok && problems == 0 && out)
         fprintf(out, "%s: %s, all %d strings, no problems\n", path, t.name, (int)CCR_T_COUNT);
     free(t.arena);
+    free(t.base_arena);
     return problems;
 }
 
@@ -487,7 +618,10 @@ int ccr_lang_scan(ccr_lang_info *out, int cap)
     if (cap <= 0)
         return 0;
     english_ready();
-    int n = 0;
+    int n = 0, nplain = 0;
+    static char plain[128][16];   /* CODE-plain packs found: CODE has plain words */
+    out[n].has_plain = false;
+    out[n].font[0] = '\0';
     snprintf(out[n].code, sizeof out[n].code, "en");
     snprintf(out[n].name, sizeof out[n].name, "English");
     out[n++].path[0] = '\0';
@@ -502,29 +636,41 @@ int ccr_lang_scan(ccr_lang_info *out, int cap)
             char code[16];
             if (!code_from_path(e->d_name, code, sizeof code))
                 continue;
+            const size_t cl = strlen(code);
+            if (cl > 6 && strcmp(code + cl - 6, "-plain") == 0) {   /* not a language of its own */
+                if (nplain < 128)
+                    snprintf(plain[nplain++], sizeof plain[0], "%.*s", (int)(cl - 6), code);
+                continue;
+            }
             bool seen = false;
             for (int i = 0; i < n && !seen; ++i)
                 seen = strcmp(out[i].code, code) == 0;
             if (seen)
                 continue;
             ccr_lang_info *li = &out[n];
+            li->has_plain = false;
             snprintf(li->code, sizeof li->code, "%s", code);
             if (snprintf(li->path, sizeof li->path, "%s/%s", dirs[d], e->d_name) >= (int)sizeof li->path)
                 continue;
-            /* the name, without loading the whole pack */
+            /* the name (and font), without loading the whole pack: the
+             * settings come first */
             snprintf(li->name, sizeof li->name, "%s", code);
+            li->font[0] = '\0';
             FILE *f = fopen(li->path, "rb");
             if (f) {
                 char line[256];
-                while (fgets(line, sizeof line, f)) {
+                for (int lines = 0; lines < 40 && fgets(line, sizeof line, f); ++lines) {
                     char *k = trim(line), *eq = strchr(k, '=');
-                    if (eq && strncmp(k, "@name", 5) == 0) {
-                        char *v = trim(eq + 1);
-                        v[strcspn(v, "\r\n")] = '\0';
-                        if (*v && valid_utf8(v))
-                            snprintf(li->name, sizeof li->name, "%s", v);
-                        break;
-                    }
+                    if (!eq || *k != '@')
+                        continue;
+                    char *v = trim(eq + 1);
+                    v[strcspn(v, "\r\n")] = '\0';
+                    if (!*v || !valid_utf8(v))
+                        continue;
+                    if (strncmp(k, "@name", 5) == 0)
+                        snprintf(li->name, sizeof li->name, "%s", v);
+                    else if (strncmp(k, "@font", 5) == 0)
+                        snprintf(li->font, sizeof li->font, "%s", v);
                 }
                 fclose(f);
             }
@@ -532,39 +678,87 @@ int ccr_lang_scan(ccr_lang_info *out, int cap)
         }
         closedir(dir);
     }
+    for (int i = 0; i < n; ++i)
+        for (int k = 0; k < nplain && !out[i].has_plain; ++k)
+            out[i].has_plain = strcmp(plain[k], out[i].code) == 0;
     if (n > 2)
         qsort(out + 1, (size_t)(n - 1), sizeof *out, compare_info);   /* English stays first */
     return n;
 }
 
-bool ccr_lang_use(const char *code, FILE *log)
+/* Where the pack for `code` is (the first found, as ccr_lang_scan). */
+static bool find_pack(const char *code, char *path, size_t cap)
 {
-    if (!code || !*code || strcmp(code, "en") == 0) {
-        ccr_lang_reset();
-        return true;
-    }
-    static ccr_lang_info found[64];
-    int n = ccr_lang_scan(found, 64);
-    for (int i = 1; i < n; ++i) {
-        if (strcmp(found[i].code, code) != 0)
+    char dirs[4][1024];
+    int nd = ccr_config_data_dirs("lang", "CCRATCH_LANG_DIR", dirs, 4);
+    for (int d = 0; d < nd; ++d) {
+        if (snprintf(path, cap, "%s/%s.lang", dirs[d], code) >= (int)cap)
             continue;
-        table t;
-        bool ok;
-        int problems = load_pack(&t, found[i].path, log, false, &ok);
-        if (!ok) {
-            free(t.arena);
-            return false;
-        }
-        if (problems && log)
-            fprintf(log, "ccratch: %d problem%s in %s, English used for those\n", problems,
-                    problems == 1 ? "" : "s", found[i].path);
-        snprintf(t.code, sizeof t.code, "%s", code);
-        ccr_lang_reset();
-        g_pack = t;
-        g_pack_used = true;
-        return true;
+        if (access(path, R_OK) == 0)
+            return true;
     }
     return false;
+}
+
+/* Loads the pack `code` (exactly that one). */
+static bool use_pack(const char *code, FILE *log)
+{
+    char path[1024];
+    if (!find_pack(code, path, sizeof path))
+        return false;
+    table t;
+    bool ok;
+    int problems = load_pack(&t, path, log, false, &ok, 0);
+    if (!ok) {
+        free(t.arena);
+        free(t.base_arena);
+        return false;
+    }
+    if (problems && log)
+        fprintf(log, "ccratch: %d problem%s in %s, English used for those\n", problems,
+                problems == 1 ? "" : "s", path);
+    snprintf(t.code, sizeof t.code, "%s", code);
+    ccr_lang_reset();
+    g_pack = t;
+    g_pack_used = true;
+    return true;
+}
+
+bool ccr_lang_use(const char *code, FILE *log)
+{
+    if (!code || !*code)
+        code = "en";
+    char base[16];
+    snprintf(base, sizeof base, "%s", code);
+    const size_t bl = strlen(base);
+    if (bl > 6 && strcmp(base + bl - 6, "-plain") == 0)   /* --lang ru-plain: ru, in plain words */
+        base[bl - 6] = '\0';
+    if (g_plain || strcmp(base, code) != 0) {
+        char plain[32];
+        snprintf(plain, sizeof plain, "%s-plain", base);
+        if (use_pack(plain, log)) {
+            snprintf(g_code, sizeof g_code, "%s", base);
+            return true;
+        }
+    }
+    if (strcmp(base, "en") == 0) {
+        ccr_lang_reset();
+        return true;
+    }
+    if (!use_pack(base, log))
+        return false;
+    snprintf(g_code, sizeof g_code, "%s", base);
+    return true;
+}
+
+void ccr_lang_set_plain(bool on)
+{
+    g_plain = on;
+}
+
+bool ccr_lang_save_plain(bool on)
+{
+    return ccr_config_set("lang_plain", on ? "yes" : "no");
 }
 
 bool ccr_lang_save_choice(const char *code)
@@ -598,6 +792,8 @@ static bool use_locale(const char *loc, FILE *log)
 
 void ccr_lang_pick(const char *cli, FILE *log)
 {
+    char plain[8];
+    g_plain = ccr_config_get("lang_plain", plain, sizeof plain) && strcmp(plain, "yes") == 0;
     if (cli) {
         if (!ccr_lang_use(cli, log) && log)
             fprintf(log, "ccratch: no language pack '%s', staying in English\n", cli);

@@ -3,6 +3,7 @@
 @plural = slavic
 
 # окно
+topbar.cmake = CMake
 topbar.build = Собрать
 cmake.made = CMakeLists.txt создан: %u .c-файл, подключённые в нём библиотеки слинкованы|CMakeLists.txt создан: %u .c-файла, подключённые в них библиотеки слинкованы|CMakeLists.txt создан: %u .c-файлов, подключённые в них библиотеки слинкованы
 cmake.no_sources = В проекте нет .c-файлов: CMake пока нечего собирать
@@ -339,6 +340,8 @@ help.git = git: что изменилось (полоски у блоков), к
 pick.themes = Темы
 pick.langs = Язык
 pick.builtin = , встроенный
+pick.plain = Человеческий язык
+pick.plain_hint = Всё простыми словами, для тех, кто не программирует
 pick.theme_hint = Своя: файл .theme в ~/.local/share/ccratch/themes (ccratch --check-theme проверит)
 pick.lang_hint = Свой: ccratch --lang-template > КОД.lang, перевести и положить в ~/.local/share/ccratch/lang
 autosave.on = автосохранение: вкл

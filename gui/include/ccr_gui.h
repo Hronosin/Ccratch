@@ -75,11 +75,22 @@ void  ccr_gui_begin_frame(ccr_color clear);
 void  ccr_gui_end_frame(void);
 bool  ccr_gui_screenshot(const char *path);
 
-/* Window icon from an in-memory PNG. Returns false if it could not decode. */
 /* Text from now on in this TrueType font (UTF-8), rasterized at base_size
  * for the given characters. Until then: raylib's ASCII pixel font. */
 bool  ccr_gui_load_font(const unsigned char *ttf, unsigned int size, float base_size,
                         const int *codepoints, int count);
+
+/* Some characters from one font file, some from another: Latin from one,
+ * Japanese from the next... drawn as one font. */
+typedef struct ccr_font_part {
+    const unsigned char *ttf;
+    unsigned int         size;
+    const int           *codepoints;
+    int                  count;
+} ccr_font_part;
+bool  ccr_gui_load_fonts(const ccr_font_part *parts, int n, float base_size);
+
+/* Window icon from an in-memory PNG. Returns false if it could not decode. */
 bool  ccr_gui_set_icon_png(const unsigned char *png, unsigned int size);
 
 /* Queries */

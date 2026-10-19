@@ -106,11 +106,15 @@ target_link_libraries(test_lang PRIVATE ccratch_core)
 add_test(NAME lang_packs COMMAND test_lang ${CMAKE_CURRENT_BINARY_DIR}/lang_scratch)
 
 # Every shipped pack is complete and safe; the template is a valid pack.
-file(GLOB CCR_SHIPPED_PACKS ${PROJECT_SOURCE_DIR}/lang/*.lang)
+file(GLOB CCR_SHIPPED_PACKS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/lang/*.lang)
 foreach(pack ${CCR_SHIPPED_PACKS})
     get_filename_component(code ${pack} NAME_WE)
     add_test(NAME lang_check_${code} COMMAND ${CCR_BIN} --check-lang ${pack})
 endforeach()
+# ...and every letter of them has a font that draws it.
+add_executable(test_fonts test_fonts.c)
+target_include_directories(test_fonts PRIVATE ${PROJECT_SOURCE_DIR}/ccratch/src)
+add_test(NAME font_coverage COMMAND test_fonts ${PROJECT_SOURCE_DIR}/lang ${PROJECT_SOURCE_DIR}/assets/fonts)
 add_test(NAME lang_template
          COMMAND sh -c "$0 --lang-template > \"$1\" && $0 --check-lang \"$1\""
                  ${CCR_BIN} ${CMAKE_CURRENT_BINARY_DIR}/en.lang)
