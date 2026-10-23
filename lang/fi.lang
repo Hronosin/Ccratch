@@ -418,3 +418,10 @@ set.plugins_none = Liitännäisiä ei löytynyt. Liitännäinen on .so-tiedosto 
 set.plugins_dir = Omat liitännäiset tänne:
 set.plugin_by = versio %s, tekijä %s
 pf.chip_tip = Mitä liitännäiset sanovat tästä tiedostosta. Napsautus: seuraavaan
+
+# C / C++
+palette.classes = Luokat
+palette.std = Vakiokirjasto
+palette.lang_tip = Palikat kielelle %s (.cpp-tiedosto valitsee C++:n itse)
+set.std = Vakiokirjaston palikat
+set.std_hint = printf, malloc, std::cout... omassa osiossaan. Pois: vain kieli itse ja omat funktiosi

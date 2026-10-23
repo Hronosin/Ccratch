@@ -1,4 +1,5 @@
 #include "ccr_blocks.h"
+#include "ccr_template.h"
 #include "ccr_choice.h"
 #include "ccr_cmake.h"
 #include "ccr_lib.h"
@@ -253,7 +254,12 @@ static void expr_look(const layout *L, ccr_node_id id, shape *sh, category *cat)
     *sh = SHAPE_PILL;
 
     switch (n->kind) {
-    case CCR_NODE_REF:       *cat = strcmp(S(L, n->name), "NULL") == 0 ? CAT_POINTER : CAT_VARIABLE; break;
+    case CCR_NODE_REF:
+        *cat = strcmp(S(L, n->name), "NULL") == 0 || strcmp(S(L, n->name), "nullptr") == 0 ? CAT_POINTER
+                                                                                            : CAT_VARIABLE;
+        break;
+    case CCR_NODE_NEW:
+    case CCR_NODE_DELETE:    *cat = CAT_POINTER; break;   /* memory, by hand */
     case CCR_NODE_CAST:
     case CCR_NODE_SIZEOF:    *cat = CAT_TYPE; break;
     case CCR_NODE_MEMBER:
@@ -267,6 +273,8 @@ static void expr_look(const layout *L, ccr_node_id id, shape *sh, category *cat)
     case CCR_NODE_CALL: {
         const ccr_lib_block *lb = lib_of(L, id);
         *cat = CAT_CALL;
+        if (ccr_std_header(S(L, n->name)))
+            *cat = CAT_LIBRARY;   /* the standard library's, not yours */
         if (lb) {   /* a library's block: its pack's colour; true or false is pointy */
             const ccr_lib_pack *pk = ccr_lib_pack_at(lb->pack);
             *cat = pk ? (category)pk->category : CAT_LIBRARY;
@@ -365,6 +373,14 @@ static bool word_items(const layout *L, ccr_node_id id, items *it)
         it_expr(it, name);
         return true;
     case CCR_NODE_CAST:
+        if (strstr(S(L, n->raw), "_cast")) {   /* static_cast<T>(a) */
+            it_fmt(it, "%s<", S(L, n->raw));
+            it_expr(it, type);
+            it_text(it, "> (");
+            it_expr(it, operand(L, id, 0));
+            it_text(it, ")");
+            return true;
+        }
         it_text(it, "(");
         it_expr(it, type);
         it_text(it, ")");
@@ -453,13 +469,48 @@ static void expr_items(const layout *L, ccr_node_id id, items *it)
         }
         break;
     case CCR_NODE_CALL:
+        if (c0 != CCR_NONE && N(L, c0)->kind == CCR_NODE_MEMBER && !(N(L, c0)->flags & CCR_FLAG_WORD)) {
+            /* obj.method(args): the object, then the call */
+            const ccr_node *m = N(L, c0);
+            if (m->first_child != CCR_NONE) {
+                it_expr(it, m->first_child);
+                it_fmt(it, "%s%s (", (m->flags & CCR_FLAG_ARROW) ? "->" : ".", S(L, m->name));
+            } else {
+                it_fmt(it, "%s (", S(L, m->name));   /* a method of this one's own class */
+            }
+            args_with_commas(L, c1, it);
+            it_text(it, ")");
+            break;
+        }
         it_fmt(it, "%s (", *name ? name : "call");
         args_with_commas(L, c0, it);
         it_text(it, ")");
         break;
     case CCR_NODE_MEMBER:
+        if (c0 == CCR_NONE) {   /* C++: a member of this object, no `this->` written */
+            it_text(it, name);
+            break;
+        }
         it_expr(it, c0);
         it_fmt(it, "%s%s", (n->flags & CCR_FLAG_ARROW) ? "->" : ".", name);
+        break;
+    case CCR_NODE_NEW:
+        if (n->flags & CCR_FLAG_NEW) {
+            it_text(it, "new");
+            it_expr(it, word_of(L, id, CCR_FLAG_WORD_TYPE));
+            it_text(it, "(");
+            args_with_commas(L, operand(L, id, 0), it);
+            it_text(it, ")");
+            break;
+        }
+        it_fmt(it, "new %s", S(L, n->type));
+        it_text(it, (n->flags & CCR_FLAG_ARRAY_FORM) ? "[" : "(");
+        args_with_commas(L, c0, it);
+        it_text(it, (n->flags & CCR_FLAG_ARRAY_FORM) ? "]" : ")");
+        break;
+    case CCR_NODE_DELETE:
+        it_text(it, (n->flags & CCR_FLAG_ARRAY_FORM) ? "delete[]" : "delete");
+        it_expr(it, c0);
         break;
     case CCR_NODE_INDEX:
         it_expr(it, c0);
@@ -469,8 +520,18 @@ static void expr_items(const layout *L, ccr_node_id id, items *it)
         break;
     case CCR_NODE_CAST:
     case CCR_NODE_COMPOUND_LIT:
-        it_fmt(it, "(%s)", S(L, n->type));
-        it_expr(it, c0);
+        if (n->kind == CCR_NODE_CAST && strcmp(S(L, n->raw), "functional") == 0) {
+            it_fmt(it, "%s (", S(L, n->type));   /* int(x) */
+            it_expr(it, c0);
+            it_text(it, ")");
+        } else if (n->kind == CCR_NODE_CAST && strstr(S(L, n->raw), "_cast")) {
+            it_fmt(it, "%s<%s> (", S(L, n->raw), S(L, n->type));   /* static_cast<int>(x) */
+            it_expr(it, c0);
+            it_text(it, ")");
+        } else {
+            it_fmt(it, "(%s)", S(L, n->type));
+            it_expr(it, c0);
+        }
         break;
     case CCR_NODE_DESIGNATOR:
         it_fmt(it, ".%s", name);
@@ -785,6 +846,7 @@ static bool is_expression(ccr_node_kind k)
     case CCR_NODE_TEXT:
     case CCR_NODE_INT_LIT: case CCR_NODE_FLOAT_LIT:
     case CCR_NODE_CHAR_LIT: case CCR_NODE_STRING_LIT:
+    case CCR_NODE_NEW: case CCR_NODE_DELETE:
         return true;
     default:
         return false;
@@ -1003,6 +1065,43 @@ static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *
         sz = emit_c_block(L, &head, &m, 1, CAT_CONTROL, x, y, id, max_w);
         break;
     }
+    case CCR_NODE_FOR_RANGE: {
+        /* for (auto &p : team): the variable, a colon, what it walks */
+        it_text(&head, "for");
+        const ccr_node_id var = child_at(L, id, 0);
+        if (n->flags & CCR_FLAG_NEW) {
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_TYPE));
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_NAME));
+            it_text(&head, ":");
+            it_expr(&head, operand(L, id, 0));
+            mouth m = { operand(L, id, 1), NULL };
+            sz = emit_c_block(L, &head, &m, 1, CAT_CONTROL, x, y, id, max_w);
+            break;
+        }
+        if (var != CCR_NONE && N(L, var)->kind == CCR_NODE_VAR)
+            it_decl(&head, S(L, N(L, var)->type), S(L, N(L, var)->name), false);
+        it_text(&head, ":");
+        if (kids > 2)
+            it_expr(&head, child_at(L, id, 1));
+        mouth m = { kids ? child_at(L, id, kids - 1) : CCR_NONE, NULL };
+        sz = emit_c_block(L, &head, &m, 1, CAT_CONTROL, x, y, id, max_w);
+        break;
+    }
+    case CCR_NODE_USING:
+        if (n->flags & CCR_FLAG_NEW) {
+            it_text(&head, "using namespace");
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_NAME));
+        } else {
+            it_text(&head, S(L, n->aux));
+        }
+        sz = emit_line_block(L, &head, CAT_PREPROC, x, y, id);
+        break;
+    case CCR_NODE_ACCESS:
+    case CCR_NODE_NAMESPACE:
+    case CCR_NODE_FUNCTION:
+    case CCR_NODE_FIELD:
+        sz = emit_decl_block(L, id, x, y, max_w);
+        break;
     case CCR_NODE_SWITCH: {
         it_text(&head, "switch");
         it_expr(&head, child_at(L, id, 0));
@@ -1157,6 +1256,74 @@ static float emit_stack(layout *L, ccr_node_id first, float x, float y, float *m
 
 /* -------------------------------------------- top-level declarations */
 
+/* C++ says much more in a head than C (templates, const, initialiser
+ * lists, base classes...): the head as written, from the node's start up
+ * to `end`, on one line, without its comments and the `{`. */
+static bool written_head(const layout *L, ccr_node_id id, uint32_t end, items *it)
+{
+    const ccr_ast *a = L->ast;
+    const ccr_node *n = N(L, id);
+    if (!a->cpp || (n->flags & CCR_FLAG_NEW) || !a->source || n->src_e <= n->src_b || end > a->source_len ||
+        end <= n->src_b)
+        return false;
+    char buf[240];
+    size_t len = 0;
+    bool space = false;
+    for (uint32_t i = n->src_b; i < end && len < sizeof buf - 4; ++i) {
+        const char c = a->source[i];
+        if (c == '/' && i + 1 < end && a->source[i + 1] == '/') {   /* a comment: to its line's end */
+            while (i < end && a->source[i] != '\n')
+                ++i;
+            space = true;
+            continue;
+        }
+        if (c == '/' && i + 1 < end && a->source[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < end && !(a->source[i] == '*' && a->source[i + 1] == '/'))
+                ++i;
+            ++i;
+            space = true;
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            space = len > 0;
+            continue;
+        }
+        if (space && len > 0)
+            buf[len++] = ' ';
+        space = false;
+        buf[len++] = c;
+    }
+    while (len > 0 && (buf[len - 1] == '{' || buf[len - 1] == ';' || buf[len - 1] == ' '))
+        --len;
+    if (len == 0)
+        return false;
+    if (len >= sizeof buf - 4)
+        memcpy(buf + len, "...", 3), len += 3;
+    buf[len] = '\0';
+    it_fmt(it, "%s", buf);
+    return true;
+}
+
+/* Where a C++ function's body starts (its head ends there), or its end. */
+static uint32_t head_end(const layout *L, ccr_node_id fn)
+{
+    for (ccr_node_id c = N(L, fn)->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
+        if (N(L, c)->kind == CCR_NODE_BLOCK && N(L, c)->src_e > N(L, c)->src_b)
+            return N(L, c)->src_b;
+    return N(L, fn)->src_e;
+}
+
+/* Where a C++ class's members start: its first `{`. */
+static uint32_t brace_of(const layout *L, ccr_node_id id)
+{
+    const ccr_node *n = N(L, id);
+    for (uint32_t i = n->src_b; i < n->src_e && i < L->ast->source_len; ++i)
+        if (L->ast->source[i] == '{')
+            return i;
+    return n->src_e;
+}
+
 static void signature(const layout *L, ccr_node_id fn, items *it)
 {
     const ccr_node *n = N(L, fn);
@@ -1199,7 +1366,7 @@ static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
         it_text(&head, S(L, N(L, fn)->name));   /* the file: CMake runs it top to bottom */
     else if (N(L, fn)->flags & CCR_FLAG_NEW)
         new_signature(L, fn, &head);
-    else
+    else if (!written_head(L, fn, head_end(L, fn), &head))
         signature(L, fn, &head);
     if (folded(L, fn))
         it_fmt(&head, "{ %u }", hidden_count(L, fn));   /* the body is folded away */
@@ -1268,14 +1435,28 @@ static bool emit_new_decl(layout *L, ccr_node_id id, float x, float y, float *ma
     case CCR_NODE_STRUCT:
     case CCR_NODE_UNION: {
         /* a C block: the fields are declarations dropped into its mouth */
-        it_text(&head, n->kind == CCR_NODE_STRUCT ? "struct" : "union");
+        it_text(&head, n->kind == CCR_NODE_UNION ? "union" : (n->flags & CCR_FLAG_CLASS) ? "class" : "struct");
         it_expr(&head, name);
         mouth m = { operand(L, id, 0), NULL };
         *sz = emit_c_block(L, &head, &m, 1, CAT_TYPE, x, y, id, max_w);
         return true;
     }
-    case CCR_NODE_FUNCTION:   /* a prototype; a definition is a hat */
-        it_text(&head, "declare");
+    case CCR_NODE_NAMESPACE: {
+        it_text(&head, "namespace");
+        it_expr(&head, name);
+        mouth m = { operand(L, id, 0), NULL };
+        *sz = emit_c_block(L, &head, &m, 1, CAT_PREPROC, x, y, id, max_w);
+        return true;
+    }
+    case CCR_NODE_FUNCTION:
+        if (n->flags & CCR_FLAG_DEFINITION) {
+            /* a method (in a class's mouth): its head, its body in its own mouth */
+            new_signature(L, id, &head);
+            mouth m = { operand(L, id, 1), NULL };
+            *sz = emit_c_block(L, &head, &m, 1, CAT_EVENT, x, y, id, max_w);
+            return true;
+        }
+        it_text(&head, "declare");   /* a prototype; a definition at the top is a hat */
         new_signature(L, id, &head);
         *sz = emit_line_block(L, &head, CAT_CALL, x, y, id);
         return true;
@@ -1284,11 +1465,135 @@ static bool emit_new_decl(layout *L, ccr_node_id id, float x, float y, float *ma
     }
 }
 
+/* One member of a C++ class or namespace, in its mouth. */
+static size2 emit_member(layout *L, ccr_node_id c, float x, float y, float *max_w)
+{
+    const ccr_node *n = N(L, c);
+    items line = { .n = 0, .used = 0 };
+    size2 sz;
+    switch (n->kind) {
+    case CCR_NODE_FIELD: {
+        ccr_node_id init = CCR_NONE;   /* int hp = 100; */
+        for (ccr_node_id k = n->first_child; k != CCR_NONE; k = N(L, k)->next_sibling)
+            if (is_expression(N(L, k)->kind))
+                init = k;
+        it_decl(&line, S(L, n->type), S(L, n->name), init != CCR_NONE);
+        it_expr(&line, init);
+        sz = emit_line_block(L, &line, CAT_TYPE, x, y, c);
+        break;
+    }
+    case CCR_NODE_ACCESS:
+        it_fmt(&line, "%s:", S(L, n->name));
+        sz = emit_line_block(L, &line, CAT_TYPE, x, y, c);
+        break;
+    case CCR_NODE_FUNCTION:
+        if ((n->flags & CCR_FLAG_DEFINITION) && !(n->flags & CCR_FLAG_NEW)) {
+            /* a method: its head, its body in the mouth, like a hat folded in */
+            if (!written_head(L, c, head_end(L, c), &line))
+                signature(L, c, &line);
+            ccr_node_id body = CCR_NONE;
+            for (ccr_node_id k = n->first_child; k != CCR_NONE; k = N(L, k)->next_sibling)
+                if (N(L, k)->kind == CCR_NODE_BLOCK)
+                    body = k;
+            mouth m = { body, NULL };
+            sz = emit_c_block(L, &line, &m, 1, CAT_EVENT, x, y, c, max_w);
+            break;
+        }
+        return emit_decl_block(L, c, x, y, max_w);
+    default:
+        return emit_decl_block(L, c, x, y, max_w);
+    }
+    if (sz.w > *max_w)
+        *max_w = sz.w;
+    return sz;
+}
+
+/* A C++ class or namespace: its head, its members one under another in
+ * its mouth (not a stack: they stay where the file has them). */
+static size2 emit_container(layout *L, ccr_node_id id, const items *head, category cat, float x, float y,
+                            float *max_w)
+{
+    if (folded(L, id))
+        return emit_folded(L, head, NULL, cat, x, y, id, max_w);
+    float hw, hh;
+    measure_items(L, head, &hw, &hh);
+    hw += BLOCK_PAD_X * 2.0f;
+    hh += BLOCK_PAD_Y * 2.0f;
+    if (hh < BLOCK_MIN_H) hh = BLOCK_MIN_H;
+    const float width = hw < 160.0f ? 160.0f : hw;
+    push_shape(L, SHAPE_BLOCK, cat, (ccr_rect){ x, y, width, hh }, id);
+    emit_items(L, head, x + BLOCK_PAD_X, y, hh, cat, id);
+    float cy = y + hh;
+    /* members can be dropped in: at its top, or under any of them */
+    push_snap(L, CCR_SNAP_FIRST, id, x + ARM_W, cy, 120.0f, 0.0f);
+    for (ccr_node_id c = N(L, id)->first_child; c != CCR_NONE && !L->oom; c = N(L, c)->next_sibling) {
+        const ccr_node_kind k = N(L, c)->kind;
+        if (k == CCR_NODE_MACRO_USE || k == CCR_NODE_PARAM || k == CCR_NODE_DESIGNATOR)
+            continue;
+        float w = 0.0f;
+        const size2 ms = (N(L, c)->flags & CCR_FLAG_NEW) ? (size2){ 0, emit_stmt(L, c, x + ARM_W, cy, &w) }
+                                                        : emit_member(L, c, x + ARM_W, cy, &w);
+        if (ARM_W + w > *max_w)
+            *max_w = ARM_W + w;
+        cy += ms.h;
+        push_snap(L, CCR_SNAP_AFTER, c, x + ARM_W, cy, w, 0.0f);
+    }
+    float inner = cy - (y + hh);
+    if (inner < MOUTH_MIN_H) inner = MOUTH_MIN_H;
+    push_shape(L, SHAPE_BLOCK, cat, (ccr_rect){ x, y + hh, ARM_W, inner }, id);
+    push_shape(L, SHAPE_BLOCK, cat, (ccr_rect){ x, y + hh + inner, width, FOOT_H }, id);
+    if (width > *max_w)
+        *max_w = width;
+    return (size2){ width, hh + inner + FOOT_H };
+}
+
 static size2 emit_decl_block(layout *L, ccr_node_id id, float x, float y, float *max_w)
 {
     const ccr_node *n = N(L, id);
     items head = { .n = 0, .used = 0 };
     size2 sz;
+
+    if (n->kind == CCR_NODE_ACCESS || n->kind == CCR_NODE_FIELD)
+        return emit_member(L, id, x, y, max_w);
+    /* C++: classes and namespaces hold members; heads as written */
+    if (!(n->flags & CCR_FLAG_NEW) && L->ast->cpp) {
+        switch (n->kind) {
+        case CCR_NODE_NAMESPACE:
+            if (*S(L, n->name))
+                it_fmt(&head, "namespace %s", S(L, n->name));
+            else
+                it_text(&head, "namespace");
+            sz = emit_container(L, id, &head, CAT_PREPROC, x, y, max_w);
+            if (sz.w > *max_w)
+                *max_w = sz.w;
+            return sz;
+        case CCR_NODE_STRUCT:
+        case CCR_NODE_UNION:
+            if (!(n->flags & CCR_FLAG_DEFINITION))
+                break;
+            if (!written_head(L, id, brace_of(L, id), &head))
+                it_fmt(&head, "%s %s", (n->flags & CCR_FLAG_CLASS) ? "class" : "struct", S(L, n->name));
+            sz = emit_container(L, id, &head, CAT_TYPE, x, y, max_w);
+            if (sz.w > *max_w)
+                *max_w = sz.w;
+            return sz;
+        case CCR_NODE_FUNCTION:
+            if (n->flags & CCR_FLAG_DEFINITION)
+                break;
+            it_text(&head, "declare");
+            if (!written_head(L, id, n->src_e, &head))
+                signature(L, id, &head);
+            sz = emit_line_block(L, &head, CAT_CALL, x, y, id);
+            if (sz.w > *max_w)
+                *max_w = sz.w;
+            return sz;
+        case CCR_NODE_FIELD:
+        case CCR_NODE_ACCESS:
+            return emit_member(L, id, x, y, max_w);
+        default:
+            break;
+        }
+    }
 
     if (emit_new_decl(L, id, x, y, max_w, &sz)) {
         if (sz.w > *max_w)

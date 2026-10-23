@@ -822,11 +822,17 @@ static void print_new_inner(gen *g, ccr_node_id id, unsigned depth)
     case CCR_NODE_CALL: {
         if (!filled(g, id, name))
             break;
-        puts_(g, name);
+        /* v.push_back(x): the object and its method, then the arguments */
+        const ccr_node_id callee = arg(g, id, 0);
+        const bool method = callee != CCR_NONE && N(g, callee)->kind == CCR_NODE_MEMBER;
+        if (method)
+            slot(g, callee, depth);
+        else
+            puts_(g, name);
         puts_(g, "(");
         bool first = true;
-        const bool one = arg(g, id, 1) == CCR_NONE;
-        for (uint32_t i = 0; arg(g, id, i) != CCR_NONE; ++i) {
+        const bool one = arg(g, id, method ? 2 : 1) == CCR_NONE;
+        for (uint32_t i = method ? 1 : 0; arg(g, id, i) != CCR_NONE; ++i) {
             ccr_node_id a = arg(g, id, i);
             if (one && N(g, a)->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, a)->name))
                 continue;   /* f( ) with nothing typed: f(); with more slots, each must be filled */
@@ -841,11 +847,68 @@ static void print_new_inner(gen *g, ccr_node_id id, unsigned depth)
     case CCR_NODE_CAST:
         if (!filled(g, id, type))
             break;
+        if (strstr(ccr_ast_str(g->ast, n->raw), "_cast")) {   /* static_cast<int>(x) */
+            puts_(g, ccr_ast_str(g->ast, n->raw));
+            puts_(g, "<");
+            puts_(g, type);
+            puts_(g, ">(");
+            slot(g, arg(g, id, 0), depth);
+            puts_(g, ")");
+            goto expression_end;
+        }
         puts_(g, "(");
         puts_(g, type);
         puts_(g, ")");
         slot(g, arg(g, id, 0), depth);
         goto expression_end;
+    case CCR_NODE_NEW: {
+        if (!filled(g, id, type))
+            break;
+        puts_(g, "new ");
+        puts_(g, type);
+        puts_(g, "(");
+        const ccr_node_id a = arg(g, id, 0);
+        if (a != CCR_NONE && !(N(g, a)->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, a)->name)))
+            slot(g, a, depth);
+        puts_(g, ")");
+        goto expression_end;
+    }
+    case CCR_NODE_DELETE:
+        puts_(g, (n->flags & CCR_FLAG_ARRAY_FORM) ? "delete[] " : "delete ");
+        slot(g, arg(g, id, 0), depth);
+        goto expression_end;
+    case CCR_NODE_FOR_RANGE:
+        if (!filled(g, id, type) || !filled(g, id, name))
+            break;
+        puts_(g, "for (");
+        puts_(g, type);
+        if (type[strlen(type) - 1] != '&' && type[strlen(type) - 1] != '*')
+            puts_(g, " ");
+        puts_(g, name);
+        puts_(g, " : ");
+        slot(g, arg(g, id, 0), depth);
+        puts_(g, ") ");
+        body(g, arg(g, id, 1), depth);
+        break;
+    case CCR_NODE_NAMESPACE:
+        if (!filled(g, id, name))
+            break;
+        puts_(g, "namespace ");
+        puts_(g, name);
+        puts_(g, " ");
+        body(g, arg(g, id, 0), depth);
+        break;
+    case CCR_NODE_ACCESS:
+        puts_(g, name);
+        puts_(g, ":");
+        break;
+    case CCR_NODE_USING:
+        if (!filled(g, id, name))
+            break;
+        puts_(g, "using namespace ");
+        puts_(g, name);
+        puts_(g, ";");
+        break;
     case CCR_NODE_SIZEOF:
         if (arg(g, id, 0) != CCR_NONE) {
             puts_(g, "sizeof ");
@@ -902,7 +965,7 @@ static void print_new_inner(gen *g, ccr_node_id id, unsigned depth)
     case CCR_NODE_UNION:
         if (!filled(g, id, name))
             break;
-        puts_(g, n->kind == CCR_NODE_STRUCT ? "struct " : "union ");
+        puts_(g, n->kind == CCR_NODE_UNION ? "union " : (n->flags & CCR_FLAG_CLASS) ? "class " : "struct ");
         puts_(g, name);
         puts_(g, " ");
         body(g, arg(g, id, 0), depth);
@@ -978,6 +1041,61 @@ static ccr_node_id *sorted_children(gen *g, ccr_node_id id, uint32_t *count)
 
 static void emit_inner(gen *g, ccr_node_id id, unsigned depth);
 
+/* A C++ class or namespace written in the file (members dropped in go
+ * between the lines of its text). */
+static bool cpp_container(const gen *g, ccr_node_id id)
+{
+    const ccr_node *n = N(g, id);
+    return g->ast->cpp && !(n->flags & CCR_FLAG_NEW) &&
+           (n->kind == CCR_NODE_NAMESPACE || n->kind == CCR_NODE_STRUCT || n->kind == CCR_NODE_UNION);
+}
+
+/* The indent of the members around `kid` in `parent`: the line of a
+ * written member near it, else the container's plus 4. */
+static void member_indent(const gen *g, ccr_node_id parent, ccr_node_id kid, char *out, size_t cap)
+{
+    const ccr_ast *a = g->ast;
+    ccr_node_id near = CCR_NONE;
+    for (ccr_node_id c = N(g, parent)->first_child; c != CCR_NONE; c = N(g, c)->next_sibling) {
+        if (c == kid && near != CCR_NONE)
+            break;
+        const ccr_node *k = N(g, c);
+        if (!(k->flags & CCR_FLAG_NEW) && k->kind != CCR_NODE_ACCESS && k->src_e > k->src_b)
+            near = c;   /* public: is indented less than the members under it */
+    }
+    const uint32_t at = near != CCR_NONE ? N(g, near)->src_b : N(g, parent)->src_b;
+    uint32_t b = at;
+    while (b > 0 && a->source[b - 1] != '\n')
+        --b;
+    size_t n = 0;
+    while (b + n < at && (a->source[b + n] == ' ' || a->source[b + n] == '\t') && n < cap - 5)
+        ++n;
+    memcpy(out, a->source + b, n);
+    if (near == CCR_NONE) {   /* nothing written in it yet: one step in */
+        memcpy(out + n, "    ", 4);
+        n += 4;
+    }
+    out[n] = '\0';
+}
+
+/* The lines printed since `mark` (but the first) start with `indent`. */
+static void indent_lines(gen *g, size_t mark, const char *indent)
+{
+    const size_t il = strlen(indent);
+    if (!il || !g->ok)
+        return;
+    for (size_t i = mark; i < g->len; ++i) {
+        if (g->buf[i] != '\n' || i + 1 >= g->len)
+            continue;
+        put(g, indent, il);   /* grow by il, then shift the rest right */
+        if (!g->ok)
+            return;
+        memmove(g->buf + i + 1 + il, g->buf + i + 1, g->len - il - (i + 1));
+        memcpy(g->buf + i + 1, indent, il);
+        i += il;
+    }
+}
+
 static void emit(gen *g, ccr_node_id id, unsigned depth)
 {
     if (!g->ok)
@@ -1019,6 +1137,24 @@ static void emit_inner(gen *g, ccr_node_id id, unsigned depth)
         const bool dirty = has_dirty(g, kids[i], 0);
         /* pasted: its text is after the file's end, its place a point in it */
         const bool pasted = !(k->flags & CCR_FLAG_NEW) && k->src_b >= n->src_e && n->src_e > 0;
+        if (cpp_container(g, id) && ((k->flags & CCR_FLAG_NEW) || pasted) && k->place_b == k->place_e &&
+            k->place_b >= cur) {
+            /* dropped into a C++ class or namespace: a line of its own, indented
+             * like the members around it */
+            put_src(g, cur, k->place_b);
+            cur = k->place_b;
+            char indent[64];
+            member_indent(g, id, kids[i], indent, sizeof indent);
+            puts_(g, "\n");
+            puts_(g, indent);
+            const size_t mark = g->len;
+            if (pasted)
+                emit(g, kids[i], depth + 1);
+            else
+                print_new(g, kids[i], depth + 1);
+            indent_lines(g, mark, indent);
+            continue;
+        }
         if (n->kind == CCR_NODE_TRANSLATION_UNIT && ((k->flags & CCR_FLAG_NEW) || pasted) &&
             k->place_b == k->place_e && k->place_b >= cur) {
             /* a declaration from the palette: on lines of its own, here */
@@ -1074,6 +1210,7 @@ static bool is_expr_kind(ccr_node_kind k)
     case CCR_NODE_TEXT:
     case CCR_NODE_INT_LIT: case CCR_NODE_FLOAT_LIT:
     case CCR_NODE_CHAR_LIT: case CCR_NODE_STRING_LIT:
+    case CCR_NODE_NEW: case CCR_NODE_DELETE:
         return true;
     default:
         return false;
@@ -1097,8 +1234,12 @@ static bool spliceable(const ccr_ast *ast, ccr_node_id id)
     if (n->src_e <= n->src_b)
         return false;
     uint32_t cur = n->src_b;
+    const bool container = ast->cpp && (n->kind == CCR_NODE_NAMESPACE || n->kind == CCR_NODE_STRUCT ||
+                                         n->kind == CCR_NODE_UNION);
     for (ccr_node_id c = n->first_child; c != CCR_NONE; c = AN(ast, c)->next_sibling) {
         const ccr_node *k = AN(ast, c);
+        if (container && (k->flags & CCR_FLAG_NEW) && k->place_b == k->place_e && k->place_b >= cur)
+            continue;   /* a member dropped in: printed on a line of its own */
         if (k->place_e <= k->place_b || k->place_b < cur || k->place_e > n->src_e)
             return false;
         /* a child that is all of its parent: the parent has no text of its

@@ -93,7 +93,7 @@ typedef enum ccr_finding_level {
 typedef struct ccr_plugin_file {
     uint32_t               struct_size;
     const char            *path;        /* the file, absolute */
-    const char            *language;    /* "c" or "cmake" */
+    const char            *language;    /* "c", "c++" or "cmake" */
     const char            *ui_language; /* the interface's: "en", "ru", "ja"... */
     bool                   plain;       /* ...in human words (no jargon) */
     const ccr_plugin_node *nodes;

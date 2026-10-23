@@ -419,3 +419,10 @@ set.plugins_none = プラグインがありません。プラグインは下の�
 set.plugins_dir = 自分のプラグインの置き場所：
 set.plugin_by = バージョン %s、作者 %s
 pf.chip_tip = プラグインがこのファイルについて言っていること。クリックで次へ
+
+# C / C++
+palette.classes = クラス
+palette.std = 標準ライブラリ
+palette.lang_tip = %s のブロック（.cpp ファイルなら自動で C++）
+set.std = 標準ライブラリのブロック
+set.std_hint = printf、malloc、std::cout…を専用の区分に。オフ：言語そのものと自分の関数だけ

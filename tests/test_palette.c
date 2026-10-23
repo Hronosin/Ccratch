@@ -22,12 +22,26 @@ static int g_failures;
     } while (0)
 
 /* How many built-in blocks a palette for `cmake` files shows. */
-static uint32_t expected(bool cmake)
+/* How many blocks: CMake's, or C's / C++'s (with or without the standard library). */
+static uint32_t expected_for(bool cmake, bool cpp, bool std)
 {
     uint32_t n = 0;
-    for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t)
-        n += ccr_tcat_is_cmake(ccr_template_category((ccr_template)t)) == cmake;
+    for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t) {
+        const ccr_tcat c = ccr_template_category((ccr_template)t);
+        if (ccr_tcat_is_cmake(c) != cmake)
+            continue;
+        if (!cmake && !(ccr_template_langs((ccr_template)t) & (cpp ? CCR_TLANG_CPP : CCR_TLANG_C)))
+            continue;
+        if (!cmake && !std && ccr_tcat_is_std(c))
+            continue;
+        ++n;
+    }
     return n;
+}
+
+static uint32_t expected(bool cmake)
+{
+    return expected_for(cmake, false, true);
 }
 
 /* Every block is hit where it is drawn, held where it was pressed. */
@@ -116,6 +130,25 @@ int main(void)
               ccr_template_label(p.items[i].t));
     check_hits(&p);
     CHECK(ccr_palette_set_lang(&p, CCR_LANG_C) && p.item_count == expected(false), "back to C");
+
+    /* C++: its own blocks (classes, std::cout...), not C's NULL or printf */
+    CHECK(ccr_palette_set_cpp(&p, true) && p.item_count == expected_for(false, true, true),
+          "%u blocks for C++, %u templates", p.item_count, expected_for(false, true, true));
+    bool cout = false, printf_cpp = false, cls = false;
+    for (uint32_t i = 0; i < p.item_count; ++i) {
+        cout |= p.items[i].t == CCR_TEMPLATE_COUT;
+        printf_cpp |= p.items[i].t == CCR_TEMPLATE_PRINTF;
+        cls |= p.items[i].t == CCR_TEMPLATE_CLASS_DEF;
+    }
+    CHECK(cout && cls && !printf_cpp, "C++: std::cout %d, class %d, printf %d", cout, cls, printf_cpp);
+    check_hits(&p);
+    /* without the standard library: neither std::cout nor (back in C) printf */
+    CHECK(ccr_palette_set_std(&p, false) && p.item_count == expected_for(false, true, false), "C++ without std");
+    for (uint32_t i = 0; i < p.item_count; ++i)
+        CHECK(!ccr_tcat_is_std(ccr_template_category(p.items[i].t)), "%s without the standard library",
+              ccr_template_label(p.items[i].t));
+    CHECK(ccr_palette_set_cpp(&p, false) && p.item_count == expected_for(false, false, false), "C without std");
+    CHECK(ccr_palette_set_std(&p, true) && p.item_count == expected(false), "C, all back");
 
     /* the search: only blocks that say it, in any case; nothing; all back */
     CHECK(ccr_palette_set_filter(&p, "PrintF"), "filter failed");

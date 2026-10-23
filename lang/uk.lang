@@ -418,3 +418,10 @@ set.plugins_none = Плагінів не знайшлося. Плагін — ц
 set.plugins_dir = Свої плагіни клади сюди:
 set.plugin_by = версія %s, автор %s
 pf.chip_tip = Що плагіни кажуть про цей файл. Клац — до наступного
+
+# C / C++
+palette.classes = Класи
+palette.std = Стандартна бібліотека
+palette.lang_tip = Блоки для %s (файл .cpp обирає C++ сам)
+set.std = Блоки стандартної бібліотеки
+set.std_hint = printf, malloc, std::cout... у своєму розділі. Вимкнено: лише сама мова й твої власні функції

@@ -418,3 +418,10 @@ set.plugins_none = Plaginlar topilmadi. Plagin — quyidagi jilddagi .so fayl
 set.plugins_dir = Oʻz plaginlaringni shu yerga qoʻy:
 set.plugin_by = versiya %s, muallif %s
 pf.chip_tip = Plaginlar bu fayl haqida nima deydi. Bosish — keyingisiga
+
+# C / C++
+palette.classes = Klasslar
+palette.std = Standart kutubxona
+palette.lang_tip = %s uchun bloklar (.cpp fayl C++ ni oʻzi tanlaydi)
+set.std = Standart kutubxona bloklari
+set.std_hint = printf, malloc, std::cout... oʻz boʻlimida. Oʻchiq: faqat tilning oʻzi va oʻz funksiyalaring

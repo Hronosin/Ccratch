@@ -55,6 +55,8 @@ typedef struct ccr_palette {
     char              filter[96];          /* typed into the search: only blocks saying it */
     float             zoom;                /* how big its blocks are drawn (0: CCR_PALETTE_ZOOM) */
     ccr_lang_kind     lang;                /* C's blocks, or CMake's */
+    bool              cpp;                 /* C's: those for C, or for C++ */
+    bool              no_std;              /* without the standard library's sections */
     bool              ready;
 } ccr_palette;
 
@@ -69,6 +71,10 @@ bool ccr_palette_set_includes(ccr_palette *p, const char *const *includes, int c
 
 /* C or CMake: the blocks for the file on screen. */
 bool ccr_palette_set_lang(ccr_palette *p, ccr_lang_kind lang);
+/* C's blocks for C, or for C++ (the flags above the palette). */
+bool ccr_palette_set_cpp(ccr_palette *p, bool cpp);
+/* The standard library's sections shown, or not (programming without it). */
+bool ccr_palette_set_std(ccr_palette *p, bool shown);
 
 /* Only the blocks whose words (or name) contain `text`, every pack's
  * included, so a library's block can be found before its #include is

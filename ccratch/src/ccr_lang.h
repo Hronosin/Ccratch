@@ -286,6 +286,11 @@
     X(CAT_FUNCTIONS,    "palette.functions",     0, "Functions")                         \
     X(CAT_TYPES,        "palette.types",         0, "Types")                             \
     X(CAT_DECLS,        "palette.declarations",  0, "File")                              \
+    X(CAT_CLASSES,      "palette.classes",       0, "Classes")                           \
+    X(CAT_STD,          "palette.std",           0, "Standard library")                  \
+    X(PAL_LANG_TIP,     "palette.lang_tip",      0, "Blocks for %s (a .cpp file picks C++ by itself)") \
+    X(SET_STD,          "set.std",               0, "Standard library blocks")           \
+    X(SET_STD_HINT,     "set.std_hint",          0, "printf, malloc, std::cout... in a section of their own. Off: only the language itself and your own functions") \
     X(CAT_CM_PROJECT,   "palette.cm_project",    0, "Project")                           \
     X(CAT_CM_TARGETS,   "palette.cm_targets",    0, "Targets")                           \
     X(EMPTY_TITLE,      "empty.title",           0, "Drop a .c file here")               \

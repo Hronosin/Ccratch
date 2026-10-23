@@ -42,6 +42,10 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(TYPEDEF,          "Typedef")            \
     X(ENUM,             "Enum")               \
     X(ENUM_CONST,       "EnumConst")          \
+    /* C++ declarations */                    \
+    X(NAMESPACE,        "Namespace")          \
+    X(ACCESS,           "Access")             \
+    X(USING,            "Using")              \
     /* statements */                          \
     X(BLOCK,            "Block")              \
     X(DECL_GROUP,       "DeclGroup")          \
@@ -58,6 +62,7 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(GOTO,             "Goto")               \
     X(LABEL,            "Label")              \
     X(EMPTY,            "Empty")              \
+    X(FOR_RANGE,        "ForRange")           \
     /* CMake: foreach / while / function / macro / block ... end*() */ \
     X(SCOPE,            "Scope")              \
     /* expressions */                         \
@@ -77,6 +82,8 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(FLOAT_LIT,        "Float")              \
     X(CHAR_LIT,         "Char")               \
     X(STRING_LIT,       "String")             \
+    X(NEW,              "New")                \
+    X(DELETE,           "Delete")             \
     /* code typed into a block from the palette, kept as text */ \
     X(TEXT,             "Text")               \
     /* anything we do not model yet ("here be dragons") */ \
@@ -166,6 +173,10 @@ typedef struct ccr_node {
                                             a view, not an edit (undo keeps it) */
 #define CCR_FLAG_ELSEIF      (1u << 19)  /* CMake: an If that is the elseif()
                                             of the If around it */
+#define CCR_FLAG_CLASS       (1u << 20)  /* C++: a Struct written `class` */
+#define CCR_FLAG_ARRAY_FORM  (1u << 21)  /* new T[n], delete[] p */
+#define CCR_FLAG_CTOR_CALL   (1u << 22)  /* a Call that is a constructor: parser
+                                            bookkeeping, the implicit ones go */
 #define CCR_FLAG_TOPLEVEL    (1u << 17)  /* loose root holding one declaration
                                             for the file itself (a function,
                                             a struct, an #include...) */
@@ -212,6 +223,7 @@ typedef enum ccr_lang_kind { CCR_LANG_C, CCR_LANG_CMAKE } ccr_lang_kind;
 
 typedef struct ccr_ast {
     ccr_lang_kind lang;
+    bool          cpp;      /* C read as C++ (.cpp, .hpp, .cc...) */
     ccr_node *nodes;
     uint32_t  node_count, node_cap;
 

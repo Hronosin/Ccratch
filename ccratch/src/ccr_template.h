@@ -25,7 +25,10 @@ typedef enum ccr_tcat {
     CCR_TCAT_POINTERS,
     CCR_TCAT_FUNCTIONS,
     CCR_TCAT_TYPES,
+    CCR_TCAT_CLASSES,        /* C++: classes, methods, public:, this */
     CCR_TCAT_DECLS,          /* the file's own: functions, structs, #include */
+    CCR_TCAT_STD_C,          /* C's standard library: printf, malloc, strlen... */
+    CCR_TCAT_STD_CPP,        /* C++'s: std::cout, std::string, std::vector... */
     /* CMake */
     CCR_TCAT_CM_PROJECT,     /* project, targets */
     CCR_TCAT_CM_TARGETS,     /* what a target is built with */
@@ -43,6 +46,7 @@ typedef enum ccr_tcat {
     X(IF_ELSE,     CONTROL,   "if / else")                 \
     X(WHILE,       CONTROL,   "while")                     \
     X(FOR,         CONTROL,   "for")                       \
+    X(FOR_RANGE,   CONTROL,   "for (auto x : v)")          \
     X(DO_WHILE,    CONTROL,   "do / while")                \
     X(RETURN,      CONTROL,   "return")                    \
     X(BREAK,       CONTROL,   "break")                     \
@@ -87,14 +91,20 @@ typedef enum ccr_tcat {
     X(MEMBER,      POINTERS,  "s.f")                       \
     X(ARROW,       POINTERS,  "p->f")                      \
     X(NULL_PTR,    POINTERS,  "NULL")                      \
+    X(NULLPTR,     POINTERS,  "nullptr")                   \
+    X(NEW_OBJ,     POINTERS,  "new T(...)")                \
+    X(DELETE_PTR,  POINTERS,  "delete p")                  \
     X(CALL_STMT,   FUNCTIONS, "f(...);")                   \
     X(CALL_EXPR,   FUNCTIONS, "f(...)")                    \
-    X(PRINTF,      FUNCTIONS, "printf")                    \
-    X(MALLOC,      FUNCTIONS, "malloc")                    \
-    X(FREE,        FUNCTIONS, "free")                      \
     X(CAST,        TYPES,     "(T) a")                     \
+    X(STATIC_CAST, TYPES,     "static_cast<T>(a)")         \
     X(SIZEOF_TYPE, TYPES,     "sizeof(T)")                 \
     X(SIZEOF_EXPR, TYPES,     "sizeof a")                  \
+    X(CLASS_DEF,   CLASSES,   "class Name { public: };")   \
+    X(METHOD,      CLASSES,   "void f() { } (in a class)") \
+    X(PUBLIC,      CLASSES,   "public:")                   \
+    X(PRIVATE,     CLASSES,   "private:")                  \
+    X(THIS,        CLASSES,   "this")                      \
     X(FUNC_DEF,    DECLS,     "int f(void) { }")           \
     X(FUNC_DECL,   DECLS,     "int f(void);")              \
     X(STRUCT_DEF,  DECLS,     "struct s { };")             \
@@ -104,6 +114,39 @@ typedef enum ccr_tcat {
     X(INCLUDE_SYS, DECLS,     "#include <...>")            \
     X(INCLUDE_LOC, DECLS,     "#include \"...\"")          \
     X(DEFINE,      DECLS,     "#define NAME value")     \
+    X(NAMESPACE_DEF, DECLS,   "namespace name { }")        \
+    X(USING_NS,    DECLS,     "using namespace std;")      \
+    /* C's standard library */                         \
+    X(PRINTF,      STD_C,     "printf")                    \
+    X(PUTS,        STD_C,     "puts")                      \
+    X(SCANF,       STD_C,     "scanf")                     \
+    X(FGETS,       STD_C,     "fgets")                     \
+    X(MALLOC,      STD_C,     "malloc")                    \
+    X(CALLOC,      STD_C,     "calloc")                    \
+    X(REALLOC,     STD_C,     "realloc")                   \
+    X(FREE,        STD_C,     "free")                      \
+    X(STRLEN,      STD_C,     "strlen")                    \
+    X(STRCMP,      STD_C,     "strcmp")                    \
+    X(MEMCPY,      STD_C,     "memcpy")                    \
+    X(MEMSET,      STD_C,     "memset")                    \
+    X(RAND,        STD_C,     "rand")                      \
+    X(SRAND,       STD_C,     "srand")                     \
+    X(SQRT,        STD_C,     "sqrt")                      \
+    X(POW,         STD_C,     "pow")                       \
+    X(FOPEN,       STD_C,     "fopen")                     \
+    X(FPRINTF,     STD_C,     "fprintf")                   \
+    X(FCLOSE,      STD_C,     "fclose")                    \
+    X(EXIT,        STD_C,     "exit")                      \
+    /* C++'s */                                        \
+    X(COUT,        STD_CPP,   "std::cout << x")            \
+    X(CIN,         STD_CPP,   "std::cin >> x")             \
+    X(STRING_DECL, STD_CPP,   "std::string s")             \
+    X(VECTOR_DECL, STD_CPP,   "std::vector<int> v")        \
+    X(PUSH_BACK,   STD_CPP,   "v.push_back(x)")            \
+    X(SIZE,        STD_CPP,   "v.size()")                  \
+    X(SORT,        STD_CPP,   "std::sort")                 \
+    X(GETLINE,     STD_CPP,   "std::getline")              \
+    X(TO_STRING,   STD_CPP,   "std::to_string")            \
     /* CMake: the label is the command itself */       \
     X(CM_MINIMUM,  CM_PROJECT, "cmake_minimum_required(VERSION 3.16)") \
     X(CM_PROJECT,  CM_PROJECT, "project(game LANGUAGES C)") \
@@ -149,6 +192,18 @@ ccr_template ccr_template_pack_link(int pack);
 ccr_template ccr_template_pack_find(int pack);
 /* Is section `c` for CMake files (or for C)? */
 bool        ccr_tcat_is_cmake(ccr_tcat c);
+/* A standard library's section (the palette can do without them). */
+bool        ccr_tcat_is_std(ccr_tcat c);
+
+/* Which languages a block is for: C, C++ or both. */
+#define CCR_TLANG_C   1u
+#define CCR_TLANG_CPP 2u
+unsigned    ccr_template_langs(ccr_template t);
+
+/* The header a standard function, object or type comes from, as written
+ * in an #include ("<stdio.h>", "<iostream>"), or NULL: printf, std::cout,
+ * std::vector<int>... */
+const char *ccr_std_header(const char *name);
 /* How many templates there are, packs included. */
 int         ccr_template_total(void);
 

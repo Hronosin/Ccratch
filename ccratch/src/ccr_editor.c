@@ -144,6 +144,18 @@ static uint32_t script_index_of_root(const ccr_editor *ed, ccr_node_id root)
  * parent is a Block. CCR_NONE means the click was on something that only
  * moves as a whole (a hat, a struct, an #include).
  */
+/* A C++ class or namespace from the file: members can be dropped in (and
+ * the ones dropped there taken out again); the file's own stay. */
+static bool cpp_container(const ccr_editor *ed, ccr_node_id id)
+{
+    if (id == CCR_NONE || !ed->ast.cpp)
+        return false;
+    const ccr_node *n = N(ed, id);
+    return !(n->flags & CCR_FLAG_NEW) &&
+           (n->kind == CCR_NODE_NAMESPACE ||
+            ((n->kind == CCR_NODE_STRUCT || n->kind == CCR_NODE_UNION) && (n->flags & CCR_FLAG_DEFINITION)));
+}
+
 static ccr_node_id stack_item_of(const ccr_editor *ed, ccr_node_id id)
 {
     while (id != CCR_NONE) {
@@ -152,9 +164,39 @@ static ccr_node_id stack_item_of(const ccr_editor *ed, ccr_node_id id)
             return CCR_NONE;
         if (N(ed, p)->kind == CCR_NODE_BLOCK && !(N(ed, id)->flags & CCR_FLAG_ELSEIF))
             return id;   /* an elseif() is part of its if(): that moves */
+        if (cpp_container(ed, p) && (N(ed, id)->flags & CCR_FLAG_NEW))
+            return id;   /* a member dropped into a class: it comes out again */
         id = p;
     }
     return CCR_NONE;
+}
+
+/* Where in the file's text a member dropped into a C++ class or namespace
+ * goes: at the end of the line of the member above it (or of the `{`). */
+static void place_member(ccr_editor *ed, ccr_node_id id)
+{
+    const ccr_ast *a = &ed->ast;
+    const ccr_node_id parent = N(ed, id)->parent;
+    ccr_node_id prev = CCR_NONE;
+    for (ccr_node_id c = N(ed, parent)->first_child; c != CCR_NONE && c != id; c = N(ed, c)->next_sibling)
+        if (!(N(ed, c)->flags & CCR_FLAG_DEAD))
+            prev = c;
+    uint32_t at;
+    if (prev != CCR_NONE && (N(ed, prev)->flags & CCR_FLAG_NEW)) {
+        at = N(ed, prev)->place_b;   /* after another new one: the same point, in order */
+    } else {
+        if (prev != CCR_NONE) {
+            at = N(ed, prev)->place_e > N(ed, prev)->src_e ? N(ed, prev)->place_e : N(ed, prev)->src_e;
+        } else {
+            at = N(ed, parent)->src_b;   /* the first: under the `{` */
+            while (at < N(ed, parent)->src_e && at < a->source_len && a->source[at] != '{')
+                ++at;
+        }
+        while (at < a->source_len && a->source[at] != '\n')
+            ++at;
+    }
+    ccr_ast_touch(&ed->ast, id);
+    ed->ast.nodes[id].place_b = ed->ast.nodes[id].place_e = at;
 }
 
 /* ------------------------------------------------------ expressions */
@@ -226,6 +268,22 @@ static uint32_t lift_expr(ccr_editor *ed, ccr_node_id x, uint32_t from)
 
 /* ----------------------------------------------------------- init */
 
+/* Big things with code in them (functions; C++ namespaces and classes
+ * with methods) go in the second column, the rest in the first. */
+static bool goes_right(const ccr_editor *ed, ccr_node_id id)
+{
+    const ccr_node *n = N(ed, id);
+    if (n->kind == CCR_NODE_FUNCTION)
+        return (n->flags & CCR_FLAG_DEFINITION) != 0;
+    if (n->kind == CCR_NODE_NAMESPACE)
+        return true;
+    if (n->kind == CCR_NODE_STRUCT && ed->ast.cpp)
+        for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+            if (N(ed, c)->kind == CCR_NODE_FUNCTION && (N(ed, c)->flags & CCR_FLAG_DEFINITION))
+                return true;
+    return false;
+}
+
 bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
 {
     memset(ed, 0, sizeof *ed);
@@ -250,7 +308,7 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
         const ccr_node *n = N(ed, c);
         if (n->kind == CCR_NODE_MACRO_USE)
             continue;   /* shown where they are used, not as scripts */
-        if (n->kind == CCR_NODE_FUNCTION && (n->flags & CCR_FLAG_DEFINITION))
+        if (goes_right(ed, c))
             continue;
         if (!push_script(ed, c, (ccr_vec2){ 0.0f, y }))
             return false;
@@ -263,8 +321,7 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     const float x2 = col1_w > 0.0f ? col1_w + COLUMN_GAP : 0.0f;
     y = 0.0f;
     for (ccr_node_id c = N(ed, tu)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling) {
-        const ccr_node *n = N(ed, c);
-        if (n->kind != CCR_NODE_FUNCTION || !(n->flags & CCR_FLAG_DEFINITION))
+        if (!goes_right(ed, c))
             continue;
         if (!push_script(ed, c, (ccr_vec2){ x2, y }))
             return false;
@@ -716,10 +773,12 @@ static uint32_t tear_off(ccr_editor *ed, ccr_node_id item, uint32_t from)
     ccr_ast_touch(&ed->ast, loose);
     ed->ast.nodes[loose].flags |= CCR_FLAG_LOOSE;
 
+    /* a stack: the item and all under it; a class's member: that one */
+    const bool member = cpp_container(ed, from_block);
     for (ccr_node_id c = item; c != CCR_NONE;) {
         ccr_node_id next = N(ed, c)->next_sibling;
         ccr_ast_append(&ed->ast, loose, c);
-        c = next;
+        c = member ? CCR_NONE : next;
     }
 
     relayout(ed, from);
@@ -1606,6 +1665,10 @@ static void drop_raw(ccr_editor *ed)
         prev = c;
         c = next;
     }
+    if (cpp_container(ed, into))   /* into a C++ class: each gets its place in the text */
+        for (ccr_node_id c = N(ed, into)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+            if (N(ed, c)->flags & CCR_FLAG_NEW)
+                place_member(ed, c);
 
     ccr_ast_touch(&ed->ast, loose);
     ed->ast.nodes[loose].flags |= CCR_FLAG_DEAD;
@@ -1867,6 +1930,16 @@ static bool file_includes_spelled(const ccr_editor *ed, const char *spelled)
     wb = wb ? wb + 1 : want;
     if (ed->ast.node_count == 0)
         return false;
+    /* C++ spells C's headers <cstdio>: that one will do */
+    char cxx[64] = "";
+    const size_t wl = strlen(wb);
+    if (wl > 2 && wl < 40 && strcmp(wb + wl - 2, ".h") == 0)
+        snprintf(cxx, sizeof cxx, "c%.*s", (int)(wl - 2), wb);
+    if (cxx[0])
+        for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+            if (N(ed, c)->kind == CCR_NODE_INCLUDE && !(N(ed, c)->flags & CCR_FLAG_DEAD) &&
+                strcmp(ccr_ast_str(&ed->ast, N(ed, c)->name), cxx) == 0)
+                return true;
     /* the header's own blocks: a file does not include itself */
     const char *path = ccr_ast_str(&ed->ast, ed->ast.source_path);
     const char *self = strrchr(path, '/');
@@ -1958,9 +2031,9 @@ static bool add_include(ccr_editor *ed, const char *spelled)
 static void include_libraries(ccr_editor *ed, ccr_node_id id)
 {
     const ccr_node *n = N(ed, id);
+    bool word = false;
     if (n->kind == CCR_NODE_CALL) {
         int args = 0;
-        bool word = false;
         for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling) {
             word = word || (N(ed, c)->flags & CCR_FLAG_WORD);
             ++args;
@@ -1973,6 +2046,14 @@ static void include_libraries(ccr_editor *ed, ccr_node_id id)
         } else if (pk && pk->include[0] && !file_includes(ed, pk)) {
             add_include(ed, pk->include);
         }
+    }
+    /* the standard library's: printf brings <stdio.h>, std::cout <iostream>,
+     * a std::vector<int> <vector> */
+    {   /* a name typed into f(...) counts too: printf typed is printf */
+        const char *std = n->kind == CCR_NODE_CALL || n->kind == CCR_NODE_REF ? ccr_std_header(ccr_ast_str(&ed->ast, n->name))
+                        : n->kind == CCR_NODE_VAR ? ccr_std_header(ccr_ast_str(&ed->ast, n->type)) : NULL;
+        if (std && ed->ast.lang == CCR_LANG_C && !file_includes_spelled(ed, std))
+            add_include(ed, std);
     }
     for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
         include_libraries(ed, c);

@@ -419,3 +419,10 @@ set.plugins_none = 플러그인이 없습니다. 플러그인은 아래 폴더�
 set.plugins_dir = 내 플러그인 위치:
 set.plugin_by = 버전 %s, 만든 이 %s
 pf.chip_tip = 플러그인이 이 파일에 대해 하는 말. 누르면 다음 것으로
+
+# C / C++
+palette.classes = 클래스
+palette.std = 표준 라이브러리
+palette.lang_tip = %s 블록 (.cpp 파일은 C++를 저절로 고릅니다)
+set.std = 표준 라이브러리 블록
+set.std_hint = printf, malloc, std::cout... 를 따로 모아 둡니다. 끄면: 언어 자체와 내 함수만

@@ -200,7 +200,45 @@ static node_policy classify(enum CXCursorKind k, ccr_node_kind *out)
         return POLICY_TRANSPARENT;
     case CXCursor_TypeRef:
     case CXCursor_UnexposedAttr:
+    /* C++: parts of a name or a type, already in its spelling */
+    case CXCursor_NamespaceRef:
+    case CXCursor_TemplateRef:
+    case CXCursor_TemplateTypeParameter:
+    case CXCursor_NonTypeTemplateParameter:
+    case CXCursor_TemplateTemplateParameter:
+    case CXCursor_CXXBaseSpecifier:
+    case CXCursor_CXXFinalAttr:
+    case CXCursor_CXXOverrideAttr:
         return POLICY_SKIP;
+
+    /* --- C++ --- */
+    case CXCursor_Namespace:          *out = CCR_NODE_NAMESPACE; return POLICY_NODE;
+    case CXCursor_ClassDecl:
+    case CXCursor_ClassTemplate:
+    case CXCursor_ClassTemplatePartialSpecialization:
+                                      *out = CCR_NODE_STRUCT;    return POLICY_NODE;
+    case CXCursor_CXXMethod:
+    case CXCursor_Constructor:
+    case CXCursor_Destructor:
+    case CXCursor_ConversionFunction:
+    case CXCursor_FunctionTemplate:   *out = CCR_NODE_FUNCTION;  return POLICY_NODE;
+    case CXCursor_CXXAccessSpecifier: *out = CCR_NODE_ACCESS;    return POLICY_NODE;
+    case CXCursor_UsingDirective:
+    case CXCursor_UsingDeclaration:
+    case CXCursor_TypeAliasDecl:
+    case CXCursor_TypeAliasTemplateDecl:
+    case CXCursor_NamespaceAlias:     *out = CCR_NODE_USING;     return POLICY_NODE;
+    case CXCursor_CXXForRangeStmt:    *out = CCR_NODE_FOR_RANGE; return POLICY_NODE;
+    case CXCursor_CXXNewExpr:         *out = CCR_NODE_NEW;       return POLICY_NODE;
+    case CXCursor_CXXDeleteExpr:      *out = CCR_NODE_DELETE;    return POLICY_NODE;
+    case CXCursor_CXXThisExpr:
+    case CXCursor_CXXNullPtrLiteralExpr: *out = CCR_NODE_REF;    return POLICY_NODE;
+    case CXCursor_CXXBoolLiteralExpr: *out = CCR_NODE_INT_LIT;   return POLICY_NODE;
+    case CXCursor_CXXStaticCastExpr:
+    case CXCursor_CXXDynamicCastExpr:
+    case CXCursor_CXXReinterpretCastExpr:
+    case CXCursor_CXXConstCastExpr:
+    case CXCursor_CXXFunctionalCastExpr: *out = CCR_NODE_CAST;   return POLICY_NODE;
 
     /* --- preprocessor --- */
     case CXCursor_InclusionDirective: *out = CCR_NODE_INCLUDE;      return POLICY_NODE;
@@ -311,6 +349,70 @@ static void fill_include(visit_ctx *ctx, CXCursor c, ccr_node_id id)
     clang_disposeTokens(ctx->tu, toks, n);
 }
 
+/* Is the first of class / struct / union in `c`'s tokens `word`? (After
+ * a template <...> header.) */
+static bool first_keyword_is(visit_ctx *ctx, CXCursor c, const char *word)
+{
+    CXToken *toks = NULL;
+    unsigned n = 0;
+    bool is = false;
+    clang_tokenize(ctx->tu, clang_getCursorExtent(c), &toks, &n);
+    for (unsigned i = 0; i < n; ++i) {
+        CXString s = clang_getTokenSpelling(ctx->tu, toks[i]);
+        const char *t = clang_getCString(s);
+        const bool kw = t && (strcmp(t, "class") == 0 || strcmp(t, "struct") == 0 || strcmp(t, "union") == 0);
+        is = kw && strcmp(t, word) == 0;
+        clang_disposeString(s);
+        if (kw)
+            break;
+    }
+    clang_disposeTokens(ctx->tu, toks, n);
+    return is;
+}
+
+/* The tokens of a declaration before its name: its type as written. */
+static void written_type(visit_ctx *ctx, CXCursor c, ccr_node_id id)
+{
+    const char *name = ccr_ast_str(ctx->ast, ctx->ast->nodes[id].name);
+    if (!*name)
+        return;
+    CXToken *toks = NULL;
+    unsigned n = 0;
+    clang_tokenize(ctx->tu, clang_getCursorExtent(c), &toks, &n);
+    char buf[200];
+    size_t len = 0;
+    bool found = false;
+    for (unsigned i = 0; i < n; ++i) {
+        CXString s = clang_getTokenSpelling(ctx->tu, toks[i]);
+        const char *t = clang_getCString(s);
+        if (!t)
+            t = "";
+        if (clang_getTokenKind(toks[i]) == CXToken_Identifier && strcmp(t, name) == 0) {
+            found = true;
+            clang_disposeString(s);
+            break;
+        }
+        const size_t tl = strlen(t);
+        if (len > 0 && tl > 0 && (is_word_char(buf[len - 1]) || buf[len - 1] == '>' || buf[len - 1] == '&' ||
+                                  buf[len - 1] == '*') &&
+            (is_word_char(t[0]) || t[0] == '*' || t[0] == '&') && len < sizeof buf - 1)
+            buf[len++] = ' ';
+        for (size_t k = 0; k < tl && len < sizeof buf - 1; ++k)
+            buf[len++] = t[k];
+        clang_disposeString(s);
+    }
+    clang_disposeTokens(ctx->tu, toks, n);
+    buf[len] = '\0';
+    if (found && len > 0)
+        ctx->ast->nodes[id].type = ccr_ast_intern(ctx->ast, buf);
+}
+
+/* `operator<<`, `operator[]`: a C++ operator, called like a function. */
+static bool is_operator_name(const char *s)
+{
+    return strncmp(s, "operator", 8) == 0 && s[8] && !is_word_char(s[8]) && s[8] != ' ';
+}
+
 static void fill_node(visit_ctx *ctx, CXCursor c, enum CXCursorKind ck, ccr_node_id id)
 {
     ccr_ast *ast = ctx->ast;
@@ -334,6 +436,57 @@ static void fill_node(visit_ctx *ctx, CXCursor c, enum CXCursorKind ck, ccr_node
     case CCR_NODE_INCLUDE:
         fill_include(ctx, c, id);
         return;
+    case CCR_NODE_ACCESS: {
+        const enum CX_CXXAccessSpecifier a = clang_getCXXAccessSpecifier(c);
+        ast->nodes[id].name = ccr_ast_intern(ast, a == CX_CXXPublic ? "public" : a == CX_CXXProtected ? "protected"
+                                                                                                      : "private");
+        return;
+    }
+    case CCR_NODE_USING:
+        ast->nodes[id].name = take(ast, clang_getCursorSpelling(c));
+        ast->nodes[id].aux = extent_text(ctx, c);
+        return;
+    case CCR_NODE_NEW:
+    case CCR_NODE_DELETE: {
+        /* new T(args) / new T[n]: T as written; delete[] p */
+        CXToken *toks = NULL;
+        unsigned nt = 0;
+        clang_tokenize(ctx->tu, clang_getCursorExtent(c), &toks, &nt);
+        char type[160];
+        size_t tl = 0;
+        int depth = 0;
+        bool after_new = false, array = false;
+        for (unsigned i = 0; i < nt; ++i) {
+            CXString ts = clang_getTokenSpelling(ctx->tu, toks[i]);
+            const char *t = clang_getCString(ts);
+            if (!t) t = "";
+            if (kind == CCR_NODE_DELETE) {
+                if (strcmp(t, "[") == 0 && i == 1)
+                    array = true;
+            } else if (!after_new) {
+                after_new = strcmp(t, "new") == 0;
+            } else if (depth == 0 && (strcmp(t, "(") == 0 || strcmp(t, "{") == 0 || strcmp(t, "[") == 0)) {
+                array = t[0] == '[';
+                clang_disposeString(ts);
+                break;
+            } else {
+                depth += strcmp(t, "<") == 0 ? 1 : strcmp(t, ">") == 0 ? -1 : 0;
+                const size_t l = strlen(t);
+                if (tl > 0 && l > 0 && is_word_char(type[tl - 1]) && is_word_char(t[0]) && tl < sizeof type - 1)
+                    type[tl++] = ' ';
+                for (size_t k = 0; k < l && tl < sizeof type - 1; ++k)
+                    type[tl++] = t[k];
+            }
+            clang_disposeString(ts);
+        }
+        clang_disposeTokens(ctx->tu, toks, nt);
+        type[tl] = '\0';
+        if (kind == CCR_NODE_NEW)
+            ast->nodes[id].type = ccr_ast_intern(ast, type);
+        if (array)
+            ast->nodes[id].flags |= CCR_FLAG_ARRAY_FORM;
+        return;
+    }
     case CCR_NODE_BINARY_OP:
         fill_binary(ctx, c, id);
         return;
@@ -351,6 +504,14 @@ static void fill_node(visit_ctx *ctx, CXCursor c, enum CXCursorKind ck, ccr_node
     case CCR_NODE_COMPOUND_LIT: {
         ccr_str t = take(ast, clang_getTypeSpelling(clang_getCursorType(c)));
         ast->nodes[id].type = t;
+        /* C++'s own casts: static_cast<T>(x), T(x) */
+        const char *how = ck == CXCursor_CXXStaticCastExpr      ? "static_cast"
+                        : ck == CXCursor_CXXDynamicCastExpr     ? "dynamic_cast"
+                        : ck == CXCursor_CXXReinterpretCastExpr ? "reinterpret_cast"
+                        : ck == CXCursor_CXXConstCastExpr       ? "const_cast"
+                        : ck == CXCursor_CXXFunctionalCastExpr  ? "functional" : NULL;
+        if (how)
+            ast->nodes[id].raw = ccr_ast_intern(ast, how);
         return;
     }
     case CCR_NODE_SIZEOF: {
@@ -376,6 +537,23 @@ static void fill_node(visit_ctx *ctx, CXCursor c, enum CXCursorKind ck, ccr_node
 
     ccr_str name = take(ast, clang_getCursorSpelling(c));
     ast->nodes[id].name = name;
+    if (ck == CXCursor_CXXThisExpr)
+        ast->nodes[id].name = ccr_ast_intern(ast, "this");
+    else if (ck == CXCursor_CXXNullPtrLiteralExpr)
+        ast->nodes[id].name = ccr_ast_intern(ast, "nullptr");
+    if (kind == CCR_NODE_STRUCT && ast->cpp && first_keyword_is(ctx, c, "class"))
+        ast->nodes[id].flags |= CCR_FLAG_CLASS;
+    if (kind == CCR_NODE_CALL) {   /* a constructor: implicit ones go (cpp_cleanup) */
+        const CXCursor to = clang_getCursorReferenced(c);
+        if (!clang_Cursor_isNull(to) && clang_getCursorKind(to) == CXCursor_Constructor)
+            ast->nodes[id].flags |= CCR_FLAG_CTOR_CALL;
+    }
+
+    if (kind == CCR_NODE_REF && ast->cpp && ck == CXCursor_DeclRefExpr) {
+        const ccr_str q = extent_text(ctx, c);   /* std::cout, not cout */
+        if (strstr(ccr_ast_str(ast, q), "::"))
+            ast->nodes[id].name = q;
+    }
 
     if (kind == CCR_NODE_REF || kind == CCR_NODE_MEMBER) {
         /* what it is: an enum's values make a list for the slot next to it */
@@ -390,6 +568,10 @@ static void fill_node(visit_ctx *ctx, CXCursor c, enum CXCursorKind ck, ccr_node
                  : clang_getCursorType(c);
         ccr_str ts = take(ast, clang_getTypeSpelling(t));
         ast->nodes[id].type = ts;
+        /* C++: the type as written (auto stays auto, not what it became) */
+        if (ast->cpp && (kind == CCR_NODE_VAR || kind == CCR_NODE_PARAM || kind == CCR_NODE_FIELD) &&
+            !strchr(ccr_ast_str(ast, ts), '['))
+            written_type(ctx, c, id);
     }
 
     if (kind == CCR_NODE_FUNCTION) {
@@ -425,8 +607,14 @@ static bool absorb_into_parent(visit_ctx *ctx, CXCursor c, enum CXCursorKind ck)
      * Call's name. Only a plain name is absorbed: `obj->fn(x)` keeps it. */
     if (ctx->callee_pending == ctx->parent) {
         ctx->callee_pending = CCR_NONE;
-        if (ck == CXCursor_DeclRefExpr)
+        if (ck == CXCursor_DeclRefExpr || ck == CXCursor_OverloadedDeclRef) {
+            if (ctx->ast->cpp) {   /* std::sort, game::clamp: as written */
+                const ccr_str q = extent_text(ctx, c);
+                if (strstr(ccr_ast_str(ctx->ast, q), "::"))
+                    ctx->ast->nodes[ctx->parent].name = q;
+            }
             return true;
+        }
     }
 
     /* `goto done;` -> the label name goes on the Goto itself */
@@ -572,8 +760,8 @@ static enum CXChildVisitResult visit(CXCursor c, CXCursor parent, CXClientData d
         }
 
         ctx->parent = id;
-        if (kind == CCR_NODE_CALL)
-            ctx->callee_pending = id;
+        if (kind == CCR_NODE_CALL && !is_operator_name(ccr_ast_str(ctx->ast, ctx->ast->nodes[id].name)))
+            ctx->callee_pending = id;   /* `a << b`: `a` is an operand, not the callee */
 
         if (kind == CCR_NODE_VAR) {
 #if CCR_HAVE_OPERATOR_KIND_API   /* same LLVM 17 release added this */
@@ -800,6 +988,154 @@ const char *ccr_parse_resource_dir(const char **how)
 
 static bool parse_any(const char *path, const char *text, size_t text_len, const char *const *args,
                       int arg_count, ccr_ast *out);
+/* ------------------------------------------------------ C++ cleanup
+ *
+ * libclang shows C++ the way the compiler sees it: `a << b` is a call to
+ * operator<<, `std::string s = "x"` hides a call to basic_string's
+ * constructor, `for (auto &p : v)` holds the iterator's operator* the
+ * compiler wrote. Blocks want what was written: the operators become
+ * operators again, and what nobody wrote goes.
+ */
+static void kill(ccr_ast *ast, ccr_node_id id)
+{
+    ccr_ast_unlink(ast, id);
+    ast->nodes[id].flags |= CCR_FLAG_DEAD | CCR_FLAG_LOOSE;
+}
+
+/* `id` goes, its children take its place (in order). */
+static void hoist_children(ccr_ast *ast, ccr_node_id id)
+{
+    ccr_node_id at = id;
+    const uint32_t keep = ast->nodes[id].flags & CCR_FLAG_INIT;
+    for (ccr_node_id c = ast->nodes[id].first_child; c != CCR_NONE;) {
+        const ccr_node_id next = ast->nodes[c].next_sibling;
+        ccr_ast_insert_after(ast, at, c);
+        ast->nodes[c].flags |= keep;
+        at = c;
+        c = next;
+    }
+    kill(ast, id);
+}
+
+/* Was `name` written in the node's text? (No: the compiler made it.) */
+static bool written(const ccr_ast *ast, ccr_node_id id, const char *name)
+{
+    const ccr_node *n = &ast->nodes[id];
+    const size_t len = strlen(name);
+    if (!ast->source || n->src_e <= n->src_b || n->src_e > ast->source_len || len == 0)
+        return false;
+    for (uint32_t i = n->src_b; i + len <= n->src_e; ++i)
+        if (memcmp(ast->source + i, name, len) == 0)
+            return true;
+    return false;
+}
+
+static uint32_t kids(const ccr_ast *ast, ccr_node_id id)
+{
+    uint32_t k = 0;
+    for (ccr_node_id c = ast->nodes[id].first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling)
+        ++k;
+    return k;
+}
+
+static void cpp_cleanup(ccr_ast *ast)
+{
+    const uint32_t count = ast->node_count;
+    /* operators first: their operand may be an implicit constructor */
+    for (ccr_node_id id = 0; id < count; ++id) {
+        ccr_node *n = &ast->nodes[id];
+        if (n->kind != CCR_NODE_CALL || (n->flags & CCR_FLAG_DEAD))
+            continue;
+        const char *name = ccr_ast_str(ast, n->name);
+        if (!is_operator_name(name))
+            continue;
+        if (strcmp(name + 8, "()") == 0) {   /* twice(21): the object is the callee */
+            for (ccr_node_id c = n->first_child; c != CCR_NONE;) {   /* the operator's own Ref */
+                const ccr_node_id next = ast->nodes[c].next_sibling;
+                if (ast->nodes[c].kind == CCR_NODE_REF &&
+                    strcmp(ccr_ast_str(ast, ast->nodes[c].name), "operator()") == 0)
+                    kill(ast, c);
+                c = next;
+            }
+            const ccr_node_id obj = ast->nodes[id].first_child;
+            if (obj != CCR_NONE && ast->nodes[obj].kind == CCR_NODE_REF) {
+                ast->nodes[id].name = ast->nodes[obj].name;
+                kill(ast, obj);
+            }
+            continue;
+        }
+        /* the operator's own Ref: the callee, between (or before) the operands */
+        ccr_node_id ref = CCR_NONE;
+        for (ccr_node_id c = n->first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling)
+            if (ast->nodes[c].kind == CCR_NODE_REF && strcmp(ccr_ast_str(ast, ast->nodes[c].name), name) == 0) {
+                ref = c;
+                break;
+            }
+        if (ref == CCR_NONE)
+            continue;
+        const char *sym = name + 8;
+        const uint32_t ref_b = ast->nodes[ref].src_b;
+        kill(ast, ref);
+        n = &ast->nodes[id];
+        const uint32_t k = kids(ast, id);
+        if (strcmp(sym, "()") == 0 || k == 0) {
+            continue;   /* f(x) on an object; or one the compiler wrote */
+        } else if (strcmp(sym, "[]") == 0 && k == 2) {
+            n->kind = CCR_NODE_INDEX;
+        } else if (k == 2) {
+            n->kind = CCR_NODE_BINARY_OP;
+            n->op = ccr_ast_intern(ast, sym);
+            n = &ast->nodes[id];
+        } else if (k == 1) {
+            n->kind = CCR_NODE_UNARY_OP;
+            n->op = ccr_ast_intern(ast, sym);
+            n = &ast->nodes[id];
+            if (ast->nodes[n->first_child].src_b < ref_b)
+                n->flags |= CCR_FLAG_POSTFIX;   /* it++: the operand comes first */
+        } else {
+            continue;
+        }
+        n->name = 0;
+    }
+    for (ccr_node_id id = 0; id < count; ++id) {
+        ccr_node *n = &ast->nodes[id];
+        if (n->flags & CCR_FLAG_DEAD)
+            continue;
+        if (n->kind == CCR_NODE_CALL && (n->flags & CCR_FLAG_CTOR_CALL) &&
+            !written(ast, id, ccr_ast_str(ast, n->name))) {
+            /* `std::string s = "hi"`: the string, not basic_string("hi");
+             * `std::vector<int> v;`: nothing at all */
+            const uint32_t k = kids(ast, id);
+            if (k <= 1)
+                hoist_children(ast, id);
+        }
+    }
+    for (ccr_node_id id = 0; id < count; ++id) {
+        const ccr_node *n = &ast->nodes[id];
+        if (n->flags & CCR_FLAG_DEAD)
+            continue;
+        if (n->kind == CCR_NODE_FOR_RANGE) {
+            /* the loop variable starts as *__begin: the compiler's, not shown */
+            const ccr_node_id var = n->first_child;
+            if (var != CCR_NONE && ast->nodes[var].kind == CCR_NODE_VAR)
+                for (ccr_node_id c = ast->nodes[var].first_child; c != CCR_NONE;) {
+                    const ccr_node_id next = ast->nodes[c].next_sibling;
+                    if (ast->nodes[c].flags & CCR_FLAG_INIT)
+                        kill(ast, c);
+                    c = next;
+                }
+        } else if (n->kind == CCR_NODE_NEW) {
+            /* new Player(a, b): the constructor's arguments are the New's */
+            for (ccr_node_id c = n->first_child; c != CCR_NONE;) {
+                const ccr_node_id next = ast->nodes[c].next_sibling;
+                if (ast->nodes[c].kind == CCR_NODE_CALL && (ast->nodes[c].flags & CCR_FLAG_CTOR_CALL))
+                    hoist_children(ast, c);
+                c = next;
+            }
+        }
+    }
+}
+
 
 bool ccr_parse_file(const char *path, const char *const *args, int arg_count, ccr_ast *out)
 {
@@ -865,6 +1201,13 @@ static bool parse_any(const char *path, const char *text, size_t text_len, const
     }
 
     out->source_path = ccr_ast_intern(out, path);
+    out->cpp = false;
+    for (int i = 0; i + 1 < arg_count; ++i)
+        if (strcmp(args[i], "-x") == 0 && strncmp(args[i + 1], "c++", 3) == 0)
+            out->cpp = true;
+    if (has_suffix(path, ".cpp") || has_suffix(path, ".cc") || has_suffix(path, ".cxx") ||
+        has_suffix(path, ".hpp") || has_suffix(path, ".hh") || has_suffix(path, ".hxx") || has_suffix(path, ".C"))
+        out->cpp = true;
 
     visit_ctx ctx = {
         .ast = out,
@@ -899,6 +1242,8 @@ static bool parse_any(const char *path, const char *text, size_t text_len, const
         out->nodes[root].src_e = out->source_len;
     }
 
+    if (out->cpp)
+        cpp_cleanup(out);
     ccr_ast_wrap_bodies(out);
     ccr_ast_finish_ranges(out);
     collect_diags(tu, out);

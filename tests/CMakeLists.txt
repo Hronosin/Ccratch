@@ -88,6 +88,18 @@ if(XVFB_RUN)
                      $<TARGET_FILE:test_editor> ${PROJECT_SOURCE_DIR}/examples/tour.c)
 endif()
 
+# C++: real nodes, drawn, and an edit inside a method that still compiles.
+add_executable(test_cpp test_cpp.c)
+target_link_libraries(test_cpp PRIVATE ccratch_core)
+if(XVFB_RUN)
+    add_test(NAME cpp_blocks
+             COMMAND ${XVFB_RUN} -a -s "-screen 0 1280x800x24"
+                     $<TARGET_FILE:test_cpp> ${PROJECT_SOURCE_DIR}/examples/game.cpp
+                     ${CMAKE_CURRENT_SOURCE_DIR}/data/stdlib.c)
+endif()
+add_test(NAME cpp_roundtrip COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/examples/game.cpp)
+set_tests_properties(cpp_roundtrip PROPERTIES PASS_REGULAR_EXPRESSION "identical")
+
 # The pie menu picks by direction.
 add_executable(test_pie test_pie.c)
 target_link_libraries(test_pie PRIVATE ccratch_core)
@@ -365,3 +377,14 @@ add_test(NAME plugins_template COMMAND ${CCR_BIN} --list-plugins)
 set_tests_properties(plugins_template PROPERTIES
     ENVIRONMENT "CCRATCH_PLUGIN_DIR=${CMAKE_BINARY_DIR}/examples/plugins;XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/hater-config"
     PASS_REGULAR_EXPRESSION "hello +0\\.0\\.1")
+# ...and C++: raw new is a nit, using namespace in a header a warning,
+# and C's nits about f() and casting malloc stay quiet
+add_test(NAME code_hater_cpp_new COMMAND ${CCR_BIN} --lang en --check-code ${PROJECT_SOURCE_DIR}/examples/game.cpp)
+set_tests_properties(code_hater_cpp_new PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "game\\.cpp:[0-9]+:[0-9]+: nit: .code_hater. raw new"
+    FAIL_REGULAR_EXPRESSION "is not \\(void\\)")
+add_test(NAME code_hater_cpp_header COMMAND ${CCR_BIN} --lang en --check-code ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/using.hpp)
+set_tests_properties(code_hater_cpp_header PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "using\\.hpp:4:[0-9]+: warning: .code_hater. using namespace in a header")

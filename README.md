@@ -32,6 +32,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 21: copy and paste blocks between files (and any C as blocks), selection, minimap, autosave, panels you can size.
 - Step 22: Git as cards, block explanations, fourteen languages in human words, a settings window, Bug hunt builds.
 - Step 23: plugins, for real, and the first official one: Code Hater.
+- Step 24: C++ as blocks (namespaces, classes, methods, range-for, new/delete), C / C++ flags over the palette, the standard library in a section of its own.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -83,9 +84,26 @@ and next to it every block, drawn as the real thing:
 | **Operators** | `+ - * / %`, `< > <= >= == !=`, `&& \|\| !`, `& \| ^ ~ << >>`, `c ? a : b` |
 | **Variables** | `int x = 0`, `int x`, `=`, `+=`, `-=`, `*=`, `++`, `--` |
 | **Pointers** | `&a`, `*p`, `a[i]`, `s.field`, `p->field`, `NULL` |
-| **Functions** | a **code line** for anything else, `f(...)` as a statement and as a reporter, `printf`, `malloc`, `free` |
+| **Functions** | a **code line** for anything else, `f(...)` as a statement and as a reporter |
 | **Types** | `(int) a`, `sizeof(int)`, `sizeof a` |
 | **File** | a function (a hat to stack its body under), a prototype, `struct` (declarations go in its mouth), `enum`, `typedef`, a global, `#include <...>`, `#include "..."`, `#define` |
+| **Standard library** | `printf`, `puts`, `scanf`, `fgets`, `malloc`, `calloc`, `realloc`, `free`, `strlen`, `strcmp`, `memcpy`, `memset`, `rand`, `srand`, `sqrt`, `pow`, `fopen`, `fprintf`, `fclose`, `exit` (C++: below) |
+
+### The standard library, on its own
+
+The language itself (`if`, `for`, pointers, structs...) and its standard
+library are two different things, and the palette keeps them apart: the
+library's blocks are a section of their own at the bottom, teal, like
+the library they are; your own functions stay pink. Drop `printf` into a
+file and `#include <stdio.h>` comes along by itself (`strlen` brings
+`<string.h>`, `std::sort` `<algorithm>`...).
+
+**Settings > Editor > Standard library blocks** off: the section is gone,
+and what is left is C itself and your own functions. For writing a
+kernel, a bootloader, firmware, or just to see how much is the language
+and how much is libc.
+
+![a C file, the palette on the standard library: printf, puts, scanf, fgets, malloc, calloc, realloc, free, strlen, strcmp, memcpy; in the code printf and free are teal](docs/stdlib.png)
 
 ### What is this block for?
 
@@ -172,6 +190,42 @@ Double click again to unfold. Folding is how you look at the code, not
 a change to it: it never reaches the file and is no undo step. A `goto`
 arrow into a folded block points at the fold, and travelling along it
 unfolds what is in the way.
+
+## C++
+
+Over the palette, two flags: **C** and **C++**. The one up says whose
+blocks the palette has; a click on the other switches. A `.cpp` (`.cc`,
+`.hpp`...) file puts C++ up by itself, a `.h` keeps what was picked.
+C++'s palette has what C's has, plus:
+
+| Section | C++ blocks |
+| --- | --- |
+| **Control** | `for (auto x : v)` |
+| **Pointers** | `nullptr` (instead of `NULL`), `new T(...)`, `delete p` |
+| **Types** | `static_cast<T>(a)` |
+| **Classes** | `class` (members go in its mouth), a method, `public:`, `private:`, `this` |
+| **File** | `namespace` (declarations go in its mouth), `using namespace std;` |
+| **Standard library** | `std::cout << ...`, `std::cin >> x`, `std::string`, `std::vector<int>`, `v.push_back(x)`, `v.size()`, `std::sort`, `std::getline`, `std::to_string` |
+
+A C++ file reads as what was written, not as what the compiler made of
+it: a namespace is a purple C-block holding what is in it, a class a
+blue one holding its fields, `public:`/`private:` and methods; a method
+is a yellow C-block whose body takes blocks like any function's.
+`std::cout << a << b` is a chain of `<<` blocks (not calls to
+`operator<<`), `team.push_back(x)` shows its object, `for (auto &p : team)`
+is a loop, `new` and `delete` are pointer-red, and the constructors the
+compiler adds by itself (a `std::string` made from `"text"`) are not
+there at all. Heads say what they say in the file: `template <typename T>`,
+`const`, a constructor's `: name_(name)`.
+
+A method or a field from the palette can be dropped straight into a
+class (or anything into a namespace) that is already in the file: it is
+saved on a line of its own there, indented like the members around it.
+What was dropped in can be taken out again; the members the file already
+had stay where they are. Lambdas and `try`/`catch` are still grey
+dragons: shown as written, saved as they were.
+
+![examples/game.cpp: namespace game holding class Player, public:, a constructor with its initialiser list, hit and heal as yellow C-blocks; the palette on C++, its Classes section](docs/cpp.png)
 
 ## Libraries as blocks
 
@@ -976,7 +1030,8 @@ in four sections. Every change takes at once and is remembered:
   arrows), Human language, the interface size (auto, or 75% to 300%),
   animations;
 - **Editor**: autosave and how long after a change it waits, the minimap,
-  the dots on the canvas, block explanations, Git authors beside blocks;
+  the dots on the canvas, the standard library's blocks, block
+  explanations, Git authors beside blocks;
 - **Building**: Debug, Release or Bug hunt (above);
 - **Other**: panel sizes back to how they were, forget the recent files,
   the agreement once more. Where the settings file is, at the bottom.
@@ -997,6 +1052,7 @@ autosave_delay = 1.5
 minimap = on
 grid = on
 explain = on
+palette_std = on
 git_authors = off
 build_mode = sanitize
 ```
@@ -1035,6 +1091,7 @@ with the fix.
 | **!** | a `malloc` never freed, returned or stored; `p = realloc(p, n)`; `malloc` used without a NULL check; `strcpy`, `strcat`, `sprintf`; `=` in a condition (unless `((x = f()))`, on purpose); variable-length arrays; `alloca`; `goto` backwards |
 | **nit** | four levels of nesting (`else if` chains don't count); functions over 80 lines or with more than 12 locals; `sizeof(int)` where `sizeof *p` would follow the pointer; casting `malloc`'s result; `f()` instead of `f(void)`; `atoi` |
 | **+1** | a `goto` forward, to cleanup: the kernel way |
+| **C++** | raw `new` (a nit: who deletes it?), `using namespace` in a header (a warning); C's nits about `f()` and casting `malloc` stay quiet in C++, where both are right |
 
 It looks at what is in the program: loose blocks on the canvas and
 commented-out ones are left alone. The persona is made up; no real person

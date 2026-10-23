@@ -28,6 +28,80 @@ bool ccr_tcat_is_cmake(ccr_tcat c)
     return c >= CCR_TCAT_CM_PROJECT && c < CCR_TCAT_COUNT;
 }
 
+bool ccr_tcat_is_std(ccr_tcat c)
+{
+    return c == CCR_TCAT_STD_C || c == CCR_TCAT_STD_CPP;
+}
+
+unsigned ccr_template_langs(ccr_template t)
+{
+    const unsigned both = CCR_TLANG_C | CCR_TLANG_CPP;
+    if ((unsigned)t >= CCR_TEMPLATE_COUNT)
+        return both;   /* a pack's: its header says */
+    switch (ccr_template_category(t)) {
+    case CCR_TCAT_CLASSES:
+    case CCR_TCAT_STD_CPP: return CCR_TLANG_CPP;
+    case CCR_TCAT_STD_C:   return CCR_TLANG_C;
+    default:               break;
+    }
+    switch (t) {
+    case CCR_TEMPLATE_NULL_PTR:    return CCR_TLANG_C;     /* C++ says nullptr */
+    case CCR_TEMPLATE_FOR_RANGE:
+    case CCR_TEMPLATE_NULLPTR:
+    case CCR_TEMPLATE_NEW_OBJ:
+    case CCR_TEMPLATE_DELETE_PTR:
+    case CCR_TEMPLATE_STATIC_CAST:
+    case CCR_TEMPLATE_NAMESPACE_DEF:
+    case CCR_TEMPLATE_USING_NS:    return CCR_TLANG_CPP;
+    default:                       return both;
+    }
+}
+
+const char *ccr_std_header(const char *name)
+{
+    static const struct { const char *header; const char *names; } table[] = {
+        { "<stdio.h>",  " printf puts scanf fgets fopen fclose fprintf fputs putchar getchar snprintf sscanf "
+                        "fscanf perror fread fwrite fflush " },
+        { "<stdlib.h>", " malloc calloc realloc free exit rand srand abs atoi atof strtol strtod qsort getenv "
+                        "system " },
+        { "<string.h>", " strlen strcmp strncmp strcpy strncpy strcat memcpy memmove memset memcmp strchr "
+                        "strrchr strstr strdup " },
+        { "<math.h>",   " sqrt pow sin cos tan atan2 fabs floor ceil round log exp fmin fmax " },
+        { "<time.h>",   " time clock " },
+        { "<ctype.h>",  " isalpha isdigit isspace isalnum isupper islower toupper tolower " },
+        { "<iostream>", " std::cout std::cin std::cerr std::endl " },
+        { "<string>",   " std::string std::getline std::to_string std::stoi std::stod " },
+        { "<vector>",   " std::vector " },
+        { "<algorithm>", " std::sort std::max std::min std::find std::reverse std::count std::fill " },
+        { "<memory>",   " std::unique_ptr std::shared_ptr std::make_unique std::make_shared " },
+        { "<map>",      " std::map " },
+        { "<unordered_map>", " std::unordered_map " },
+        { "<array>",    " std::array " },
+        { "<utility>",  " std::move std::pair std::swap " },
+    };
+    if (!name || !*name)
+        return NULL;
+    /* the name itself, or the type it starts with: "std::vector<int>", "const std::string &" */
+    char word[64];
+    const char *p = name;
+    if (strncmp(p, "const ", 6) == 0)
+        p += 6;
+    size_t n = 0;
+    while (p[n] && (p[n] == ':' || p[n] == '_' || (p[n] >= 'a' && p[n] <= 'z') || (p[n] >= 'A' && p[n] <= 'Z') ||
+                    (p[n] >= '0' && p[n] <= '9')) && n < sizeof word - 3)
+        ++n;
+    if (n == 0)
+        return NULL;
+    word[0] = ' ';
+    memcpy(word + 1, p, n);
+    word[n + 1] = ' ';
+    word[n + 2] = '\0';
+    for (size_t i = 0; i < sizeof table / sizeof table[0]; ++i)
+        if (strstr(table[i].names, word))
+            return table[i].header;
+    return NULL;
+}
+
 ccr_template ccr_template_pack_link(int pack)
 {
     return (ccr_template)(CCR_TEMPLATE_COUNT + ccr_lib_block_count() + 2 * pack);
@@ -123,6 +197,39 @@ static ccr_node_id op_node(ccr_ast *ast, ccr_node_kind kind, ccr_node_id parent,
     return n;
 }
 
+/* A standard function: its name fixed, a slot per argument (with what
+ * usually goes there). */
+static ccr_node_id fcall(ccr_ast *ast, ccr_node_id parent, const char *name, int nargs, const char *const *args)
+{
+    ccr_node_id n = ccr_template_node(ast, CCR_NODE_CALL, parent);
+    if (n == CCR_NONE)
+        return CCR_NONE;
+    ast->nodes[n].name = ccr_ast_intern(ast, name);
+    for (int i = 0; i < nargs; ++i)
+        ccr_template_text(ast, n, args[i]);
+    return n;
+}
+#define FCALL(name, ...) fcall(ast, parent, name, (int)(sizeof((const char *[]){ __VA_ARGS__ }) / sizeof(const char *)), \
+                               (const char *[]){ __VA_ARGS__ })
+
+/* v.method(args): a call whose callee is a member of the object slot. */
+static ccr_node_id method_call(ccr_ast *ast, ccr_node_id parent, const char *object, const char *method,
+                               const char *arg)
+{
+    ccr_node_id n = ccr_template_node(ast, CCR_NODE_CALL, parent);
+    if (n == CCR_NONE)
+        return CCR_NONE;
+    ast->nodes[n].name = ccr_ast_intern(ast, method);
+    const ccr_node_id m = ccr_template_node(ast, CCR_NODE_MEMBER, n);
+    if (m != CCR_NONE) {
+        ast->nodes[m].name = ccr_ast_intern(ast, method);
+        ccr_template_text(ast, m, object);
+    }
+    if (arg)
+        ccr_template_text(ast, n, arg);
+    return n;
+}
+
 static ccr_node_id call(ccr_ast *ast, ccr_node_id parent, const char *name, const char *args)
 {
     ccr_node_id n = ccr_template_node(ast, CCR_NODE_CALL, parent);
@@ -161,7 +268,7 @@ const char *const *ccr_op_choices(const char *op, bool unary, int *count)
 
 bool ccr_template_is_toplevel(ccr_template t)
 {
-    return ccr_template_category(t) == CCR_TCAT_DECLS;
+    return ccr_template_category(t) == CCR_TCAT_DECLS || t == CCR_TEMPLATE_CLASS_DEF;
 }
 
 bool ccr_template_is_reporter(ccr_template t)
@@ -181,6 +288,12 @@ bool ccr_template_is_reporter(ccr_template t)
     case CCR_TEMPLATE_MEMBER: case CCR_TEMPLATE_ARROW: case CCR_TEMPLATE_NULL_PTR:
     case CCR_TEMPLATE_CALL_EXPR: case CCR_TEMPLATE_MALLOC:
     case CCR_TEMPLATE_CAST: case CCR_TEMPLATE_SIZEOF_TYPE: case CCR_TEMPLATE_SIZEOF_EXPR:
+    case CCR_TEMPLATE_NULLPTR: case CCR_TEMPLATE_NEW_OBJ: case CCR_TEMPLATE_STATIC_CAST:
+    case CCR_TEMPLATE_THIS:
+    case CCR_TEMPLATE_CALLOC: case CCR_TEMPLATE_REALLOC: case CCR_TEMPLATE_STRLEN:
+    case CCR_TEMPLATE_STRCMP: case CCR_TEMPLATE_RAND: case CCR_TEMPLATE_SQRT: case CCR_TEMPLATE_POW:
+    case CCR_TEMPLATE_FOPEN:
+    case CCR_TEMPLATE_SIZE: case CCR_TEMPLATE_TO_STRING:
         return true;
     default:
         return false;
@@ -339,10 +452,131 @@ ccr_node_id ccr_template_build(ccr_ast *ast, ccr_template t, ccr_node_id parent)
             ast->nodes[s].flags |= CCR_FLAG_ARROW;
         break;
     case CCR_TEMPLATE_NULL_PTR:
+    case CCR_TEMPLATE_NULLPTR:
+    case CCR_TEMPLATE_THIS:
         s = ccr_template_node(ast, CCR_NODE_REF, parent);
         if (s != CCR_NONE)
-            ast->nodes[s].name = ccr_ast_intern(ast, "NULL");
+            ast->nodes[s].name = ccr_ast_intern(ast, t == CCR_TEMPLATE_NULL_PTR ? "NULL"
+                                                     : t == CCR_TEMPLATE_NULLPTR ? "nullptr" : "this");
         break;
+    case CCR_TEMPLATE_NEW_OBJ:
+        s = ccr_template_node(ast, CCR_NODE_NEW, parent);
+        word(ast, s, CCR_FLAG_WORD_TYPE, "int");
+        ccr_template_text(ast, s, "");
+        break;
+    case CCR_TEMPLATE_DELETE_PTR:
+        s = ccr_template_node(ast, CCR_NODE_DELETE, parent);
+        ccr_template_text(ast, s, "");
+        break;
+    case CCR_TEMPLATE_FOR_RANGE:
+        s = ccr_template_node(ast, CCR_NODE_FOR_RANGE, parent);
+        word(ast, s, CCR_FLAG_WORD_TYPE, "auto");
+        word(ast, s, CCR_FLAG_WORD_NAME, "x");
+        ccr_template_text(ast, s, "");
+        ccr_template_node(ast, CCR_NODE_BLOCK, s);
+        break;
+    case CCR_TEMPLATE_STATIC_CAST:
+        s = ccr_template_node(ast, CCR_NODE_CAST, parent);
+        if (s != CCR_NONE)
+            ast->nodes[s].raw = ccr_ast_intern(ast, "static_cast");
+        word(ast, s, CCR_FLAG_WORD_TYPE, "int");
+        ccr_template_text(ast, s, "");
+        break;
+    case CCR_TEMPLATE_CLASS_DEF:
+        s = ccr_template_node(ast, CCR_NODE_STRUCT, parent);
+        word(ast, s, CCR_FLAG_WORD_NAME, "Player");
+        if (s != CCR_NONE) {
+            ast->nodes[s].flags |= CCR_FLAG_DEFINITION | CCR_FLAG_CLASS;
+            const ccr_node_id members = ccr_template_node(ast, CCR_NODE_BLOCK, s);
+            const ccr_node_id pub = ccr_template_node(ast, CCR_NODE_ACCESS, members);
+            if (pub != CCR_NONE)
+                ast->nodes[pub].name = ccr_ast_intern(ast, "public");
+        }
+        break;
+    case CCR_TEMPLATE_METHOD:
+        s = ccr_template_node(ast, CCR_NODE_FUNCTION, parent);
+        word(ast, s, CCR_FLAG_WORD_TYPE, "void");
+        word(ast, s, CCR_FLAG_WORD_NAME, "update");
+        ccr_template_text(ast, s, "");
+        if (s != CCR_NONE) {
+            ast->nodes[s].flags |= CCR_FLAG_DEFINITION;
+            ccr_template_node(ast, CCR_NODE_BLOCK, s);
+        }
+        break;
+    case CCR_TEMPLATE_PUBLIC:
+    case CCR_TEMPLATE_PRIVATE:
+        s = ccr_template_node(ast, CCR_NODE_ACCESS, parent);
+        if (s != CCR_NONE)
+            ast->nodes[s].name = ccr_ast_intern(ast, t == CCR_TEMPLATE_PUBLIC ? "public" : "private");
+        break;
+    case CCR_TEMPLATE_NAMESPACE_DEF:
+        s = ccr_template_node(ast, CCR_NODE_NAMESPACE, parent);
+        word(ast, s, CCR_FLAG_WORD_NAME, "game");
+        ccr_template_node(ast, CCR_NODE_BLOCK, s);
+        break;
+    case CCR_TEMPLATE_USING_NS:
+        s = ccr_template_node(ast, CCR_NODE_USING, parent);
+        word(ast, s, CCR_FLAG_WORD_NAME, "std");
+        break;
+
+    /* C's standard library: the usual arguments in the slots */
+    case CCR_TEMPLATE_PUTS:    s = FCALL("puts", "\"Hello!\"");                      break;
+    case CCR_TEMPLATE_SCANF:   s = FCALL("scanf", "\"%d\"", "&x");                    break;
+    case CCR_TEMPLATE_FGETS:   s = FCALL("fgets", "line", "sizeof line", "stdin");     break;
+    case CCR_TEMPLATE_CALLOC:  s = FCALL("calloc", "n", "sizeof *p");                  break;
+    case CCR_TEMPLATE_REALLOC: s = FCALL("realloc", "p", "n * sizeof *p");             break;
+    case CCR_TEMPLATE_STRLEN:  s = FCALL("strlen", "s");                               break;
+    case CCR_TEMPLATE_STRCMP:  s = FCALL("strcmp", "a", "b");                          break;
+    case CCR_TEMPLATE_MEMCPY:  s = FCALL("memcpy", "dst", "src", "n");                 break;
+    case CCR_TEMPLATE_MEMSET:  s = FCALL("memset", "p", "0", "n");                     break;
+    case CCR_TEMPLATE_RAND:    s = fcall(ast, parent, "rand", 0, NULL);                break;
+    case CCR_TEMPLATE_SRAND:   s = FCALL("srand", "42");                               break;
+    case CCR_TEMPLATE_SQRT:    s = FCALL("sqrt", "x");                                 break;
+    case CCR_TEMPLATE_POW:     s = FCALL("pow", "x", "2");                             break;
+    case CCR_TEMPLATE_FOPEN:   s = FCALL("fopen", "\"save.txt\"", "\"r\"");           break;
+    case CCR_TEMPLATE_FPRINTF: s = FCALL("fprintf", "f", "\"%d\\n\"", "x");           break;
+    case CCR_TEMPLATE_FCLOSE:  s = FCALL("fclose", "f");                               break;
+    case CCR_TEMPLATE_EXIT:    s = FCALL("exit", "0");                                 break;
+
+    /* C++'s */
+    case CCR_TEMPLATE_COUT:
+    case CCR_TEMPLATE_CIN: {
+        const bool out = t == CCR_TEMPLATE_COUT;
+        s = ccr_template_node(ast, CCR_NODE_BINARY_OP, parent);
+        if (s == CCR_NONE)
+            break;
+        ast->nodes[s].op = ccr_ast_intern(ast, out ? "<<" : ">>");
+        ccr_node_id left = s;
+        if (out) {   /* std::cout << "Hello" << '\n' */
+            left = ccr_template_node(ast, CCR_NODE_BINARY_OP, s);
+            if (left == CCR_NONE)
+                break;
+            ast->nodes[left].op = ccr_ast_intern(ast, "<<");
+        }
+        const ccr_node_id stream = ccr_template_node(ast, CCR_NODE_REF, left);
+        if (stream != CCR_NONE)
+            ast->nodes[stream].name = ccr_ast_intern(ast, out ? "std::cout" : "std::cin");
+        ccr_template_text(ast, left, out ? "\"Hello!\"" : "x");
+        if (out)
+            ccr_template_text(ast, s, "'\\n'");
+        break;
+    }
+    case CCR_TEMPLATE_STRING_DECL:
+    case CCR_TEMPLATE_VECTOR_DECL:
+        s = ccr_template_node(ast, CCR_NODE_VAR, parent);
+        word(ast, s, CCR_FLAG_WORD_TYPE, t == CCR_TEMPLATE_STRING_DECL ? "std::string" : "std::vector<int>");
+        word(ast, s, CCR_FLAG_WORD_NAME, t == CCR_TEMPLATE_STRING_DECL ? "s" : "v");
+        if (t == CCR_TEMPLATE_STRING_DECL && s != CCR_NONE) {
+            const ccr_node_id v = ccr_template_text(ast, s, "\"\"");
+            if (v != CCR_NONE)
+                ast->nodes[v].flags |= CCR_FLAG_INIT;
+        }
+        break;
+    case CCR_TEMPLATE_PUSH_BACK: s = method_call(ast, parent, "v", "push_back", "x");        break;
+    case CCR_TEMPLATE_SIZE:      s = method_call(ast, parent, "v", "size", NULL);            break;
+    case CCR_TEMPLATE_SORT:      s = FCALL("std::sort", "v.begin()", "v.end()");             break;
+    case CCR_TEMPLATE_GETLINE:   s = FCALL("std::getline", "std::cin", "s");                 break;
+    case CCR_TEMPLATE_TO_STRING: s = FCALL("std::to_string", "x");                           break;
 
     case CCR_TEMPLATE_CALL_STMT:
     case CCR_TEMPLATE_CALL_EXPR: s = call(ast, parent, "f", "");                       break;

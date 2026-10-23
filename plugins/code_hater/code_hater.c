@@ -29,7 +29,8 @@
 enum {
     R_DANGLING, R_RETURN_ARRAY, R_UAF, R_DOUBLE_FREE, R_LEAK, R_REALLOC, R_GETS, R_STRCPY, R_SPRINTF,
     R_ATOI, R_ALLOCA, R_ASSIGN_COND, R_NESTING, R_LONG_FN, R_LOCALS, R_VOID_MAIN, R_UNCHECKED, R_VLA,
-    R_RUST_NAME, R_RUST_TEXT, R_GOTO, R_GOTO_BACK, R_MALLOC_CAST, R_SIZEOF_TYPE, R_EMPTY_PARAMS, R_COUNT
+    R_RUST_NAME, R_RUST_TEXT, R_GOTO, R_GOTO_BACK, R_MALLOC_CAST, R_SIZEOF_TYPE, R_EMPTY_PARAMS,
+    R_RAW_NEW, R_USING_HEADER, R_COUNT
 };
 
 typedef struct rant {
@@ -250,6 +251,22 @@ static const rant g_rants[R_COUNT] = {
           { "Размер для {x} записан через тип. Поменяешь когда-нибудь тип {x} — и тут молча выделится не "
             "столько. sizeof *{x} всегда следует за указателем: бесплатная защита от бага, ноль усилий.",
             NULL } } },
+    [R_RAW_NEW] = { CCR_FINDING_NIT,
+        { "raw new", "голый new" },
+        { { "new {x}. And who deletes it? You, later, on every path out, including the ones an exception "
+            "takes. You won't. Nobody does. Put it in a std::vector, or std::make_unique<{x}>(...), and the "
+            "memory goes away by itself when nobody needs it.", NULL },
+          { "new {x}. А удалит кто? Ты, потом, на каждом пути выхода, включая те, где летит исключение. Не "
+            "удалишь. Никто не удаляет. Положи в std::vector или std::make_unique<{x}>(...) — и память "
+            "уйдёт сама, когда станет никому не нужна.", NULL } } },
+    [R_USING_HEADER] = { CCR_FINDING_WARNING,
+        { "using namespace in a header", "using namespace в заголовке" },
+        { { "using namespace {x}; in a header. Every file that includes this one now has all of {x} dumped "
+            "into its global namespace, whether it asked or not. Names collide in files you've never seen. "
+            "Write {x}:: in headers; save the using for your own .cpp.", NULL },
+          { "using namespace {x}; в заголовке. Теперь каждый файл, который его подключит, получает весь {x} в "
+            "глобальное пространство имён, хотел он того или нет. Имена конфликтуют в файлах, которых ты в "
+            "глаза не видел. В заголовках пиши {x}::, а using оставь для своих .cpp.", NULL } } },
     [R_EMPTY_PARAMS] = { CCR_FINDING_NIT,
         { "() is not (void)", "() — это не (void)" },
         { { "{x}() is declared with (). In C that doesn't mean 'no arguments', it means 'any arguments, and "
@@ -262,6 +279,7 @@ static const rant g_rants[R_COUNT] = {
 
 static const ccr_plugin_file *F;
 static int g_lang;                 /* 0 en, 1 ru */
+static bool g_cpp;                 /* the file is C++: f() means f(void), casts on malloc are needed */
 static int g_said[R_COUNT];        /* per rant, this file */
 static int g_total;
 
@@ -529,7 +547,7 @@ static void check_var(uint32_t v)
     const uint32_t call = uncast(init);
     if (!is(call, "Call") || !in_list(N(call)->name, g_allocators))
         return;
-    if (is(init, "Cast"))
+    if (is(init, "Cast") && !g_cpp)   /* C++ needs that cast */
         say(v, R_MALLOC_CAST, N(call)->name, 0);
     /* malloc(n * sizeof(int)) for an int *: sizeof *p would follow it */
     if (named(call, "malloc") || named(call, "calloc")) {
@@ -704,7 +722,7 @@ static void check_function(uint32_t fn)
     if (strcmp(name, "main") == 0 && strncmp(type, "void", 4) == 0)
         say(fn, R_VOID_MAIN, name, 0);
     const size_t tl = strlen(type);
-    if (tl >= 2 && strcmp(type + tl - 2, "()") == 0)
+    if (!g_cpp && tl >= 2 && strcmp(type + tl - 2, "()") == 0)
         say(fn, R_EMPTY_PARAMS, name, 0);
     if (!(N(fn)->flags & CCR_PNODE_DEFINITION))
         return;
@@ -898,9 +916,18 @@ static void check_rust_text(void)
 
 /* ----------------------------------------------------------------- run */
 
+static bool is_header(const char *path)
+{
+    const size_t n = strlen(path);
+    return (n > 2 && strcmp(path + n - 2, ".h") == 0) || (n > 4 && strcmp(path + n - 4, ".hpp") == 0) ||
+           (n > 3 && strcmp(path + n - 3, ".hh") == 0);
+}
+
 static void check(const ccr_plugin_file *file)
 {
-    if (strcmp(file->language, "c") != 0 || file->root == NONE)
+    const bool cpp = strcmp(file->language, "c++") == 0;
+    g_cpp = cpp;
+    if ((strcmp(file->language, "c") != 0 && !cpp) || file->root == NONE)
         return;   /* CMake: somebody else's problem */
     F = file;
     g_lang = strncmp(file->ui_language, "ru", 2) == 0 ? 1 : 0;
@@ -922,6 +949,11 @@ static void check(const ccr_plugin_file *file)
             check_condition(k);
         else if (strcmp(kind, "BinaryOp") == 0)
             check_assign(k);
+        else if (cpp && strcmp(kind, "New") == 0)
+            say(statement_of(k), R_RAW_NEW, *N(k)->type ? N(k)->type : "T", 0);
+        else if (cpp && strcmp(kind, "Using") == 0 && is_header(F->path) && N(k)->parent == F->root && N(k)->src_end > N(k)->src_begin &&
+                 strncmp(F->source + N(k)->src_begin, "using namespace", 15) == 0)
+            say(k, R_USING_HEADER, N(k)->name, 0);
         else if (strcmp(kind, "String") == 0) {
             size_t at, len;
             const char *s = N(k)->name;

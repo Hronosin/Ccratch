@@ -27,7 +27,10 @@ static const ccr_text g_cat_names[CCR_TCAT_COUNT] = {
     [CCR_TCAT_POINTERS]  = CCR_T_CAT_POINTERS,
     [CCR_TCAT_FUNCTIONS] = CCR_T_CAT_FUNCTIONS,
     [CCR_TCAT_TYPES]     = CCR_T_CAT_TYPES,
+    [CCR_TCAT_CLASSES]   = CCR_T_CAT_CLASSES,
     [CCR_TCAT_DECLS]     = CCR_T_CAT_DECLS,
+    [CCR_TCAT_STD_C]     = CCR_T_CAT_STD,
+    [CCR_TCAT_STD_CPP]   = CCR_T_CAT_STD,
     [CCR_TCAT_CM_PROJECT] = CCR_T_CAT_CM_PROJECT,
     [CCR_TCAT_CM_TARGETS] = CCR_T_CAT_CM_TARGETS,
     [CCR_TCAT_CM_LIBS]    = CCR_T_LIBS_TITLE,
@@ -42,7 +45,10 @@ static const ccr_theme_cat g_cat_colors[CCR_TCAT_COUNT] = {
     [CCR_TCAT_POINTERS]  = CCR_CAT_POINTER,
     [CCR_TCAT_FUNCTIONS] = CCR_CAT_CALL,
     [CCR_TCAT_TYPES]     = CCR_CAT_TYPE,
+    [CCR_TCAT_CLASSES]   = CCR_CAT_TYPE,
     [CCR_TCAT_DECLS]     = CCR_CAT_EVENT,   /* the hat's colour: where code starts */
+    [CCR_TCAT_STD_C]     = CCR_CAT_LIBRARY,
+    [CCR_TCAT_STD_CPP]   = CCR_CAT_LIBRARY,
     [CCR_TCAT_CM_PROJECT] = CCR_CAT_TYPE,
     [CCR_TCAT_CM_TARGETS] = CCR_CAT_PREPROC,
     [CCR_TCAT_CM_LIBS]    = CCR_CAT_LIBRARY,
@@ -191,6 +197,7 @@ bool ccr_palette_init(ccr_palette *p)
 {
     const float scroll = p->ready ? p->scroll : 0.0f;
     const ccr_lang_kind lang = p->lang;
+    const bool cpp = p->cpp, no_std = p->no_std;
     char filter[sizeof p->filter];
     memcpy(filter, p->filter, sizeof filter);
     const float zoom = p->zoom;
@@ -207,22 +214,35 @@ bool ccr_palette_init(ccr_palette *p)
     }
     p->hot = -1;
     p->lang = lang;
+    p->cpp = cpp;
+    p->no_std = no_std;
     memcpy(p->filter, filter, sizeof filter);
     p->zoom = zoom;
     if (!ccr_ast_init(&p->ast))
         return false;
     p->ast.lang = lang;   /* blocks drawn the way the file on screen speaks */
+    p->ast.cpp = cpp;
 
     const bool cmake = lang == CCR_LANG_CMAKE;
+    const unsigned want = cpp ? CCR_TLANG_CPP : CCR_TLANG_C;
     float y = PAD_TOP;
     for (int c = 0; c < CCR_TCAT_COUNT; ++c) {
         if (ccr_tcat_is_cmake((ccr_tcat)c) != cmake)
+            continue;
+        if (!cmake && ccr_tcat_is_std((ccr_tcat)c) && no_std)
+            continue;   /* programming without the standard library */
+        /* a section only for the other language */
+        bool any = cmake;
+        for (int t = 0; t < CCR_TEMPLATE_COUNT && !any; ++t)
+            any = ccr_template_category((ccr_template)t) == (ccr_tcat)c && (ccr_template_langs((ccr_template)t) & want);
+        if (!any)
             continue;
         const float head_y = y;
         const uint32_t had = p->item_count;
         heading(p, ccr_tr(g_cat_names[c]), g_cat_colors[c], &y);
         for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t)
-            if (ccr_template_category((ccr_template)t) == (ccr_tcat)c && !add_item(p, (ccr_template)t, &y))
+            if (ccr_template_category((ccr_template)t) == (ccr_tcat)c &&
+                (cmake || (ccr_template_langs((ccr_template)t) & want)) && !add_item(p, (ccr_template)t, &y))
                 goto oom;
         /* CMake: every pack that says how to link its library */
         for (int k = 0; c == CCR_TCAT_CM_LIBS && k < ccr_lib_pack_count(); ++k) {
@@ -311,6 +331,23 @@ bool ccr_palette_set_lang(ccr_palette *p, ccr_lang_kind lang)
         return true;
     p->lang = lang;
     p->scroll = p->scroll_to = 0.0f;
+    return !p->ready || ccr_palette_relayout(p);
+}
+
+bool ccr_palette_set_cpp(ccr_palette *p, bool cpp)
+{
+    if (p->cpp == cpp)
+        return true;
+    p->cpp = cpp;
+    p->scroll = p->scroll_to = 0.0f;
+    return !p->ready || ccr_palette_relayout(p);
+}
+
+bool ccr_palette_set_std(ccr_palette *p, bool shown)
+{
+    if (p->no_std == !shown)
+        return true;
+    p->no_std = !shown;
     return !p->ready || ccr_palette_relayout(p);
 }
 

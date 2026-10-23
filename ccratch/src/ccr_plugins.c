@@ -313,7 +313,7 @@ int ccr_plugins_check(const ccr_ast *ast, const char *path, const char *ui_langu
     ccr_plugin_file file = {
         .struct_size = sizeof file,
         .path = path ? path : "",
-        .language = ast->lang == CCR_LANG_CMAKE ? "cmake" : "c",
+        .language = ast->lang == CCR_LANG_CMAKE ? "cmake" : ast->cpp ? "c++" : "c",
         .ui_language = ui_language ? ui_language : "en",
         .plain = plain,
         .nodes = nodes,

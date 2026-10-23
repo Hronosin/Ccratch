@@ -556,11 +556,16 @@ static void test_every_template(void)
 {
     ccr_editor ed;
     CHECK(load(&ed), "load failed");
-    static const char *const fill[] = { "n++", "n > 0", "n > 0", "n > 0", NULL, "n > 0", "n", NULL, NULL };
+    static const char *const fill[CCR_TEMPLATE_COUNT] = {
+        [CCR_TEMPLATE_CODE] = "n++", [CCR_TEMPLATE_IF] = "n > 0", [CCR_TEMPLATE_IF_ELSE] = "n > 0",
+        [CCR_TEMPLATE_WHILE] = "n > 0", [CCR_TEMPLATE_DO_WHILE] = "n > 0", [CCR_TEMPLATE_RETURN] = "n",
+    };
     ccr_node_id after = stmt(&ed, "do b--;");
     for (int t = 0; t <= CCR_TEMPLATE_CONTINUE; ++t) {   /* the first ones; the rest below */
         if (t == CCR_TEMPLATE_BREAK || t == CCR_TEMPLATE_CONTINUE)
             continue;   /* need a loop around them; covered inside the while below */
+        if (!(ccr_template_langs((ccr_template)t) & CCR_TLANG_C))
+            continue;   /* C++'s: this file is C */
         ccr_vec2 at;
         snap_at(&ed, CCR_SNAP_AFTER, after, &at);
         ccr_node_id made = spawn_at(&ed, (ccr_template)t, at);

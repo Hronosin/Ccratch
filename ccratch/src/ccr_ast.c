@@ -250,6 +250,7 @@ void ccr_ast_wrap_bodies(ccr_ast *ast)
             body[0] = nth_child(ast, id, 0);
             break;
         case CCR_NODE_FOR:
+        case CCR_NODE_FOR_RANGE:
             body[0] = ast->nodes[id].last_child;
             break;
         default:
@@ -423,7 +424,7 @@ static bool needs_semicolon(ccr_node_kind k)
     case CCR_NODE_INDEX: case CCR_NODE_CAST: case CCR_NODE_SIZEOF:
     case CCR_NODE_COMPOUND_LIT: case CCR_NODE_MACRO_VALUE:
     case CCR_NODE_INT_LIT: case CCR_NODE_FLOAT_LIT: case CCR_NODE_CHAR_LIT:
-    case CCR_NODE_STRING_LIT:
+    case CCR_NODE_STRING_LIT: case CCR_NODE_NEW: case CCR_NODE_DELETE: case CCR_NODE_USING:
         return true;
     default:
         return false;
