@@ -411,3 +411,10 @@ set.config = Баптаулар файлы:
 set.layout_done = Панель өлшемдері бастапқыдай
 set.recent_done = Соңғы файлдар ұмытылды
 help.settings = баптаулар
+
+# plugins
+set.sec_plugins = Плагиндер
+set.plugins_none = Плагиндер табылмады. Плагин — төмендегі қалтадағы .so файлы
+set.plugins_dir = Өз плагиндеріңді осында сал:
+set.plugin_by = нұсқа %s, авторы %s
+pf.chip_tip = Плагиндер бұл файл туралы не дейді. Басу — келесісіне

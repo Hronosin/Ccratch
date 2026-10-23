@@ -403,3 +403,10 @@ set.config = Файл настроек:
 set.layout_done = Размеры панелей — как вначале
 set.recent_done = Недавние файлы забыты
 help.settings = настройки
+
+# plugins
+set.sec_plugins = Плагины
+set.plugins_none = Плагинов не нашлось. Плагин — это файл .so в папке ниже
+set.plugins_dir = Свои плагины клади сюда:
+set.plugin_by = версия %s, автор %s
+pf.chip_tip = Что плагины говорят про этот файл. Щелчок — к следующему

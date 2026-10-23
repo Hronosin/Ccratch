@@ -412,3 +412,10 @@ set.config = 설정 파일:
 set.layout_done = 패널 크기를 처음으로 되돌렸습니다
 set.recent_done = 최근 파일을 잊었습니다
 help.settings = 설정
+
+# plugins
+set.sec_plugins = 플러그인
+set.plugins_none = 플러그인이 없습니다. 플러그인은 아래 폴더에 두는 .so 파일입니다
+set.plugins_dir = 내 플러그인 위치:
+set.plugin_by = 버전 %s, 만든 이 %s
+pf.chip_tip = 플러그인이 이 파일에 대해 하는 말. 누르면 다음 것으로

@@ -411,3 +411,10 @@ set.config = Файл налад:
 set.layout_done = Памеры панэляў — як спачатку
 set.recent_done = Нядаўнія файлы забытыя
 help.settings = налады
+
+# plugins
+set.sec_plugins = Плагіны
+set.plugins_none = Плагінаў не знайшлося. Плагін — гэта файл .so ў папцы ніжэй
+set.plugins_dir = Свае плагіны кладзі сюды:
+set.plugin_by = версія %s, аўтар %s
+pf.chip_tip = Што плагіны кажуць пра гэты файл. Пстрычка — да наступнага

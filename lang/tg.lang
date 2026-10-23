@@ -411,3 +411,10 @@ set.config = Файли танзимот:
 set.layout_done = Андозаи панелҳо мисли аввал
 set.recent_done = Файлҳои охирин фаромӯш шуданд
 help.settings = танзимот
+
+# plugins
+set.sec_plugins = Плагинҳо
+set.plugins_none = Плагин ёфт нашуд. Плагин — файли .so дар ҷузвдони поён
+set.plugins_dir = Плагинҳои худро ин ҷо гузор:
+set.plugin_by = версияи %s, муаллиф %s
+pf.chip_tip = Плагинҳо дар бораи ин файл чӣ мегӯянд. Пахш — ба навбатӣ

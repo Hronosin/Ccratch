@@ -411,3 +411,10 @@ set.config = Ayarlar faylı:
 set.layout_done = Panel ölçüləri əvvəlki kimi
 set.recent_done = Son fayllar unuduldu
 help.settings = ayarlar
+
+# plugins
+set.sec_plugins = Plaginlər
+set.plugins_none = Plagin tapılmadı. Plagin aşağıdakı qovluqdakı .so faylıdır
+set.plugins_dir = Öz plaginlərini bura qoy:
+set.plugin_by = versiya %s, müəllif %s
+pf.chip_tip = Plaginlər bu fayl haqqında nə deyir. Klik — növbətiyə

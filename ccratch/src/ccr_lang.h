@@ -397,6 +397,11 @@
     X(SET_LAYOUT_DONE,  "set.layout_done", 0, "Panel sizes as they were at first") \
     X(SET_RECENT_DONE,  "set.recent_done", 0, "Recent files forgotten") \
     X(HELP_SETTINGS,    "help.settings", 0, "settings") \
+    X(SET_SEC_PLUGINS,  "set.sec_plugins", 0, "Plugins") \
+    X(SET_PLUGINS_NONE, "set.plugins_none", 0, "No plugins found. A plugin is a .so file in the folder below") \
+    X(SET_PLUGINS_DIR,  "set.plugins_dir", 0, "Your own plugins go in:") \
+    X(SET_PLUGIN_BY,    "set.plugin_by", 0, "version %s, by %s") \
+    X(PF_CHIP_TIP,      "pf.chip_tip", 0, "What the plugins say about this file. Click: the next one") \
     /* the agreement (a joke; LICENSE is the real thing) */ \
     X(EULA_TITLE, "eula.title", 0, \
       "IHATERUSTL") \

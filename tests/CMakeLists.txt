@@ -303,3 +303,65 @@ add_test(NAME git_history COMMAND test_gitlog)
 
 # build.sh and run.sh at least parse (they are for people who never open them)
 add_test(NAME scripts_parse COMMAND bash -n ${PROJECT_SOURCE_DIR}/build.sh ${PROJECT_SOURCE_DIR}/run.sh)
+
+# Plugins: Code Hater, loaded from share/ccratch/plugins next to the
+# program, with an empty config (a user's "plugin.code_hater = off" must
+# not make these pass for the wrong reason). Every check fires on bad.c,
+# none on good.c, and switched off it says nothing.
+set(CCR_HATER_ENV "XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/hater-config"
+                  "XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/hater-data" "CCRATCH_PLUGIN_DIR=")
+set(CCR_HATER_BAD ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/bad.c)
+foreach(expect
+        "11:[0-9]+: error: .code_hater. NAK: returns the address of a local"
+        "16:[0-9]+: warning: .code_hater. realloc into the same pointer"
+        "22:[0-9]+: warning: .code_hater. memory leak"
+        "23:[0-9]+: warning: .code_hater. malloc's result not checked"
+        "23:[0-9]+: warning: .code_hater. strcpy\\(\\): no length"
+        "30:[0-9]+: error: .code_hater. NAK: double free"
+        "35:[0-9]+: nit: .code_hater. sizeof\\(type\\)"
+        "38:[0-9]+: error: .code_hater. NAK: use after free"
+        "44:[0-9]+: error: .code_hater. NAK: gets\\(\\)"
+        "46:[0-9]+: warning: .code_hater. = in a condition"
+        "49:[0-9]+: nit: .code_hater. four levels deep"
+        "50:[0-9]+: warning: .code_hater. sprintf\\(\\) without a size"
+        "59:[0-9]+: error: .code_hater. NAK: Rust detected"
+        "59:[0-9]+: error: .code_hater. NAK: Rust propaganda"
+        "66:[0-9]+: warning: .code_hater. variable-length array"
+        "76:[0-9]+: warning: .code_hater. goto backwards"
+        "83:[0-9]+: error: .code_hater. NAK: returns a local array"
+        "88:[0-9]+: nit: .code_hater. cast of malloc")
+    string(REGEX REPLACE "[^a-z0-9]+" "_" tag "${expect}")
+    string(SUBSTRING "${tag}" 0 60 tag)
+    add_test(NAME code_hater_${tag}
+             COMMAND ${CCR_BIN} --lang en --check-code ${CCR_HATER_BAD})
+    set_tests_properties(code_hater_${tag} PROPERTIES
+        ENVIRONMENT "${CCR_HATER_ENV}"
+        PASS_REGULAR_EXPRESSION "bad\\.c:${expect}")
+endforeach()
+add_test(NAME code_hater_good
+         COMMAND ${CCR_BIN} --lang en --check-code ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/good.c)
+set_tests_properties(code_hater_good PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "good\\.c: nothing to say")
+add_test(NAME code_hater_russian
+         COMMAND ${CCR_BIN} --lang ru --check-code ${CCR_HATER_BAD})
+set_tests_properties(code_hater_russian PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "NAK: обращение после free")
+# switched off in the config: silence
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/hater-off/ccratch)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hater-off/ccratch/config "plugin.code_hater = off\n")
+add_test(NAME code_hater_off
+         COMMAND ${CCR_BIN} --lang en --check-code ${CCR_HATER_BAD})
+set_tests_properties(code_hater_off PROPERTIES
+    ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/hater-off;XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/hater-data"
+    PASS_REGULAR_EXPRESSION "bad\\.c: nothing to say")
+add_test(NAME plugins_list COMMAND ${CCR_BIN} --list-plugins)
+set_tests_properties(plugins_list PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "code_hater +1\\.[0-9]+\\.[0-9]+ +.*share/ccratch/plugins/code_hater\\.so")
+# the template still loads (it is built, not installed)
+add_test(NAME plugins_template COMMAND ${CCR_BIN} --list-plugins)
+set_tests_properties(plugins_template PROPERTIES
+    ENVIRONMENT "CCRATCH_PLUGIN_DIR=${CMAKE_BINARY_DIR}/examples/plugins;XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/hater-config"
+    PASS_REGULAR_EXPRESSION "hello +0\\.0\\.1")

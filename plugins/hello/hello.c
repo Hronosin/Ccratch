@@ -1,6 +1,7 @@
 /*
  * The smallest possible Ccratch plugin. Copy this to start a new one.
- * The host does not load plugins yet - that is the next step.
+ * Built into build/examples/plugins, where Ccratch does not look: copy it to
+ * ~/.local/share/ccratch/plugins to see it in Settings > Plugins.
  */
 #include "ccratch/ccr_plugin.h"
 

@@ -31,6 +31,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 20: getting around: tabs, find (Ctrl+F), palette search, green flag, F1, recent files, no lost work on quit.
 - Step 21: copy and paste blocks between files (and any C as blocks), selection, minimap, autosave, panels you can size.
 - Step 22: Git as cards, block explanations, fourteen languages in human words, a settings window, Bug hunt builds.
+- Step 23: plugins, for real, and the first official one: Code Hater.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -856,7 +857,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_config  ~/.config/ccratch/config, and where add-ons are found
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
-plugins/    each plugin is its own .so; hello/ is the template
+plugins/    each plugin is its own .so: code_hater/, and hello/, the template
 examples/   C files to feed the parser
 lang/       language packs (ru.lang...); English is built in
 blocks/     block packs (raylib.yaml...)
@@ -999,6 +1000,45 @@ explain = on
 git_authors = off
 build_mode = sanitize
 ```
+
+## Plugins
+
+A plugin is a shared library that exports `ccr_plugin_entry()`
+(`include/ccratch/ccr_plugin.h`, C ABI: anything that speaks C can write
+one. Yes, even Rust. It will regret it). Ccratch loads every `.so` in
+`$CCRATCH_PLUGIN_DIR`, `~/.local/share/ccratch/plugins` and
+`share/ccratch/plugins` next to the program, and **Settings > Plugins**
+lists them with a switch each (`plugin.NAME = off` in the config).
+
+A checker plugin gets the file a moment after every change: the same tree
+`--dump-ast` prints, as a flat array of nodes, plus the source. It reports
+findings on nodes, and each lands on its block as a badge: **NAK**, **!**,
+**nit** or **+1**. The mouse on a badge slides out the plugin's reply; the
+status bar counts them, and a click there glides to the next one.
+
+`ccratch --check-code FILE` prints the same in a terminal (exit 1 on a
+warning or worse, so it fits in CI), `--list-plugins` shows what was
+found. `plugins/hello/` is the smallest plugin there is: copy it.
+
+### Code Hater
+
+The first official plugin. A borrow checker, but for C, and in a much worse
+mood: it reviews your code the way the old mailing lists did, loudly, in
+English or Russian. It hates the code, not you. Mostly. Every rant ends
+with the fix.
+
+![Code Hater's card on a `return *q;` after `free(q)`: "NAK: use after free", the quoted line, the rant, signed "-- Code Hater"; badges on the other blocks, the count in the status bar](docs/code_hater.png)
+
+| | What it catches |
+| --- | --- |
+| **NAK** | `return &local;` and returning a local array; use after `free`; double `free`; `gets()`; `void main`; anything that smells of Rust (`unwrap_or`, "rewrite it in Rust", "blazingly fast") |
+| **!** | a `malloc` never freed, returned or stored; `p = realloc(p, n)`; `malloc` used without a NULL check; `strcpy`, `strcat`, `sprintf`; `=` in a condition (unless `((x = f()))`, on purpose); variable-length arrays; `alloca`; `goto` backwards |
+| **nit** | four levels of nesting (`else if` chains don't count); functions over 80 lines or with more than 12 locals; `sizeof(int)` where `sizeof *p` would follow the pointer; casting `malloc`'s result; `f()` instead of `f(void)`; `atoi` |
+| **+1** | a `goto` forward, to cleanup: the kernel way |
+
+It looks at what is in the program: loose blocks on the canvas and
+commented-out ones are left alone. The persona is made up; no real person
+said any of it, although several would have.
 
 ## Interface size
 

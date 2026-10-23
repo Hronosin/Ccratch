@@ -12,6 +12,7 @@
 #include "ccr_lang.h"
 #include "ccr_parse.h"
 #include "ccr_explain.h"
+#include "ccr_plugins.h"
 #include "ccr_files.h"
 #include "ccr_fonts.h"
 #include "ccr_gdb.h"
@@ -279,6 +280,9 @@ static void print_usage(const char *argv0)
            "  --check-lang FILE      check a language pack for missing or broken text\n"
            "  --check-explain FILE   check a block explanation file (lang/CODE.explain);\n"
            "                         --complete after it: every block must be there\n"
+           "  --check-code FILE      what the plugins (Code Hater...) say about a file;\n"
+           "                         exit 1 if a warning or worse\n"
+           "  --list-plugins         the plugins found, and where\n"
            "  --make-blocks HEADER   print a draft block pack for a library's header\n"
            "                         (save it as blocks/NAME.yaml and make it read well)\n"
            "  --make-cmake DIR       print the CMakeLists.txt Ccratch would make for a project\n"
@@ -482,6 +486,23 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             const char *f = argv[++i];
             const bool complete = i + 1 < argc && strcmp(argv[i + 1], "--complete") == 0;
             return ccr_explain_check(f, complete, stdout) == 0 ? 0 : 1;
+        } else if (strcmp(a, "--check-code") == 0 && i + 1 < argc) {
+            ccr_lang_pick(opt->lang, NULL);
+            ccr_plugins_load(stderr);
+            const int bad = ccr_plugins_check_file(argv[++i], ccr_lang_code(), stdout);
+            ccr_plugins_unload();
+            if (bad < 0)
+                fprintf(stderr, "ccratch: could not read '%s'\n", argv[i]);
+            return bad == 0 ? 0 : bad < 0 ? 2 : 1;
+        } else if (strcmp(a, "--list-plugins") == 0) {
+            ccr_plugins_load(stderr);
+            for (int k = 0; k < ccr_plugins_count(); ++k)
+                printf("%-12s %-8s %s%s\n    %s\n", ccr_plugins_name(k), ccr_plugins_version(k), ccr_plugins_path(k),
+                       ccr_plugins_enabled(k) ? "" : "  (off)", ccr_plugins_describe(k, "en"));
+            if (ccr_plugins_count() == 0)
+                printf("no plugins found\n");
+            ccr_plugins_unload();
+            return 0;
         } else if (strcmp(a, "--lang-template") == 0) {
             ccr_lang_write_template(stdout);
             return 0;
@@ -3619,6 +3640,379 @@ static void blame_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewpor
     }
 }
 
+/* ------------------------------------------------------------ plugins
+ *
+ * Checkers (Code Hater...) read the file a moment after every change. What
+ * they say sits on its block as a little badge on the top right corner -
+ * NAK, !, nit, +1 - and the mouse on a badge slides out a card that reads
+ * like a reply on a mailing list: who, the quoted line, the verdict. The
+ * status bar counts them; a click there glides to the next one.
+ */
+static struct {
+    ccr_finding *list;
+    int          n;
+    const void  *ed;          /* the editor they are about */
+    uint32_t     hist;        /* its history then */
+    double       changed_at;
+    bool         dirty;       /* a change not read yet */
+    bool         again;       /* read again now: a plugin was switched, the language changed */
+    char         lang[16];
+    bool         plain;
+    ccr_node_id  hover;       /* the badge the card is about */
+    double       since;
+    float        open;
+    int          next;        /* the status bar's click goes here */
+} g_pf = { .hover = CCR_NONE };
+
+static void plugins_forget(void)
+{
+    free(g_pf.list);
+    g_pf.list = NULL;
+    g_pf.n = 0;
+    g_pf.hover = CCR_NONE;
+}
+
+/* Every frame: the file changed (or another is on screen)? A moment later,
+ * the checkers read it. */
+static void plugins_tick(const ccr_document *doc)
+{
+    if (!doc->loaded || ccr_plugins_count() == 0) {
+        if (g_pf.n)
+            plugins_forget();
+        g_pf.ed = NULL;
+        return;
+    }
+    const bool other = g_pf.ed != (const void *)doc->ed.scripts;
+    if (other) {   /* another file, or opened again: what was said is about nodes that are gone */
+        plugins_forget();
+        g_pf.ed = doc->ed.scripts;
+        g_pf.hist = doc->ed.history_len;
+        g_pf.again = true;
+    }
+    if (g_pf.hist != doc->ed.history_len) {
+        g_pf.hist = doc->ed.history_len;
+        g_pf.changed_at = ccr_gui_time();
+        g_pf.dirty = true;
+    }
+    if (strcmp(g_pf.lang, ccr_lang_code()) != 0 || g_pf.plain != ccr_lang_in_plain_words()) {
+        snprintf(g_pf.lang, sizeof g_pf.lang, "%s", ccr_lang_code());
+        g_pf.plain = ccr_lang_in_plain_words();
+        g_pf.again = true;
+    }
+    const bool due = g_pf.again || (g_pf.dirty && ccr_gui_time() - g_pf.changed_at > 0.4 &&
+                                    doc->ed.drag == CCR_DRAG_IDLE);
+    if (!due)
+        return;
+    g_pf.again = g_pf.dirty = false;
+    const ccr_node_id hover = g_pf.hover;
+    free(g_pf.list);
+    g_pf.list = NULL;
+    g_pf.n = ccr_plugins_check(&doc->ed.ast, doc->path, g_pf.lang, g_pf.plain, &g_pf.list);
+    g_pf.hover = hover;   /* the card stays out, if its block still has something */
+    if (g_pf.next >= g_pf.n)
+        g_pf.next = 0;
+}
+
+static ccr_color pf_level_color(int plugin, ccr_find_level level)
+{
+    switch (level) {
+    case CCR_FIND_ERROR: {
+        const uint32_t c = ccr_plugins_color(plugin);
+        return c ? c : ccr_th(CCR_C_ERROR);
+    }
+    case CCR_FIND_WARNING: return 0xE8912DFFu;
+    case CCR_FIND_NIT:     return 0x7C879CFFu;
+    default:               return 0x3FAE5AFFu;
+    }
+}
+
+static const char *pf_level_word(ccr_find_level level)
+{
+    return level == CCR_FIND_ERROR ? "NAK" : level == CCR_FIND_WARNING ? "!" : level == CCR_FIND_NIT ? "nit" : "+1";
+}
+
+/* The findings on `node`: the first one's index, and how many (they are
+ * sorted by line, so a node's are not always together: counted all over). */
+static int pf_on(ccr_node_id node, int *count, int *worst)
+{
+    int first = -1, n = 0, w = -1;
+    for (int i = 0; i < g_pf.n; ++i)
+        if (g_pf.list[i].node == node) {
+            if (first < 0)
+                first = i;
+            ++n;
+            if ((int)g_pf.list[i].level > w)
+                w = (int)g_pf.list[i].level;
+        }
+    if (count)
+        *count = n;
+    if (worst)
+        *worst = w;
+    return first;
+}
+
+/* Where the badge of `node` is, on screen. */
+static bool pf_badge_rect(const ccr_document *doc, const ccr_canvas *cv, ccr_node_id node, const char *word, ccr_rect *out)
+{
+    ccr_rect r;
+    if (node >= doc->ed.ast.node_count || !ccr_editor_node_head_rect(&doc->ed, node, &r))
+        return false;
+    const float z = cv->zoom < 1.0f ? (cv->zoom > 0.5f ? cv->zoom : 0.5f) : 1.0f;
+    const float h = 18.0f * z, fs = 12.5f * z;
+    const float w = fmaxf(ccr_gui_text_width(word, fs) + 12.0f * z, h * 1.4f);
+    const float row = r.h < 46.0f ? r.h : 46.0f;
+    const ccr_vec2 tr = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x + r.w, r.y + r.h - row });
+    *out = (ccr_rect){ tr.x - w - 6.0f * z, tr.y - h * 0.55f, w, h };
+    return true;
+}
+
+static void pf_draw(const ccr_document *doc, const ccr_canvas *cv)
+{
+    if (!doc->loaded || g_pf.n == 0 || cv->zoom < 0.3f)
+        return;
+    for (int i = 0; i < g_pf.n; ++i) {
+        const ccr_finding *f = &g_pf.list[i];
+        int count, worst;
+        if (pf_on(f->node, &count, &worst) != i)
+            continue;   /* one badge a node, from its first finding */
+        char word[24];
+        if (count > 1)
+            snprintf(word, sizeof word, "%s +%d", pf_level_word((ccr_find_level)worst), count - 1);
+        else
+            snprintf(word, sizeof word, "%s", pf_level_word((ccr_find_level)worst));
+        ccr_rect b;
+        if (!pf_badge_rect(doc, cv, f->node, word, &b))
+            continue;
+        const bool hot = g_pf.hover == f->node && g_pf.open > 0.3f;
+        const ccr_color c = pf_level_color(f->plugin, (ccr_find_level)worst);
+        ccr_gui_rect_rounded((ccr_rect){ b.x + 1, b.y + 2, b.w, b.h }, 1.0f, 0x00000055u);
+        if (hot)
+            ccr_gui_rect_rounded((ccr_rect){ b.x - 2, b.y - 2, b.w + 4, b.h + 4 }, 1.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_rect_rounded(b, 1.0f, c);
+        const float fs = b.h * 0.7f;
+        ccr_gui_text(word, b.x + (b.w - ccr_gui_text_width(word, fs)) * 0.5f, b.y + (b.h - fs) * 0.42f, fs,
+                     worst == CCR_FIND_WARNING ? 0x1A1A1AFFu : 0xFFFFFFFFu);
+    }
+}
+
+/* Is `m` on a badge? Then a press there is not the canvas's. */
+static ccr_node_id pf_badge_under(const ccr_document *doc, const ccr_canvas *cv, ccr_vec2 m)
+{
+    if (!doc->loaded || g_pf.n == 0 || cv->zoom < 0.3f)
+        return CCR_NONE;
+    for (int i = 0; i < g_pf.n; ++i) {
+        int count, worst;
+        if (pf_on(g_pf.list[i].node, &count, &worst) != i)
+            continue;
+        char word[24];
+        snprintf(word, sizeof word, count > 1 ? "%s +%d" : "%s", pf_level_word((ccr_find_level)worst), count - 1);
+        ccr_rect b;
+        if (pf_badge_rect(doc, cv, g_pf.list[i].node, word, &b) &&
+            point_in(m, (ccr_rect){ b.x - 3, b.y - 3, b.w + 6, b.h + 6 }))
+            return g_pf.list[i].node;
+    }
+    return CCR_NONE;
+}
+
+/* Line `line` of the file as it was read, for the quote. */
+static void source_line(const ccr_ast *ast, uint32_t line, char *out, size_t cap)
+{
+    out[0] = '\0';
+    if (!ast->source || line == 0)
+        return;
+    const char *p = ast->source, *end = ast->source + ast->source_len;
+    for (uint32_t l = 1; l < line && p < end; ++p)
+        l += *p == '\n';
+    const char *e = p;
+    while (e < end && *e != '\n')
+        ++e;
+    while (p < e && (*p == ' ' || *p == '\t'))
+        ++p;
+    snprintf(out, cap, "%.*s", (int)(e - p), p);
+}
+
+/* The card: a reply from the plugin, quoting the line. */
+static void pf_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewport, bool interactive, float dt)
+{
+    if (!doc->loaded || g_pf.n == 0) {
+        g_pf.hover = CCR_NONE;
+        g_pf.open = 0.0f;
+        return;
+    }
+    const ccr_vec2 m = ccr_gui_mouse();
+    const ccr_rect vis = visible_view(viewport, ccr_gui_width(), ccr_gui_height());
+    const ccr_node_id over = interactive && doc->ed.drag == CCR_DRAG_IDLE && point_in(m, vis)
+                                 ? pf_badge_under(doc, cv, m) : CCR_NONE;
+    if (over != CCR_NONE)
+        g_hand = true;
+    /* the card stays while the mouse is on it */
+    static ccr_rect last_box;
+    const bool on_card = g_pf.hover != CCR_NONE && g_pf.open > 0.5f && point_in(m, last_box) && interactive;
+    if (over != g_pf.hover && !on_card) {
+        g_pf.hover = over;
+        g_pf.since = ccr_gui_time();
+        g_pf.open = 0.0f;
+    }
+    int count, worst;
+    const int first = g_pf.hover != CCR_NONE ? pf_on(g_pf.hover, &count, &worst) : -1;
+    if (first < 0) {
+        g_pf.hover = CCR_NONE;
+        return;
+    }
+    if (ccr_gui_time() - g_pf.since < 0.12)
+        return;
+    g_pf.open = fminf(1.0f, g_pf.open + dt * 7.0f);
+    const float t = 1.0f - (1.0f - g_pf.open) * (1.0f - g_pf.open);
+    char word[24];
+    snprintf(word, sizeof word, count > 1 ? "%s +%d" : "%s", pf_level_word((ccr_find_level)worst), count - 1);
+    ccr_rect badge;
+    if (!pf_badge_rect(doc, cv, g_pf.hover, word, &badge))
+        return;
+
+    /* what it says */
+    const ccr_finding *f0 = &g_pf.list[first];
+    const char *who = ccr_plugins_title(f0->plugin);
+    char from[200], subject[300], quoted[260], line[240];
+    snprintf(from, sizeof from, "From: %s <%s@ccratch>", who, ccr_plugins_name(f0->plugin));
+    const ccr_node *node = &doc->ed.ast.nodes[g_pf.hover];
+    if (node->line)
+        snprintf(subject, sizeof subject, "Subject: Re: [PATCH] %.200s:%u", base_name(doc->path), node->line);
+    else
+        snprintf(subject, sizeof subject, "Subject: Re: [PATCH] %.200s", base_name(doc->path));
+    source_line(&doc->ed.ast, (node->flags & CCR_FLAG_NEW) ? 0 : node->line, line, sizeof line);
+    snprintf(quoted, sizeof quoted, line[0] ? "> %s" : "%s", line);
+
+    const float pad = 14.0f, w = 430.0f;
+    float h = pad + 18.0f + 18.0f + 10.0f;
+    if (quoted[0])
+        h += 30.0f;
+    for (int i = first; i < g_pf.n; ++i) {
+        if (g_pf.list[i].node != g_pf.hover)
+            continue;
+        h += 22.0f + wrap_text(g_pf.list[i].message, 0, 0, w, 14.0f, 0, false) + 12.0f;
+    }
+    h += 18.0f + pad;
+    ccr_rect box = { badge.x + badge.w + 10.0f, badge.y - 4.0f, w + pad * 2.0f, h };
+    bool left = false;
+    if (box.x + box.w > vis.x + vis.w - 4.0f) {
+        box.x = badge.x - box.w - 10.0f;
+        left = true;
+        if (box.x < vis.x + 4.0f)
+            box.x = vis.x + 4.0f;
+    }
+    if (box.y + box.h > vis.y + vis.h - 4.0f)
+        box.y = vis.y + vis.h - 4.0f - box.h;
+    if (box.y < vis.y + 4.0f)
+        box.y = vis.y + 4.0f;
+    last_box = (ccr_rect){ box.x - 12.0f, box.y - 8.0f, box.w + 24.0f, box.h + 16.0f };
+
+    const float shown = box.w * t;
+    ccr_rect clip = box;
+    clip.w = shown;
+    if (left)
+        clip.x = box.x + box.w - shown;
+    ccr_gui_clip_begin((ccr_rect){ clip.x - 3, clip.y - 3, clip.w + 6, clip.h + 6 });
+    ccr_rect b = box;
+    b.x += (1.0f - t) * 18.0f * (left ? 1.0f : -1.0f);
+    const ccr_color edge = pf_level_color(f0->plugin, (ccr_find_level)worst);
+    ccr_gui_rect_rounded((ccr_rect){ b.x + 3, b.y + 4, b.w, b.h }, 0.06f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ b.x - 1, b.y - 1, b.w + 2, b.h + 2 }, 0.06f, edge);
+    ccr_gui_rect_rounded(b, 0.06f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    float x = b.x + pad, y = b.y + pad;
+    ccr_gui_text(from, x, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+    y += 18.0f;
+    ccr_gui_text(subject, x, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+    y += 22.0f;
+    ccr_gui_rect((ccr_rect){ x, y - 4.0f, w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+    y += 4.0f;
+    if (quoted[0]) {
+        ccr_gui_rect_rounded((ccr_rect){ x - 4.0f, y - 2.0f, w + 8.0f, 24.0f }, 0.2f, ccr_th(CCR_C_FIELD));
+        ccr_gui_clip_begin((ccr_rect){ x, y - 2.0f, w, 24.0f });
+        ccr_gui_text(quoted, x + 4.0f, y + 2.0f, 14.0f, ccr_th(CCR_C_FIELD_TEXT));
+        ccr_gui_clip_end();
+        ccr_gui_clip_begin((ccr_rect){ clip.x - 3, clip.y - 3, clip.w + 6, clip.h + 6 });
+        y += 30.0f;
+    }
+    for (int i = first; i < g_pf.n; ++i) {
+        const ccr_finding *f = &g_pf.list[i];
+        if (f->node != g_pf.hover)
+            continue;
+        const ccr_color c = pf_level_color(f->plugin, f->level);
+        const char *lw = pf_level_word(f->level);
+        const float pw = ccr_gui_text_width(lw, 12.0f) + 12.0f;
+        ccr_gui_rect_rounded((ccr_rect){ x, y + 1.0f, pw, 17.0f }, 1.0f, c);
+        ccr_gui_text(lw, x + 6.0f, y + 2.5f, 12.0f, f->level == CCR_FIND_WARNING ? 0x1A1A1AFFu : 0xFFFFFFFFu);
+        ccr_gui_text(f->title, x + pw + 8.0f, y, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+        y += 22.0f;
+        y += wrap_text(f->message, x, y, w, 14.0f, ccr_th(CCR_C_PANEL_TEXT), true) + 12.0f;
+    }
+    char sign[120];
+    snprintf(sign, sizeof sign, "-- %s", who);
+    ccr_gui_text(sign, x, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+    ccr_gui_clip_end();
+}
+
+/* The status bar's count: "Code Hater: 2 NAK · 1 ! · 3 nit". Its width,
+ * 0 when there is nothing to count. */
+static void pf_chip_text(char *out, size_t cap)
+{
+    out[0] = '\0';
+    if (g_pf.n == 0)
+        return;
+    int by[4] = { 0 };
+    int plugin = g_pf.list[0].plugin;
+    bool one = true;
+    for (int i = 0; i < g_pf.n; ++i) {
+        ++by[g_pf.list[i].level];
+        one &= g_pf.list[i].plugin == plugin;
+    }
+    size_t k = (size_t)snprintf(out, cap, "%s:", one ? ccr_plugins_title(plugin) : ccr_tr(CCR_T_SET_SEC_PLUGINS));
+    const char *sep = " ";
+    for (int l = CCR_FIND_ERROR; l >= CCR_FIND_PRAISE && k < cap; --l)
+        if (by[l]) {
+            k += (size_t)snprintf(out + k, cap - k, "%s%d %s", sep, by[l], pf_level_word((ccr_find_level)l));
+            sep = " · ";
+        }
+}
+
+static float pf_chip_width(void)
+{
+    char t[160];
+    pf_chip_text(t, sizeof t);
+    return t[0] ? ccr_gui_text_width(t, 13.0f) + 30.0f : 0.0f;
+}
+
+/* Right of the status bar's message, left of `right`: the count, a click
+ * glides to the next one. */
+static void pf_chip(float right, int h, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, bool input)
+{
+    char t[160];
+    pf_chip_text(t, sizeof t);
+    if (!t[0])
+        return;
+    const float bw = pf_chip_width() - 10.0f;
+    const ccr_rect r = { right - 10.0f - bw, (float)h - STATUSBAR_H + 3.0f, bw, STATUSBAR_H - 6.0f };
+    int worst = 0;
+    for (int i = 0; i < g_pf.n; ++i)
+        if ((int)g_pf.list[i].level > worst)
+            worst = (int)g_pf.list[i].level;
+    const bool over = input && point_in(ccr_gui_mouse(), r);
+    const ccr_color c = pf_level_color(g_pf.list[0].plugin, (ccr_find_level)worst);
+    ccr_gui_rect_rounded(r, 0.4f, over ? c : ((c & 0xFFFFFF00u) | 0x40u));
+    ccr_gui_rect_rounded((ccr_rect){ r.x + 8.0f, r.y + r.h * 0.5f - 3.0f, 6.0f, 6.0f }, 1.0f, c);
+    ccr_gui_text(t, r.x + 20.0f, r.y + (r.h - 13.0f) * 0.5f, 13.0f, over ? 0xFFFFFFFFu : COL_BAR_TEXT);
+    if (over) {
+        tip(r, ccr_tr(CCR_T_PF_CHIP_TIP));
+        g_hand = true;
+        if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+            if (g_pf.next >= g_pf.n)
+                g_pf.next = 0;
+            glide_to_node(cv, doc, viewport, g_pf.list[g_pf.next].node);
+            g_pf.next = (g_pf.next + 1) % g_pf.n;
+        }
+    }
+}
+
 /* ------------------------------------------------- block explanations
  *
  * The mouse rests on a block in the palette: a card slides out of the
@@ -6465,7 +6859,7 @@ static void tip_draw(int w, int h)
  */
 static const char *const g_build_mode_key[CCR_BUILD_MODE_COUNT] = { "debug", "release", "sanitize" };
 
-enum { SET_LOOK, SET_EDITOR, SET_BUILD, SET_OTHER, SET_SECTIONS };
+enum { SET_LOOK, SET_EDITOR, SET_BUILD, SET_PLUGINS, SET_OTHER, SET_SECTIONS };
 
 static struct {
     bool           open;
@@ -6619,7 +7013,7 @@ static bool settings_frame(int w, int h, ccr_document *doc, float dt)
     ccr_gui_rect((ccr_rect){ panel.x + side - 8.0f, panel.y, 8.0f, panel.h }, ccr_th(CCR_C_BG));
     ccr_gui_text(ccr_tr(CCR_T_SET_TITLE), panel.x + 20.0f, panel.y + 20.0f, 24.0f, ccr_th(CCR_C_PANEL_TEXT));
     static const ccr_text names[SET_SECTIONS] = { CCR_T_SET_SEC_LOOK, CCR_T_SET_SEC_EDITOR, CCR_T_SET_SEC_BUILD,
-                                                  CCR_T_SET_SEC_OTHER };
+                                                  CCR_T_SET_SEC_PLUGINS, CCR_T_SET_SEC_OTHER };
     for (int i = 0; i < SET_SECTIONS; ++i) {
         const ccr_rect r = { panel.x + 10.0f, panel.y + 70.0f + 40.0f * (float)i, side - 20.0f, 34.0f };
         const bool cur = g_set.section == i, over = input && point_in(m, r);
@@ -6831,6 +7225,36 @@ static bool settings_frame(int w, int h, ccr_document *doc, float dt)
                                                                 ".ccratch/build-sanitize" };
         ccr_gui_text(dirs[g_build_mode], area.x + 14.0f, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
         y += 24.0f;
+        break;
+    }
+    case SET_PLUGINS: {
+        for (int i = 0; i < ccr_plugins_count(); ++i) {
+            char hint[1200], by[200];
+            ccr_trf(by, sizeof by, CCR_T_SET_PLUGIN_BY, ccr_plugins_version(i),
+                    ccr_plugins_author(i)[0] ? ccr_plugins_author(i) : "?");
+            snprintf(hint, sizeof hint, "%s  (%s)", ccr_plugins_describe(i, ccr_lang_code()), by);
+            const bool on = ccr_plugins_enabled(i);
+            if (set_row(area, &y, ccr_plugins_title(i), hint, ROW_SWITCH, "", on, input)) {
+                ccr_plugins_set_enabled(i, !on, true);
+                g_pf.again = true;   /* read the file again, with it or without it */
+            }
+        }
+        if (ccr_plugins_count() == 0) {
+            y += wrap_text(ccr_tr(CCR_T_SET_PLUGINS_NONE), area.x + 14.0f, y + 8.0f, area.w - 28.0f, 15.0f,
+                           ccr_th(CCR_C_PANEL_TEXT), true) + 16.0f;
+        }
+        char dir[1024];
+        if (ccr_config_home("XDG_DATA_HOME", ".local/share", dir, sizeof dir)) {
+            const char *home = getenv("HOME");
+            const size_t hl = home ? strlen(home) : 0;
+            char where[1100];
+            snprintf(where, sizeof where, "%s%s/ccratch/plugins", hl > 1 && strncmp(dir, home, hl) == 0 ? "~" : "",
+                     hl > 1 && strncmp(dir, home, hl) == 0 ? dir + hl : dir);
+            y += 10.0f;
+            ccr_gui_text(ccr_tr(CCR_T_SET_PLUGINS_DIR), area.x + 14.0f, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+            ccr_gui_text(where, area.x + 14.0f, y + 18.0f, 13.0f, ccr_th(CCR_C_PANEL_TEXT));
+            y += 40.0f;
+        }
         break;
     }
     default: {
@@ -7479,6 +7903,8 @@ int ccr_run(int argc, char **argv)
     eula.open = eula.first_run =
         opt.smoke_frames == 0 && !ccr_config_get("eula", answered, sizeof answered);
     ccr_explain_load(ccr_lang_code(), ccr_lang_in_plain_words());
+    if (!getenv("CCRATCH_NO_PLUGINS"))
+        ccr_plugins_load(stderr);
     if (!load_font())
         fprintf(stderr, "ccratch: font did not load, falling back to raylib's (ASCII only)\n");
     g_palette.zoom = g_lay.palette_zoom;
@@ -7847,7 +8273,9 @@ int ccr_run(int argc, char **argv)
             /* a press on empty canvas: a selection rectangle; on a block:
              * the old selection goes */
             bool band_press = false;
-            if (lmb && inside && !doc.ed.carrying && doc.ed.drag == CCR_DRAG_IDLE &&
+            /* a press on a plugin's badge is the badge's: the card, not a drag */
+            const bool on_badge = lmb && inside && pf_badge_under(&doc, &canvas, m) != CCR_NONE;
+            if (lmb && inside && !doc.ed.carrying && doc.ed.drag == CCR_DRAG_IDLE && !on_badge &&
                 !blame_badge_under(&doc, &canvas, m)) {
                 if (doc.ed.hover_arrow == CCR_NONE && ccr_editor_context(&doc.ed, world).node == CCR_NONE) {
                     sel_clear();
@@ -7872,7 +8300,7 @@ int ccr_run(int argc, char **argv)
             }
             ccr_editor_input in = {
                 .mouse      = ccr_canvas_to_world(&canvas, m),
-                .pressed    = lmb && (inside || doc.ed.carrying) && !band_press,
+                .pressed    = lmb && (inside || doc.ed.carrying) && !band_press && !on_badge,
                 .down       = ccr_gui_mouse_down(CCR_MOUSE_LEFT),
                 .released   = ccr_gui_mouse_released(CCR_MOUSE_LEFT),
                 .zoom       = canvas.zoom,
@@ -7906,6 +8334,7 @@ int ccr_run(int argc, char **argv)
         if (doc.loaded) {
             ccr_editor_draw(&doc.ed, &canvas, viewport);
             blame_draw(&doc, &canvas);
+            pf_draw(&doc, &canvas);
         } else
             start_screen(&doc, &canvas, viewport, &opt, !modal);
         ccr_palette_draw(&g_palette, palette_area(h),
@@ -7918,12 +8347,15 @@ int ccr_run(int argc, char **argv)
                       !modal && !pie.open && !opm.open && te.node == CCR_NONE && !on_split &&
                       (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE));
         autosave_tick(&doc, &opt, te.node == CCR_NONE && !modal);
+        plugins_tick(&doc);
         find_frame(&doc, &canvas, visible_view(viewport, w, h),
                    !modal && !pie.open && !opm.open && te.node == CCR_NONE && g_fpanel.naming == CCR_NAMING_NONE);
         tabs_frame(w, &doc, &canvas, viewport, &opt,
                    !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         mark_tooltip(&doc, &canvas, viewport);
-        blame_card(&doc, &canvas, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE, dt);
+        pf_card(&doc, &canvas, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE, dt);
+        blame_card(&doc, &canvas, viewport,
+                   !modal && !pie.open && !opm.open && te.node == CCR_NONE && g_pf.hover == CCR_NONE, dt);
         explain_card(h, !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
                             (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE) && !(doc.loaded && doc.ed.carrying), dt);
         if (!modal && !pie.open && !opm.open && te.node == CCR_NONE)
@@ -8011,9 +8443,10 @@ int ccr_run(int argc, char **argv)
             g_help = !g_help;
         if (top & TOP_SETTINGS)
             settings_toggle();
-        draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f - autosave_width());
+        draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f - autosave_width() - pf_chip_width());
         const float zx = zoom_widget(w, h, &canvas, &doc, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         autosave_button(zx, h, !modal && opt.smoke_frames == 0);
+        pf_chip(zx - autosave_width(), h, &doc, &canvas, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         ccr_pie_draw(&pie);
         if (doc.loaded)
             op_menu_draw(&opm, &doc.ed, m, w, h);
@@ -8060,6 +8493,8 @@ int ccr_run(int argc, char **argv)
     ccr_files_free(&g_files);
     ccr_palette_free(&g_palette);
     ccr_explain_free();
+    plugins_forget();
+    ccr_plugins_unload();
     ccr_lib_unload();
     ccr_gui_shutdown();
     ccr_lang_reset();

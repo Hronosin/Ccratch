@@ -411,3 +411,10 @@ set.config = Asetustiedosto:
 set.layout_done = Paneelien koot kuten alussa
 set.recent_done = Viimeisimmät tiedostot unohdettu
 help.settings = asetukset
+
+# plugins
+set.sec_plugins = Liitännäiset
+set.plugins_none = Liitännäisiä ei löytynyt. Liitännäinen on .so-tiedosto alla olevassa kansiossa
+set.plugins_dir = Omat liitännäiset tänne:
+set.plugin_by = versio %s, tekijä %s
+pf.chip_tip = Mitä liitännäiset sanovat tästä tiedostosta. Napsautus: seuraavaan

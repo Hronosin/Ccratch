@@ -412,3 +412,10 @@ set.config = 设置文件：
 set.layout_done = 面板大小已恢复
 set.recent_done = 已忘掉最近的文件
 help.settings = 设置
+
+# plugins
+set.sec_plugins = 插件
+set.plugins_none = 没有找到插件。插件就是放在下面文件夹里的 .so 文件
+set.plugins_dir = 自己的插件放在：
+set.plugin_by = 版本 %s，作者 %s
+pf.chip_tip = 插件对这个文件说了什么。点击：下一个

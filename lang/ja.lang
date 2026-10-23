@@ -412,3 +412,10 @@ set.config = 設定ファイル：
 set.layout_done = パネルの大きさを最初に戻した
 set.recent_done = 最近のファイルを忘れた
 help.settings = 設定
+
+# plugins
+set.sec_plugins = プラグイン
+set.plugins_none = プラグインがありません。プラグインは下のフォルダーに置く .so ファイル
+set.plugins_dir = 自分のプラグインの置き場所：
+set.plugin_by = バージョン %s、作者 %s
+pf.chip_tip = プラグインがこのファイルについて言っていること。クリックで次へ

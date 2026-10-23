@@ -411,3 +411,10 @@ set.config = Жөндөөлөр файлы:
 set.layout_done = Панелдердин өлчөмү баштагыдай
 set.recent_done = Акыркы файлдар унутулду
 help.settings = жөндөөлөр
+
+# plugins
+set.sec_plugins = Плагиндер
+set.plugins_none = Плагиндер табылган жок. Плагин — төмөнкү папкадагы .so файл
+set.plugins_dir = Өз плагиндериңди бул жерге сал:
+set.plugin_by = версия %s, автору %s
+pf.chip_tip = Плагиндер бул файл жөнүндө эмне дейт. Басуу — кийинкисине

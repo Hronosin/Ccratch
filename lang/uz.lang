@@ -411,3 +411,10 @@ set.config = Sozlamalar fayli:
 set.layout_done = Panel oʻlchamlari boshidagidek
 set.recent_done = Soʻnggi fayllar unutildi
 help.settings = sozlamalar
+
+# plugins
+set.sec_plugins = Plaginlar
+set.plugins_none = Plaginlar topilmadi. Plagin — quyidagi jilddagi .so fayl
+set.plugins_dir = Oʻz plaginlaringni shu yerga qoʻy:
+set.plugin_by = versiya %s, muallif %s
+pf.chip_tip = Plaginlar bu fayl haqida nima deydi. Bosish — keyingisiga
