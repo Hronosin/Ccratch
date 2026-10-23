@@ -220,6 +220,12 @@
     X(GIT_BLAME_MINE,   "git.blame_mine",        0, "You, not committed yet")            \
     X(GIT_BLAME_MINE_HINT, "git.blame_mine_hint", 0, "This block changed since the last commit.") \
     X(GIT_BLAME_OPEN,   "git.blame_open",        0, "click the badge: the whole commit") \
+    X(GIT_AND_MORE,     "git.and_more",          1, "%s and %u more|%s and %u more")     \
+    X(GIT_TOGETHER,     "git.together",          0, "together with %s")                  \
+    X(GIT_COAUTHOR_ADD, "git.coauthor_add",      0, "+ co-author")                       \
+    X(GIT_COAUTHOR_NEW, "git.coauthor_new",      0, "someone else: Name <mail>, Enter")  \
+    X(GIT_COAUTHOR_TIP, "git.coauthor_tip",      0, "Made it together? Their names go into the message as Co-authored-by: lines, and GitHub shows everyone") \
+    X(GIT_COAUTHORS_FULL, "git.coauthors_full",  0, "%u co-authors at most")             \
     X(GIT_REVERT,       "git.revert",            0, "Revert")                            \
     X(GIT_CHERRY,       "git.cherry",            0, "Cherry-pick")                       \
     X(GIT_BRANCH_HERE,  "git.branch_here",       0, "Branch from here")                  \

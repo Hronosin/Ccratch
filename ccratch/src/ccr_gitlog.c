@@ -117,7 +117,8 @@ int ccr_git_graph(const char *root, ccr_graph_row *out, int cap)
     snprintf(n, sizeof n, "-%d", cap);
     /* every branch and tag, not the stash's own commits */
     const char *args[] = { "log", "--branches", "--tags", "--remotes", "HEAD", "--topo-order", n,
-                           "--format=%H%x09%P%x09%h%x09%an%x09%at%x09%D%x09%s", NULL };
+                           "--format=%H%x09%P%x09%h%x09%an%x09%at%x09%D%x09"
+                           "%(trailers:key=Co-authored-by,separator=%x1f)%x09%s", NULL };
     int code = 0;
     char *o = ccr_git_run(root, args, &code);
     if (!o || code != 0) {
@@ -130,14 +131,14 @@ int ccr_git_graph(const char *root, ccr_graph_row *out, int cap)
         next = strchr(line, '\n');
         if (next)
             *next++ = '\0';
-        char *f[7] = { line };
+        char *f[8] = { line };
         int nf = 1;
-        for (char *c = line; *c && nf < 7; ++c)
+        for (char *c = line; *c && nf < 8; ++c)   /* the subject last: a tab in it stays */
             if (*c == '\t') {
                 *c = '\0';
                 f[nf++] = c + 1;
             }
-        if (nf < 7)
+        if (nf < 8)
             continue;
         ccr_graph_row *r = &out[k];
         memset(r, 0, sizeof *r);
@@ -147,7 +148,8 @@ int ccr_git_graph(const char *root, ccr_graph_row *out, int cap)
         snprintf(r->author, sizeof r->author, "%s", f[3]);
         ccr_git_ago((int64_t)strtoll(f[4], NULL, 10), r->when, (int)sizeof r->when);
         snprintf(r->refs, sizeof r->refs, "%s", f[5]);
-        snprintf(r->subject, sizeof r->subject, "%s", f[6]);
+        snprintf(r->subject, sizeof r->subject, "%s", f[7]);
+        r->coauthor_count = ccr_git_coauthors(f[6], r->author, r->coauthors, CCR_GIT_COAUTHORS);
         r->head = strncmp(f[5], "HEAD", 4) == 0;
         ++k;
     }
@@ -185,6 +187,185 @@ bool ccr_git_branch_from(const char *root, const char *name, const char *hash, c
     return run(root, args, err, cap);
 }
 
+/* ---------------------------------------------------- co-authors */
+
+static bool same_name(const char *a, const char *b)
+{
+    for (; *a && *b; ++a, ++b) {
+        const int x = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a, y = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (x != y)
+            return false;
+    }
+    return *a == *b;
+}
+
+/* "  Name <mail>  " -> its name and mail (either may come out empty). */
+static void person_split(const char *s, size_t len, char *name, size_t ncap, char *mail, size_t mcap)
+{
+    while (len && (*s == ' ' || *s == '\t'))
+        ++s, --len;
+    while (len && (s[len - 1] == ' ' || s[len - 1] == '\t' || s[len - 1] == '\r'))
+        --len;
+    const char *lt = memchr(s, '<', len);
+    size_t nl = lt ? (size_t)(lt - s) : len;
+    while (nl && s[nl - 1] == ' ')
+        --nl;
+    snprintf(name, ncap, "%.*s", (int)nl, s);
+    mail[0] = '\0';
+    if (lt) {
+        const char *gt = memchr(lt, '>', len - (size_t)(lt - s));
+        const size_t ml = gt ? (size_t)(gt - lt - 1) : len - (size_t)(lt - s) - 1;
+        snprintf(mail, mcap, "%.*s", (int)ml, lt + 1);
+    }
+    if (!name[0] && mail[0])   /* "<mail>" alone: the mail is the name */
+        snprintf(name, ncap, "%s", mail);
+}
+
+int ccr_git_coauthors(const char *message, const char *author, char out[][64], int cap)
+{
+    static const char key[] = "co-authored-by:";
+    int n = 0;
+    for (const char *p = message; p && *p && n < cap;) {
+        const char *e = p + strcspn(p, "\n\x1f");
+        while (p < e && (*p == ' ' || *p == '\t'))
+            ++p;
+        const size_t kl = sizeof key - 1;
+        bool is = (size_t)(e - p) > kl;
+        for (size_t i = 0; is && i < kl; ++i)
+            is = ((p[i] >= 'A' && p[i] <= 'Z') ? p[i] + 32 : p[i]) == key[i];
+        if (is) {
+            char name[64], mail[160];
+            person_split(p + kl, (size_t)(e - p) - kl, name, sizeof name, mail, sizeof mail);
+            bool dup = !name[0] || (author && same_name(name, author));
+            for (int k = 0; k < n && !dup; ++k)
+                dup = same_name(out[k], name);
+            if (!dup)
+                snprintf(out[n++], 64, "%s", name);
+        }
+        p = *e ? e + 1 : e;
+    }
+    return n;
+}
+
+char *ccr_git_with_coauthors(const char *message, const char (*people)[160], int n)
+{
+    size_t len = strlen(message), cap = len + 4;
+    for (int i = 0; i < n; ++i)
+        cap += strlen(people[i]) + 20;
+    char *o = malloc(cap);
+    if (!o)
+        return NULL;
+    memcpy(o, message, len + 1);
+    while (len && (o[len - 1] == '\n' || o[len - 1] == ' '))
+        o[--len] = '\0';
+    char named[CCR_GIT_COAUTHORS * 4][64];
+    const int had = ccr_git_coauthors(message, NULL, named, (int)(sizeof named / sizeof named[0]));
+    /* already a trailer block at its end: the new lines join it */
+    const char *last = strrchr(o, '\n');
+    bool block = had > 0 && last && strncmp(last + 1, "Co-authored-by:", 15) == 0;
+    for (int i = 0; i < n; ++i) {
+        char name[64], mail[160];
+        person_split(people[i], strlen(people[i]), name, sizeof name, mail, sizeof mail);
+        bool dup = !name[0];
+        for (int k = 0; k < had && !dup; ++k)
+            dup = same_name(named[k], name);
+        for (int k = 0; k < i && !dup; ++k)
+            dup = strcmp(people[k], people[i]) == 0;
+        if (dup)
+            continue;
+        len += (size_t)snprintf(o + len, cap - len, "%sCo-authored-by: %s", block ? "\n" : "\n\n", people[i]);
+        block = true;
+    }
+    return o;
+}
+
+typedef struct person_count {
+    char who[160];   /* "Name <mail>" as first seen */
+    char key[160];   /* the mail (or the name), small letters */
+    int  count;
+} person_count;
+
+static void count_person(person_count **v, int *n, int *cap, const char *s, size_t len, const char *me)
+{
+    char name[64], mail[160], key[160];
+    person_split(s, len, name, sizeof name, mail, sizeof mail);
+    if (!name[0])
+        return;
+    snprintf(key, sizeof key, "%s", mail[0] ? mail : name);
+    for (char *c = key; *c; ++c)
+        if (*c >= 'A' && *c <= 'Z')
+            *c += 32;
+    if (me[0] && strcmp(key, me) == 0)
+        return;
+    for (int i = 0; i < *n; ++i)
+        if (strcmp((*v)[i].key, key) == 0) {
+            ++(*v)[i].count;
+            return;
+        }
+    if (*n == *cap) {
+        const int nc = *cap ? *cap * 2 : 32;
+        person_count *nv = realloc(*v, (size_t)nc * sizeof *nv);
+        if (!nv)
+            return;
+        *v = nv;
+        *cap = nc;
+    }
+    person_count *p = &(*v)[(*n)++];
+    if (mail[0])
+        snprintf(p->who, sizeof p->who, "%.63s <%.90s>", name, mail);
+    else
+        snprintf(p->who, sizeof p->who, "%s", name);
+    snprintf(p->key, sizeof p->key, "%s", key);
+    p->count = 1;
+}
+
+int ccr_git_people(const char *root, char out[][160], int cap)
+{
+    char me[160] = "";
+    {
+        const char *args[] = { "config", "user.email", NULL };
+        int code = 0;
+        char *o = ccr_git_run(root, args, &code);
+        if (o && code == 0) {
+            snprintf(me, sizeof me, "%.*s", (int)strcspn(o, "\r\n"), o);
+            for (char *c = me; *c; ++c)
+                if (*c >= 'A' && *c <= 'Z')
+                    *c += 32;
+        }
+        free(o);
+    }
+    const char *args[] = { "log", "-n", "500", "--format=%an <%ae>%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1f)", NULL };
+    int code = 0;
+    char *o = ccr_git_run(root, args, &code);
+    if (!o || code != 0) {
+        free(o);
+        return 0;
+    }
+    person_count *v = NULL;
+    int n = 0, vcap = 0;
+    for (const char *p = o; *p;) {
+        const size_t l = strcspn(p, "\n\x1f");
+        if (l)
+            count_person(&v, &n, &vcap, p, l, me);
+        p += l;
+        if (*p)
+            ++p;
+    }
+    free(o);
+    /* the most frequent first; the same count: as first seen (newest) */
+    for (int i = 1; i < n; ++i)
+        for (int j = i; j > 0 && v[j].count > v[j - 1].count; --j) {
+            const person_count t = v[j];
+            v[j] = v[j - 1];
+            v[j - 1] = t;
+        }
+    const int k = n < cap ? n : cap;
+    for (int i = 0; i < k; ++i)
+        snprintf(out[i], 160, "%s", v[i].who);
+    free(v);
+    return k;
+}
+
 /* ------------------------------------------------------------ blame */
 
 static int commit_index(ccr_blame *b, const char *hash)
@@ -201,6 +382,44 @@ static int commit_index(ccr_blame *b, const char *hash)
     snprintf(c->hash, sizeof c->hash, "%s", hash);
     c->uncommitted = strspn(hash, "0") == strlen(hash);
     return b->commit_count++;
+}
+
+/* Blame does not read messages: the co-authors of its commits, asked for
+ * together (a few dozen at a time). */
+static void blame_coauthors(const char *dir, ccr_blame *b)
+{
+    enum { CHUNK = 64 };
+    for (int from = 0; from < b->commit_count; from += CHUNK) {
+        const char *args[CHUNK + 5];
+        int n = 0;
+        args[n++] = "show";
+        args[n++] = "-s";
+        args[n++] = "--format=%H%x09%(trailers:key=Co-authored-by,separator=%x1f)";
+        for (int i = from; i < b->commit_count && i < from + CHUNK; ++i)
+            if (!b->commits[i].uncommitted)
+                args[n++] = b->commits[i].hash;
+        if (n == 3)
+            continue;
+        args[n] = NULL;
+        int code = 0;
+        char *o = ccr_git_run(dir, args, &code);
+        for (char *line = o, *next; o && code == 0 && line && *line; line = next) {
+            next = strchr(line, '\n');
+            if (next)
+                *next++ = '\0';
+            char *tab = strchr(line, '\t');
+            if (!tab || !tab[1])
+                continue;
+            *tab = '\0';
+            for (int i = from; i < b->commit_count && i < from + CHUNK; ++i)
+                if (strcmp(b->commits[i].hash, line) == 0) {
+                    ccr_blame_commit *c = &b->commits[i];
+                    c->coauthor_count = ccr_git_coauthors(tab + 1, c->author, c->coauthors, CCR_GIT_COAUTHORS);
+                    break;
+                }
+        }
+        free(o);
+    }
 }
 
 bool ccr_git_blame(const char *path, ccr_blame *out)
@@ -255,6 +474,7 @@ bool ccr_git_blame(const char *path, ccr_blame *out)
             snprintf(c->summary, sizeof c->summary, "%s", line + 8);
     }
     free(o);
+    blame_coauthors(dir, out);
     return out->line_count > 0;
 }
 

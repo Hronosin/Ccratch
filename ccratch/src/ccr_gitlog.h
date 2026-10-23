@@ -15,6 +15,8 @@
 /* ------------------------------------------------------------ graph */
 
 #define CCR_GRAPH_EDGES 12
+/* The most co-authors kept for a commit (a long list: the first ones). */
+#define CCR_GIT_COAUTHORS 6
 
 /* A line of the graph between this row and the next: from lane `from`
  * (at this row) to lane `to` (at the next). `merge_in`: a lane that
@@ -32,6 +34,8 @@ typedef struct ccr_graph_row {
     char  when[48];
     char  subject[200];
     char  refs[160];        /* "HEAD -> main, origin/main, tag: v1" */
+    char  coauthors[CCR_GIT_COAUTHORS][64];   /* who made it with the author, by name */
+    int   coauthor_count;
     int   parents;
     int   lane;             /* the commit's column */
     int   edge_count;
@@ -54,6 +58,26 @@ bool ccr_git_revert(const char *root, const char *hash, char *err, int cap);
 bool ccr_git_cherry_pick(const char *root, const char *hash, char *err, int cap);
 bool ccr_git_branch_from(const char *root, const char *name, const char *hash, char *err, int cap);
 
+/* ---------------------------------------------------- co-authors
+ *
+ * A commit several people made together names the others in its
+ * message, one "Co-authored-by: Name <mail>" line each, at its end (as
+ * GitHub and GitLab read it).
+ */
+
+/* The names a message's "Co-authored-by:" lines give (any case; lines
+ * end with a newline or \x1f), without `author` (NULL: nobody) and
+ * without repeats. How many, up to `cap`. */
+int ccr_git_coauthors(const char *message, const char *author, char out[][64], int cap);
+/* The message with a "Co-authored-by: ..." line for each of `people`
+ * ("Name <mail>") after a blank line (malloc'd). Someone it names
+ * already is not named again. */
+char *ccr_git_with_coauthors(const char *message, const char (*people)[160], int n);
+/* Who worked on the repository: the authors and co-authors of its last
+ * 500 commits, as "Name <mail>", the most frequent first, without the
+ * one who commits here (user.email). How many, up to `cap`. */
+int ccr_git_people(const char *root, char out[][160], int cap);
+
 /* ------------------------------------------------------------ blame */
 
 typedef struct ccr_blame_commit {
@@ -61,6 +85,8 @@ typedef struct ccr_blame_commit {
     char    author[64];
     int64_t time;           /* seconds since 1970 */
     char    summary[160];
+    char    coauthors[CCR_GIT_COAUTHORS][64];
+    int     coauthor_count;
     bool    uncommitted;    /* the lines are not committed yet */
 } ccr_blame_commit;
 

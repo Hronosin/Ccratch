@@ -226,6 +226,36 @@ int main(void)
     n = ccr_git_graph(g_repo, rows, 16);
     CHECK(n > 0 && strncmp(rows[0].subject, "Revert", 6) == 0, "the revert's own message: %s", n ? rows[0].subject : "");
 
+    /* a commit made together: its co-authors in the graph and in blame */
+    {
+        const char people[3][160] = { "Bob Builder <bob@example.com>", "Claude <noreply@anthropic.com>",
+                                      "Bob Builder <bob@example.com>" };
+        char *msg = ccr_git_with_coauthors("Pair on d\n", people, 3);
+        CHECK(msg && strcmp(msg, "Pair on d\n\nCo-authored-by: Bob Builder <bob@example.com>\n"
+                                 "Co-authored-by: Claude <noreply@anthropic.com>") == 0, "the trailers: [%s]", msg);
+        put("d.c", "int d = 5;\n");
+        git("add", "-A", NULL, NULL);
+        CHECK(msg && ccr_git_commit(g_repo, msg, false, false, err, (int)sizeof err), "commit together: %s", err);
+        free(msg);
+        n = ccr_git_graph(g_repo, rows, 16);
+        CHECK(n > 0 && rows[0].coauthor_count == 2 && strcmp(rows[0].coauthors[0], "Bob Builder") == 0 &&
+              strcmp(rows[0].coauthors[1], "Claude") == 0 && strcmp(rows[0].subject, "Pair on d") == 0,
+              "graph: %d co-authors, %s", n ? rows[0].coauthor_count : -1, n ? rows[0].subject : "");
+        CHECK(n > 1 && rows[1].coauthor_count == 0, "a commit of one: nobody else");
+        snprintf(path, sizeof path, "%s/d.c", g_repo);
+        CHECK(ccr_git_blame(path, &bl) && bl.line_count == 1 && bl.commits[bl.line_commit[0]].coauthor_count == 2 &&
+              strcmp(bl.commits[bl.line_commit[0]].coauthors[1], "Claude") == 0, "blame knows them too");
+        ccr_git_blame_free(&bl);
+        char who[8][160];
+        const int np = ccr_git_people(g_repo, who, 8);
+        CHECK(np == 2 && strcmp(who[0], "Bob Builder <bob@example.com>") == 0, "people: %d, %s", np, np ? who[0] : "");
+        /* any case, the author left out, repeats once, \x1f between */
+        char co[CCR_GIT_COAUTHORS][64];
+        const int nc = ccr_git_coauthors("x\n\nco-authored-by:  Ann <a@x>\nCO-AUTHORED-BY: Eve <e@x>\x1f"
+                                         "Co-authored-by: Eve <e@x>\nCo-authored-by: <z@x>", "ann", co, CCR_GIT_COAUTHORS);
+        CHECK(nc == 2 && strcmp(co[0], "Eve") == 0 && strcmp(co[1], "z@x") == 0, "parsed: %d", nc);
+    }
+
     char rm[800];
     snprintf(rm, sizeof rm, "rm -rf '%s'", tmpl);
     if (system(rm) != 0)

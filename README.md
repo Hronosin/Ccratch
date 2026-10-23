@@ -33,6 +33,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 22: Git as cards, block explanations, fourteen languages in human words, a settings window, Bug hunt builds.
 - Step 23: plugins, for real, and the first official one: Code Hater.
 - Step 24: C++ as blocks (namespaces, classes, methods, range-for, new/delete), C / C++ flags over the palette, the standard library in a section of its own.
+- Step 25: commits made together: co-authors on the cards, the badges and the history, and picked when committing.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -578,6 +579,29 @@ the first block of every run from one commit; a ring for blocks you
 changed and have not committed. Rest the mouse on a block and a card
 slides out of its badge: who, how long ago and when, the commit's
 message. A click on the badge opens that commit.
+
+### Commits made together
+
+A commit several people made names the others at the end of its message,
+a `Co-authored-by: Name <mail>` line each (as GitHub and GitLab read
+it), and Ccratch shows all of them:
+
+- the badge beside the blocks: the author's face, with the others
+  peeking out from behind it;
+- the card: everyone's faces in a row (more than four: `+N`), "Ann &
+  Bob" or "Ann and 3 more" with every name under the message, and a
+  stripe of their colours;
+- the history: "Ann & Bob" under the commit; the commit itself: a face
+  beside the author and beside each `Co-authored-by:` line.
+
+To make one: **+ co-author** under the message lists everyone who has
+committed here (the most frequent first, not you); a tick adds them, and
+a field takes someone new, `Name <mail>`, or just a name, or the start
+of one, of someone in the list. They sit under the message as chips (x
+takes one off) and go into the commit as `Co-authored-by:` lines. After
+the commit the next one is yours alone again.
+
+![a commit of five people: the badge, the card, the history; picking co-authors for the next commit](docs/coauthors.png)
 
 And on the canvas, as in an editor's gutter: a green bar beside a block
 that is new since the last commit, blue beside one that changed, a red

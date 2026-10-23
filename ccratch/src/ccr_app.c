@@ -2999,6 +2999,11 @@ static void project_follow_scan(ccr_document *doc, const ccr_options *opt)
 #define GIT_TABS_H 30.0f
 #define GIT_ROW    24.0f
 
+static bool g_hand;   /* something clickable under the mouse: the hand cursor */
+static ccr_color blame_color(const char *author);
+static void face(ccr_vec2 c, float rad, const char *name, ccr_color ring);
+static void people_line(char *out, size_t cap, const char *author, const char (*co)[64], int nco, float maxw, float fs);
+
 static struct {
     bool           tab;           /* the right panel shows git, not the files */
     ccr_git_status st;
@@ -3014,6 +3019,13 @@ static struct {
     bool           branch_menu;
     char           new_branch[128];
     bool           new_focus;
+    char           co[CCR_GIT_COAUTHORS][160];   /* made together with: "Name <mail>" */
+    int            nco;
+    bool           co_menu;       /* the list of people to pick from is open */
+    char           people[24][160];
+    int            npeople;
+    char           co_new[160];   /* someone not in the list, typed */
+    bool           co_focus;
     ccr_graph_row  graph[40];     /* the history, with its lanes */
     int            nlog;
     bool           log_open;
@@ -3281,9 +3293,25 @@ static void git_commit(ccr_document *doc, const ccr_options *opt)
     bool ok = true;
     if (everything)   /* nothing staged: all of it, as VS Code's smart commit */
         ok = ccr_git_stage_all(g_git.st.root, err, (int)sizeof err);
-    ok = ok && ccr_git_commit(g_git.st.root, g_git.msg, g_git.amend, false, err, (int)sizeof err);
+    char *together = g_git.nco ? ccr_git_with_coauthors(g_git.msg, (const char (*)[160])g_git.co, g_git.nco) : NULL;
+    ok = ok && ccr_git_commit(g_git.st.root, together ? together : g_git.msg, g_git.amend, false, err, (int)sizeof err);
+    free(together);
     if (ok) {
         ccr_trf(said, sizeof said, everything ? CCR_T_GIT_COMMITTED_ALL : CCR_T_GIT_COMMITTED, g_git.msg);
+        if (g_git.nco) {   /* "... · together with Bob & Eve" */
+            char names[CCR_GIT_COAUTHORS][64], list[400], with[460];
+            for (int i = 0; i < g_git.nco; ++i)
+                snprintf(names[i], sizeof names[i], "%.*s", (int)strcspn(g_git.co[i], "<"), g_git.co[i]);
+            for (int i = 0; i < g_git.nco; ++i)
+                for (size_t k = strlen(names[i]); k && names[i][k - 1] == ' ';)
+                    names[i][--k] = '\0';
+            people_line(list, sizeof list, names[0], (const char (*)[64])names + 1, g_git.nco - 1, 1e9f, 13.0f);
+            ccr_trf(with, sizeof with, CCR_T_GIT_TOGETHER, list);
+            const size_t l = strlen(said);
+            snprintf(said + l, sizeof said - l, " · %s", with);
+        }
+        g_git.nco = 0;   /* the next commit is someone's own again */
+        g_git.co_menu = false;
         git_say(said, false);
         g_git.msg[0] = '\0';
         g_git.amend = false;
@@ -3292,6 +3320,181 @@ static void git_commit(ccr_document *doc, const ccr_options *opt)
         git_say(err, true);
     }
     git_refresh(doc);
+}
+
+/* "Name <mail>" -> "Name". */
+static void person_name(const char *who, char *out, size_t cap)
+{
+    snprintf(out, cap, "%.*s", (int)strcspn(who, "<"), who);
+    for (size_t k = strlen(out); k && out[k - 1] == ' ';)
+        out[--k] = '\0';
+    if (!out[0])
+        snprintf(out, cap, "%s", who);
+}
+
+static int coauthor_index(const char *who)
+{
+    for (int i = 0; i < g_git.nco; ++i)
+        if (strcmp(g_git.co[i], who) == 0)
+            return i;
+    return -1;
+}
+
+static void coauthor_toggle(const char *who)
+{
+    const int at = coauthor_index(who);
+    if (at >= 0) {
+        memmove(&g_git.co[at], &g_git.co[at + 1], (size_t)(g_git.nco - at - 1) * sizeof g_git.co[0]);
+        --g_git.nco;
+    } else if (g_git.nco < CCR_GIT_COAUTHORS) {
+        snprintf(g_git.co[g_git.nco++], sizeof g_git.co[0], "%s", who);
+    } else {
+        char said[200];
+        ccr_trf(said, sizeof said, CCR_T_GIT_COAUTHORS_FULL, (unsigned)CCR_GIT_COAUTHORS);
+        git_say(said, true);
+    }
+}
+
+/* Made together: under the message, a chip for each co-author (its face,
+ * its name, x takes it off) and "+ co-author", which opens the people of
+ * the repository to tick, and a field for someone new. Where the next
+ * row goes. */
+static float git_together(ccr_rect a, float y, bool input, ccr_vec2 m)
+{
+    const float ch = 24.0f, left = a.x + 10.0f, right = a.x + a.w - 10.0f;
+    float x = left;
+    int off = -1;
+    for (int i = 0; i < g_git.nco; ++i) {
+        char name[64];
+        person_name(g_git.co[i], name, sizeof name);
+        const float cw = fminf(ch + ccr_gui_text_width(name, 13.0f) + 26.0f, right - left);
+        if (x + cw > right && x > left) {
+            x = left;
+            y += ch + 4.0f;
+        }
+        const ccr_rect r = { x, y, cw, ch };
+        const ccr_rect xr = { x + cw - 20.0f, y, 20.0f, ch };
+        ccr_gui_rect_rounded(r, 0.5f, (blame_color(name) & 0xFFFFFF00u) | 0x40u);
+        face((ccr_vec2){ x + ch * 0.5f, y + ch * 0.5f }, ch * 0.5f - 2.0f, name, 0);
+        ccr_gui_clip_begin((ccr_rect){ x + ch + 4.0f, y, cw - ch - 24.0f, ch });
+        ccr_gui_text(name, x + ch + 4.0f, y + 4.0f, 13.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_clip_end();
+        const bool hot = input && point_in(m, xr);
+        ccr_gui_text("x", xr.x + 6.0f, y + 3.0f, 14.0f, hot ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_PANEL_HINT));
+        if (hot) {
+            g_hand = true;
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                off = i;
+        }
+        if (input && !hot)
+            tip(r, g_git.co[i]);
+        x += cw + 6.0f;
+    }
+    if (off >= 0)
+        coauthor_toggle(g_git.co[off]);
+    const char *al = ccr_tr(CCR_T_GIT_COAUTHOR_ADD);
+    const float aw = ccr_gui_text_width(al, 13.0f) + 18.0f;
+    if (x + aw > right && x > left) {
+        x = left;
+        y += ch + 4.0f;
+    }
+    const ccr_rect ab = { x, y, aw, ch };
+    const ccr_button_style plain = *button_style(false);
+    if (ccr_gui_button(ab, al, g_git.co_menu ? button_style(true) : &plain) && input) {
+        g_git.co_menu = !g_git.co_menu;
+        if (g_git.co_menu)
+            g_git.npeople = ccr_git_people(g_git.st.root, g_git.people, 24);
+        g_git.co_focus = false;
+    }
+    if (input && !g_git.co_menu)
+        tip(ab, ccr_tr(CCR_T_GIT_COAUTHOR_TIP));
+    y += ch + 6.0f;
+    if (!g_git.co_menu)
+        return y;
+
+    /* the people who worked here: a click ticks or unticks */
+    for (int i = 0; i < g_git.npeople; ++i) {
+        const ccr_rect r = { left, y, right - left, 24.0f };
+        const bool on = coauthor_index(g_git.people[i]) >= 0;
+        if (input && point_in(m, r)) {
+            ccr_gui_rect_rounded(r, 0.3f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x50u);
+            g_hand = true;
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                coauthor_toggle(g_git.people[i]);
+        }
+        const ccr_rect box = { r.x + 4.0f, r.y + 5.0f, 14.0f, 14.0f };
+        ccr_gui_rect_rounded(box, 0.25f, ccr_th(CCR_C_PANEL_EDGE));
+        if (on)
+            ccr_gui_rect_rounded((ccr_rect){ box.x + 3, box.y + 3, 8, 8 }, 0.25f, ccr_th(CCR_C_ACCENT));
+        char name[64];
+        person_name(g_git.people[i], name, sizeof name);
+        face((ccr_vec2){ r.x + 33.0f, r.y + 12.0f }, 9.0f, name, 0);
+        ccr_gui_clip_begin((ccr_rect){ r.x + 46.0f, r.y, r.w - 50.0f, r.h });
+        ccr_gui_text(name, r.x + 46.0f, r.y + 4.0f, 14.0f, ccr_th(CCR_C_PANEL_TEXT));
+        const char *mail = strchr(g_git.people[i], '<');
+        if (mail)
+            ccr_gui_text(mail, r.x + 52.0f + ccr_gui_text_width(name, 14.0f), r.y + 5.0f, 12.0f,
+                         ccr_th(CCR_C_PANEL_HINT));
+        ccr_gui_clip_end();
+        y += 25.0f;
+    }
+    /* someone else: "Name <mail>", Enter (a name alone: the one in the list) */
+    const ccr_rect nb = { left, y + 2.0f, right - left, 28.0f };
+    if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+        const bool in = point_in(m, nb);
+        if (in && !g_git.co_focus) {
+            g_git.co_focus = true;
+            g_git.msg_focus = false;
+            g_git.new_focus = false;
+            ccr_gui_textbox_reset();
+        } else if (!in && g_git.co_focus) {
+            g_git.co_focus = false;
+        }
+    }
+    if (g_git.co_focus) {
+        ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+        if (ccr_gui_textbox(nb, g_git.co_new, (int)sizeof g_git.co_new, 14.0f) && g_git.co_new[0]) {
+            char who[160];
+            snprintf(who, sizeof who, "%s", g_git.co_new);
+            /* no mail: the one in the list whose name (or its start, or whose
+             * mail) it is - if only one */
+            int found = -1, many = 0;
+            const size_t wl = strlen(who);
+            for (int i = 0; !strchr(who, '<') && i < g_git.npeople; ++i) {
+                char name[64];
+                person_name(g_git.people[i], name, sizeof name);
+                const char *mail = strchr(g_git.people[i], '<');
+                bool start = strlen(name) >= wl, whole = strlen(name) == wl;
+                for (size_t k = 0; start && k < wl; ++k)
+                    start = tolower((unsigned char)name[k]) == tolower((unsigned char)who[k]);
+                const bool by_mail = mail && strncmp(mail + 1, who, wl) == 0 && mail[1 + wl] == '>';
+                if ((start && whole) || by_mail) {
+                    found = i;
+                    many = 1;
+                    break;
+                }
+                if (start) {
+                    found = i;
+                    ++many;
+                }
+            }
+            if (found >= 0 && many == 1)
+                snprintf(who, sizeof who, "%s", g_git.people[found]);
+            if (coauthor_index(who) < 0)
+                coauthor_toggle(who);
+            g_git.co_new[0] = '\0';
+            ccr_gui_textbox_reset();
+        }
+        if (ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+            g_git.co_focus = false;
+    } else {
+        ccr_gui_rect_rounded(nb, 0.2f, ccr_th(CCR_C_PANEL_EDGE));
+        ccr_gui_rect_rounded((ccr_rect){ nb.x + 1, nb.y + 1, nb.w - 2, nb.h - 2 }, 0.2f, ccr_th(CCR_C_FIELD));
+        ccr_gui_clip_begin(nb);
+        ccr_gui_text(ccr_tr(CCR_T_GIT_COAUTHOR_NEW), nb.x + 8.0f, nb.y + 6.0f, 14.0f, ccr_th(CCR_C_PANEL_HINT));
+        ccr_gui_clip_end();
+    }
+    return y + 38.0f;
 }
 
 static void git_net(ccr_document *doc, ccr_git_net what)
@@ -3323,7 +3526,6 @@ static void git_net(ccr_document *doc, ccr_git_net what)
  * blocks from the same commit, and a card that slides out of it when the
  * mouse rests on a block: who, when, the commit and its message. A click
  * on the badge opens the commit. */
-static bool g_hand;   /* something clickable under the mouse: the hand cursor */
 
 static struct {
     ccr_blame_commit *commits;
@@ -3458,6 +3660,57 @@ static void blame_initials(const char *author, char *out, size_t cap)
     out[o] = '\0';
 }
 
+/* One person's round face: their colour, their initials. `ring`: a rim
+ * in the colour under it, so faces that overlap stay apart (0: none). */
+static void face(ccr_vec2 c, float rad, const char *name, ccr_color ring)
+{
+    if (ring)
+        ccr_gui_circle(c, rad + 1.8f, ring);
+    ccr_gui_circle(c, rad, blame_color(name));
+    char ini[16];
+    blame_initials(name, ini, sizeof ini);
+    const float fs = rad * (ini[1] && ((unsigned char)ini[0] < 0x80 ? ini[1] : 1) ? 0.95f : 1.15f);
+    ccr_gui_text(ini, c.x - ccr_gui_text_width(ini, fs) * 0.5f, c.y - fs * 0.55f, fs, 0x1A1A22FFu);
+}
+
+/* Everyone who made a commit, in a row and overlapping, the author
+ * first and on top; more than `most`: the last face says "+N". Its
+ * width (drawn only if `draw`). */
+static float faces(float x, float cy, float rad, const char *author, const char (*co)[64], int nco, int most,
+                   ccr_color ring, bool draw)
+{
+    const int total = 1 + nco, shown = total <= most ? total : most;
+    const float step = rad * 1.55f;
+    for (int i = shown - 1; draw && i >= 0; --i) {
+        const ccr_vec2 c = { x + rad + step * (float)i, cy };
+        if (i == shown - 1 && shown < total) {
+            char t[16];
+            snprintf(t, sizeof t, "+%d", total - shown + 1);
+            const float fs = rad * 0.95f;
+            if (ring)
+                ccr_gui_circle(c, rad + 1.8f, ring);
+            ccr_gui_circle(c, rad, ccr_th(CCR_C_PANEL_EDGE) | 0xFFu);
+            ccr_gui_text(t, c.x - ccr_gui_text_width(t, fs) * 0.5f, c.y - fs * 0.55f, fs, ccr_th(CCR_C_PANEL_TEXT));
+        } else {
+            face(c, rad, i == 0 ? author : co[i - 1], ring);
+        }
+    }
+    return rad * 2.0f + step * (float)(shown - 1);
+}
+
+/* "Ann", "Ann & Bob", "Ann, Bob & Eve"; wider than `maxw`: "Ann and 2
+ * more". */
+static void people_line(char *out, size_t cap, const char *author, const char (*co)[64], int nco, float maxw, float fs)
+{
+    snprintf(out, cap, "%s", author);
+    for (int i = 0; i < nco; ++i) {
+        const size_t l = strlen(out);
+        snprintf(out + l, cap - l, "%s%s", i == nco - 1 ? " & " : ", ", co[i]);
+    }
+    if (nco && ccr_gui_text_width(out, fs) > maxw)
+        ccr_trnf(out, cap, CCR_T_GIT_AND_MORE, (unsigned long)nco, author, (unsigned)nco);
+}
+
 /* Where entry i's badge is, on screen. */
 static bool blame_badge_at(const ccr_document *doc, const ccr_canvas *cv, int i, ccr_vec2 *center, float *radius)
 {
@@ -3500,13 +3753,12 @@ static void blame_badge(ccr_vec2 c, float rad, const ccr_blame_commit *bc, bool 
         ccr_gui_circle(c, rad * 0.32f, ccr_th(CCR_C_ACCENT));
         return;
     }
+    /* made together: the others peek out from behind */
+    for (int i = bc->coauthor_count < 2 ? bc->coauthor_count : 2; i >= 1; --i)
+        face((ccr_vec2){ c.x + rad * 1.05f * (float)i, c.y }, rad * 0.78f, bc->coauthors[i - 1], ccr_th(CCR_C_BG));
     if (hot)
         ccr_gui_circle(c, rad + 2.5f, ccr_th(CCR_C_PANEL_TEXT));
-    ccr_gui_circle(c, rad, blame_color(bc->author));
-    char ini[16];
-    blame_initials(bc->author, ini, sizeof ini);
-    const float fs = rad * (ini[1] && ((unsigned char)ini[0] < 0x80 ? ini[1] : 1) ? 0.95f : 1.15f);
-    ccr_gui_text(ini, c.x - ccr_gui_text_width(ini, fs) * 0.5f, c.y - fs * 0.55f, fs, 0x1A1A22FFu);
+    face(c, rad, bc->author, bc->coauthor_count ? ccr_th(CCR_C_BG) : 0);
 }
 
 /* The badges, over the canvas. */
@@ -3595,14 +3847,20 @@ static void blame_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewpor
         return;
     const ccr_blame_commit *bc = &g_blame.commits[g_blame.commit[g_blame.hover]];
 
-    char who[200], when[160], sub[200], hint[160];
+    char who[200], when[160], sub[200], hint[160], all[480] = "";
+    const int nco = bc->uncommitted ? 0 : bc->coauthor_count;
     if (bc->uncommitted) {
         snprintf(who, sizeof who, "%s", ccr_tr(CCR_T_GIT_BLAME_MINE));
         when[0] = '\0';
         snprintf(sub, sizeof sub, "%s", ccr_tr(CCR_T_GIT_BLAME_MINE_HINT));
         hint[0] = '\0';
     } else {
-        snprintf(who, sizeof who, "%s", bc->author);
+        people_line(who, sizeof who, bc->author, (const char (*)[64])bc->coauthors, nco, 300.0f, 15.0f);
+        if (nco) {   /* shortened: everyone, under the message */
+            people_line(all, sizeof all, bc->author, (const char (*)[64])bc->coauthors, nco, 1e9f, 15.0f);
+            if (strcmp(all, who) == 0)
+                all[0] = '\0';
+        }
         ccr_git_ago(bc->time, when, (int)sizeof when);
         char date[48];
         ccr_git_date(bc->time, date, (int)sizeof date);
@@ -3612,12 +3870,15 @@ static void blame_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewpor
         snprintf(hint, sizeof hint, "%.7s  ·  %s", bc->hash, ccr_tr(CCR_T_GIT_BLAME_OPEN));
     }
     const float pad = 12.0f, av = 34.0f, fs = 15.0f;
+    const float fw = nco ? faces(0, 0, av * 0.5f, bc->author, (const char (*)[64])bc->coauthors, nco, 4, 0, false) : av;
     float w = fmaxf(ccr_gui_text_width(who, fs), ccr_gui_text_width(when, 12.5f));
-    w = fmaxf(w + av + 10.0f, ccr_gui_text_width(hint, 12.0f));
+    w = fmaxf(w + fw + 10.0f, ccr_gui_text_width(hint, 12.0f));
     w = fmaxf(w, fminf(ccr_gui_text_width(sub, 14.0f), 380.0f));
-    w = fminf(fmaxf(w, 220.0f), 400.0f);
+    w = fminf(fmaxf(w, 220.0f), 420.0f);
     const float sh = wrap_text(sub, 0, 0, w, 14.0f, 0, false);
-    const float h = pad * 2.0f + av + 8.0f + sh + (hint[0] ? 22.0f : 0.0f);
+    const float ah = all[0] ? wrap_text(all, 0, 0, w, 12.5f, 0, false) + 4.0f : 0.0f;
+    const float stripe = nco ? 7.0f : 0.0f;
+    const float h = pad * 2.0f + av + 8.0f + stripe + sh + ah + (hint[0] ? 22.0f : 0.0f);
     ccr_rect box = { c.x + rad + 8.0f, c.y - rad - 4.0f, w + pad * 2.0f, h };
     bool left = false;
     if (box.x + box.w > vis.x + vis.w - 4.0f) {   /* no room on the right: out to the left of the block */
@@ -3647,11 +3908,24 @@ static void blame_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewpor
                          bc->uncommitted ? ccr_th(CCR_C_ACCENT) : blame_color(bc->author));
     ccr_gui_rect_rounded(b2, 0.12f, ccr_th(CCR_C_PANEL) | 0xFFu);
     float x = b2.x + pad, y = b2.y + pad;
-    blame_badge((ccr_vec2){ x + av * 0.5f, y + av * 0.5f }, av * 0.5f, bc, false);
-    ccr_gui_text(who, x + av + 10.0f, y + 1.0f, fs, ccr_th(CCR_C_PANEL_TEXT));
-    ccr_gui_text(when, x + av + 10.0f, y + 20.0f, 12.5f, ccr_th(CCR_C_PANEL_HINT));
+    if (nco)   /* everyone who made it */
+        faces(x, y + av * 0.5f, av * 0.5f, bc->author, (const char (*)[64])bc->coauthors, nco, 4,
+              ccr_th(CCR_C_PANEL) | 0xFFu, true);
+    else
+        blame_badge((ccr_vec2){ x + av * 0.5f, y + av * 0.5f }, av * 0.5f, bc, false);
+    ccr_gui_text(who, x + fw + 10.0f, y + 1.0f, fs, ccr_th(CCR_C_PANEL_TEXT));
+    ccr_gui_text(when, x + fw + 10.0f, y + 20.0f, 12.5f, ccr_th(CCR_C_PANEL_HINT));
     y += av + 8.0f;
+    if (nco) {   /* a stripe of their colours: a commit of several */
+        const float sw = w / (float)(nco + 1);
+        for (int i = 0; i <= nco; ++i)
+            ccr_gui_rect((ccr_rect){ x + sw * (float)i, y - 2.0f, sw - (i < nco ? 2.0f : 0.0f), 3.0f },
+                         blame_color(i ? bc->coauthors[i - 1] : bc->author));
+        y += stripe;
+    }
     y += wrap_text(sub, x, y, w, 14.0f, ccr_th(CCR_C_PANEL_TEXT), true);
+    if (all[0])
+        y += 4.0f + wrap_text(all, x, y + 4.0f, w, 12.5f, ccr_th(CCR_C_PANEL_HINT), true);
     if (hint[0])
         ccr_gui_text(hint, x, y + 6.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
     ccr_gui_clip_end();
@@ -4597,6 +4871,7 @@ static void git_panel(ccr_rect a, ccr_document *doc, const ccr_options *opt, boo
             if (in && !g_git.msg_focus) {
                 g_git.msg_focus = true;
                 g_git.new_focus = false;
+                g_git.co_focus = false;
                 ccr_gui_textbox_reset();
             } else if (!in && g_git.msg_focus) {
                 g_git.msg_focus = false;   /* a click anywhere else */
@@ -4617,6 +4892,8 @@ static void git_panel(ccr_rect a, ccr_document *doc, const ccr_options *opt, boo
             ccr_gui_clip_end();
         }
         y += 36.0f;
+        if (!g_git.merging)
+            y = git_together(a, y, input, m);
         const char *cl = ccr_tr(CCR_T_GIT_COMMIT);
         const float cw = ccr_gui_text_width(cl, 15.0f) + 30.0f;
         if (ccr_gui_button((ccr_rect){ a.x + 10.0f, y, cw, 28.0f }, cl, mainb) && input)
@@ -4854,7 +5131,10 @@ static void git_panel(ccr_rect a, ccr_document *doc, const ccr_options *opt, boo
             ccr_gui_clip_begin((ccr_rect){ tx, ry, a.x + a.w - tx - 6.0f, rh });
             ccr_gui_text(c->subject, tx, ry + 2.0f, 14.0f, ccr_th(CCR_C_PANEL_TEXT));
             char sub[300];
-            snprintf(sub, sizeof sub, "%s  %s, %s", c->short_hash, c->author, c->when);
+            char who[160];
+            people_line(who, sizeof who, c->author, (const char (*)[64])c->coauthors, c->coauthor_count,
+                        (a.x + a.w - tx) * 0.5f, 12.0f);
+            snprintf(sub, sizeof sub, "%s  %s, %s", c->short_hash, who, c->when);
             ccr_gui_text(sub, tx, ry + 20.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
             if (c->refs[0]) {   /* its branches and tags, after */
                 const float sx = tx + ccr_gui_text_width(sub, 12.0f) + 8.0f;
@@ -4948,7 +5228,7 @@ static void git_diff_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
     float y = body.y - g_git.diff_scroll;
     bool in_header = !g_git.commit_view;   /* a commit's message and files are shown too */
     bool in_hunk = false;
-    int old_no = 0, new_no = 0, hunk = -1, act = -1;
+    int old_no = 0, new_no = 0, hunk = -1, act = -1, line_no = -1;
     char line[600];
     /* a hunk's button: just this part into the index (or out of it) */
     const bool hunk_buttons = !g_git.diff_untracked && ccr_git_hunk_count(g_git.diff) > 0;
@@ -4959,6 +5239,7 @@ static void git_diff_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
         const size_t n = e ? (size_t)(e - p) : strlen(p);
         snprintf(line, sizeof line, "%.*s", (int)(n < sizeof line ? n : sizeof line - 1), p);
         p = e ? e + 1 : NULL;
+        ++line_no;
         if (strncmp(line, "diff --git", 10) == 0)
             in_hunk = false;
         if (strncmp(line, "@@", 2) == 0) {
@@ -4987,6 +5268,16 @@ static void git_diff_frame(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport,
                            strncmp(line, "+++ ", 4) == 0 || strncmp(line, "new file", 8) == 0 ||
                            strncmp(line, "deleted file", 12) == 0) {
                     c = ccr_th(CCR_C_PANEL_HINT);
+                }
+                /* a commit's people: the author (its second line), Co-authored-by: */
+                char who[CCR_GIT_COAUTHORS][64];
+                if (g_git.commit_view && !strchr(line, '\t') &&
+                    (line_no == 1 ? (snprintf(who[0], sizeof who[0], "%.*s", (int)strcspn(line, "<"), line), 1)
+                                  : ccr_git_coauthors(line, NULL, who, 1)) == 1) {
+                    for (size_t k = strlen(who[0]); k && who[0][k - 1] == ' ';)
+                        who[0][--k] = '\0';
+                    if (who[0][0])
+                        face((ccr_vec2){ body.x + 30.0f, y + row * 0.5f }, row * 0.42f, who[0], 0);
                 }
                 ccr_gui_text(line, body.x + 44.0f, y + 1.0f, fs, c);
                 y += row;
@@ -8181,7 +8472,7 @@ int ccr_run(int argc, char **argv)
                               point_in(m, minimap_area(visible_view(viewport, w, h))));
         const bool over_palette = !on_split && m.x < PALETTE_W && m.y > TOPBAR_H;
         palette_follow(&doc);
-        const bool git_typing = (g_files_open && g_git.tab && (g_git.msg_focus || g_git.new_focus)) ||
+        const bool git_typing = (g_files_open && g_git.tab && (g_git.msg_focus || g_git.new_focus || g_git.co_focus)) ||
                                 (g_dbg.in_focus && g_dbg.view && g_bp.t > 0.0f);   /* or to the program */
         const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
                              g_fpanel.naming == CCR_NAMING_NONE && !git_typing;   /* typing a new file's name */
