@@ -309,6 +309,16 @@ add_executable(test_rename test_rename.c)
 target_link_libraries(test_rename PRIVATE ccratch_core)
 add_test(NAME rename_project COMMAND test_rename)
 
+add_executable(test_arrange test_arrange.c)
+target_link_libraries(test_arrange PRIVATE ccratch_core)
+add_test(NAME arrange_text COMMAND test_arrange)
+# the shipped arrangements read
+file(GLOB CCR_SHIPPED_ARRANGEMENTS ${PROJECT_SOURCE_DIR}/arrangements/*.arrange)
+foreach(arr ${CCR_SHIPPED_ARRANGEMENTS})
+    get_filename_component(code ${arr} NAME_WE)
+    add_test(NAME arrange_check_${code} COMMAND ${CCR_BIN} --check-arrangement ${arr})
+endforeach()
+
 add_executable(test_search test_search.c)
 target_link_libraries(test_search PRIVATE ccratch_core)
 add_test(NAME search COMMAND test_search)
@@ -354,6 +364,32 @@ foreach(expect
         ENVIRONMENT "${CCR_HATER_ENV}"
         PASS_REGULAR_EXPRESSION "bad\\.c:${expect}")
 endforeach()
+# context: Rust in a table or a search is data; pushing it is a NAK,
+# mentioning it a nit; the same thing in one block said once; letters as
+# letters; and Code Hater knows its own rants when it reads itself
+set(CCR_HATER_CONTEXT ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/context.c)
+foreach(expect "21:[0-9]+: error: .code_hater. NAK: Rust propaganda"
+               "22:[0-9]+: nit: .code_hater. Rust, mentioned"
+               "And 2 more like it in this block"
+               "Привет, Rust!")
+    string(REGEX REPLACE "[^a-zA-Z0-9]+" "_" tag "${expect}")
+    string(SUBSTRING "${tag}" 0 40 tag)
+    add_test(NAME code_hater_context_${tag} COMMAND ${CCR_BIN} --lang en --check-code ${CCR_HATER_CONTEXT})
+    set_tests_properties(code_hater_context_${tag} PROPERTIES
+        ENVIRONMENT "${CCR_HATER_ENV}"
+        PASS_REGULAR_EXPRESSION "${expect}")
+endforeach()
+add_test(NAME code_hater_context_data COMMAND ${CCR_BIN} --lang en --check-code ${CCR_HATER_CONTEXT})
+set_tests_properties(code_hater_context_data PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "context\\.c:21:"
+    FAIL_REGULAR_EXPRESSION "context\\.c:(8|9|10|13|15):|mentions_rust|\\\\320")
+add_test(NAME code_hater_self
+         COMMAND ${CCR_BIN} --lang en --check-code ${PROJECT_SOURCE_DIR}/plugins/code_hater/code_hater.c)
+set_tests_properties(code_hater_self PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "praise: .code_hater. this is me"
+    FAIL_REGULAR_EXPRESSION "Rust propaganda|Rust detected|Rust, mentioned")
 add_test(NAME code_hater_good
          COMMAND ${CCR_BIN} --lang en --check-code ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/good.c)
 set_tests_properties(code_hater_good PROPERTIES

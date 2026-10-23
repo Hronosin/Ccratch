@@ -1,0 +1,11 @@
+# A Ccratch arrangement: the blocks the way a kernel source reads.
+# Columns, left to right. Each takes some kinds of things:
+#   includes macros types globals protos main funcs classes loose rest
+# in an order (| order=file, name, size or calls) and, if it gets taller
+# than wrap=HEIGHT, goes on in a column beside it, like a newspaper.
+@name    = Kernel style
+@name.ru = Как в ядре
+column = includes macros
+column = types globals protos
+column = funcs main | order=calls wrap=2400
+column = classes loose rest

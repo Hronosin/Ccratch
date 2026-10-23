@@ -3032,27 +3032,212 @@ static void arrange_calls(const ccr_editor *ed, const uint32_t *order, uint32_t 
     free(queue);
 }
 
-bool ccr_editor_arrange(ccr_editor *ed, ccr_arrange how, float aspect)
+unsigned ccr_editor_akind(const ccr_editor *ed, uint32_t i)
 {
-    ccr_editor_settle(ed);
-    if (ed->drag != CCR_DRAG_IDLE || !ed->script_count)
-        return false;
-    uint32_t *order = malloc(ed->script_count * sizeof *order);
-    ccr_vec2 *to = malloc(ed->script_count * sizeof *to);
-    if (!order || !to) {
-        free(order);
-        free(to);
-        return false;
+    const ccr_node_id root = ed->scripts[i].root;
+    if (is_loose_root(ed, root))
+        return CCR_AK_LOOSE;
+    const ccr_node *r = N(ed, root);
+    switch (r->kind) {
+    case CCR_NODE_INCLUDE:
+    case CCR_NODE_USING:        return CCR_AK_INCLUDES;
+    case CCR_NODE_MACRO_DEFINE: return CCR_AK_MACROS;
+    case CCR_NODE_NAMESPACE:    return CCR_AK_CLASSES;
+    case CCR_NODE_STRUCT:       return goes_right(ed, root) ? CCR_AK_CLASSES : CCR_AK_TYPES;
+    case CCR_NODE_UNION:
+    case CCR_NODE_ENUM:
+    case CCR_NODE_TYPEDEF:      return CCR_AK_TYPES;
+    case CCR_NODE_VAR:          return CCR_AK_GLOBALS;
+    case CCR_NODE_FUNCTION:
+        if (!(r->flags & CCR_FLAG_DEFINITION))
+            return CCR_AK_PROTOS;
+        return r->name && strcmp(ccr_ast_str(&ed->ast, r->name), "main") == 0 ? CCR_AK_MAIN : CCR_AK_FUNCS;
+    case CCR_NODE_DECL_GROUP: {   /* `int a, b;`, `struct p {...} x;`: by what it holds first */
+        const ccr_node_id c = r->first_child;
+        if (c != CCR_NONE && (N(ed, c)->kind == CCR_NODE_STRUCT || N(ed, c)->kind == CCR_NODE_UNION ||
+                              N(ed, c)->kind == CCR_NODE_ENUM || N(ed, c)->kind == CCR_NODE_TYPEDEF))
+            return CCR_AK_TYPES;
+        return CCR_AK_GLOBALS;
     }
+    default:                    return CCR_AK_REST;
+    }
+}
+
+static const char *script_name(const ccr_editor *ed, uint32_t i)
+{
+    const ccr_node *r = N(ed, ed->scripts[i].root);
+    return r->name ? ccr_ast_str(&ed->ast, r->name) : "";
+}
+
+/* Callers before what they call: each function's depth from the ones
+ * nobody here calls (main first). -1 for what is no function. */
+static void call_depths(const ccr_editor *ed, const uint32_t *order, uint32_t n, int *depth, uint32_t *reached)
+{
+    uint32_t qn = 0;
+    bool *fn = calloc(n ? n : 1, sizeof *fn);
+    if (!fn)
+        return;
+    for (uint32_t k = 0; k < n; ++k) {
+        const ccr_node *r = N(ed, ed->scripts[order[k]].root);
+        fn[k] = r->kind == CCR_NODE_FUNCTION && (r->flags & CCR_FLAG_DEFINITION) && r->name &&
+                !is_loose_root(ed, ed->scripts[order[k]].root);
+        depth[k] = -1;
+    }
+    for (uint32_t k = 0; k < n; ++k) {
+        if (!fn[k])
+            continue;
+        const char *name = script_name(ed, order[k]);
+        bool called = false;
+        for (uint32_t j = 0; j < n && !called; ++j)
+            called = fn[j] && j != k && calls(ed, ed->scripts[order[j]].root, name);
+        if (!called || strcmp(name, "main") == 0) {
+            depth[k] = 0;
+            reached[qn++] = k;
+        }
+    }
+    for (uint32_t qi = 0;; ++qi) {
+        if (qi == qn) {
+            uint32_t k = 0;
+            while (k < n && !(fn[k] && depth[k] < 0))
+                ++k;
+            if (k == n)
+                break;
+            depth[k] = 0;
+            reached[qn++] = k;
+        }
+        const uint32_t k = reached[qi];
+        for (uint32_t j = 0; j < n; ++j)
+            if (fn[j] && depth[j] < 0 && calls(ed, ed->scripts[order[k]].root, script_name(ed, order[j]))) {
+                depth[j] = depth[k] + 1;
+                reached[qn++] = j;
+            }
+    }
+    free(fn);
+}
+
+typedef struct sort_item {
+    uint32_t    k;       /* in order[] */
+    const char *name;
+    float       h;
+    int         rank;    /* calls: when it was reached */
+} sort_item;
+
+static ccr_aorder g_sort_by;
+
+static int by_order(const void *a, const void *b)
+{
+    const sort_item *x = a, *y = b;
+    int c = 0;
+    if (g_sort_by == CCR_AO_NAME)
+        c = strcmp(x->name, y->name);
+    else if (g_sort_by == CCR_AO_SIZE)
+        c = (x->h < y->h) - (x->h > y->h);
+    else if (g_sort_by == CCR_AO_CALLS)
+        c = (x->rank > y->rank) - (x->rank < y->rank);
+    return c ? c : (x->k > y->k) - (x->k < y->k);
+}
+
+static void arrange_custom(const ccr_editor *ed, const uint32_t *order, uint32_t n, ccr_vec2 *to,
+                           const ccr_arrangement *a)
+{
+    int *col = malloc((n ? n : 1) * sizeof *col), *depth = malloc((n ? n : 1) * sizeof *depth);
+    uint32_t *reached = malloc((n ? n : 1) * sizeof *reached);
+    int *rank = malloc((n ? n : 1) * sizeof *rank);
+    sort_item *items = malloc((n ? n : 1) * sizeof *items);
+    if (!col || !depth || !reached || !rank || !items || a->ncols <= 0) {
+        free(col);
+        free(depth);
+        free(reached);
+        free(rank);
+        free(items);
+        return;
+    }
+    /* which column takes each: the first that names its kind; else "rest"; else the last */
+    int rest = a->ncols - 1;
+    for (int c = 0; c < a->ncols; ++c)
+        if (a->cols[c].kinds & CCR_AK_REST) {
+            rest = c;
+            break;
+        }
+    for (uint32_t k = 0; k < n; ++k) {
+        const unsigned kind = ccr_editor_akind(ed, order[k]);
+        col[k] = rest;
+        for (int c = 0; c < a->ncols; ++c)
+            if (a->cols[c].kinds & kind) {
+                col[k] = c;
+                break;
+            }
+    }
+    for (uint32_t k = 0; k < n; ++k)
+        rank[k] = 1 << 30;
+    call_depths(ed, order, n, depth, reached);
+    /* reached in breadth order: that is the order of callers before callees */
+    for (uint32_t k = 0, r = 0; k < n; ++k)
+        if (depth[k] >= 0)
+            rank[reached[r]] = (int)r, ++r;
+    float x = 0.0f;
+    for (int c = 0; c < a->ncols; ++c) {
+        uint32_t m = 0;
+        for (uint32_t k = 0; k < n; ++k)
+            if (col[k] == c)
+                items[m++] = (sort_item){ k, script_name(ed, order[k]), ed->scripts[order[k]].blocks.bounds.h, rank[k] };
+        if (!m)
+            continue;
+        g_sort_by = a->cols[c].order;
+        qsort(items, m, sizeof *items, by_order);
+        float y = 0.0f, colw = 0.0f;
+        for (uint32_t i = 0; i < m; ++i) {
+            const ccr_script *s = &ed->scripts[order[items[i].k]];
+            const ccr_rect b = s->blocks.bounds;
+            if (a->cols[c].wrap > 0.0f && y > 0.0f && y + b.h > a->cols[c].wrap) {   /* full: on in the next */
+                x += colw + COLUMN_GAP * 0.6f;
+                y = 0.0f;
+                colw = 0.0f;
+            }
+            place_at(&to[order[items[i].k]], s, x, y);
+            y += b.h + SCRIPT_GAP;
+            colw = fmaxf(colw, b.w);
+        }
+        x += colw + COLUMN_GAP;
+    }
+    free(col);
+    free(depth);
+    free(reached);
+    free(rank);
+    free(items);
+}
+
+/* Where every script would go: `to` (script_count). */
+static bool arrange_targets(const ccr_editor *ed, ccr_arrange how, const ccr_arrangement *a, float aspect, ccr_vec2 *to)
+{
+    uint32_t *order = malloc((ed->script_count ? ed->script_count : 1) * sizeof *order);
+    if (!order)
+        return false;
     for (uint32_t i = 0; i < ed->script_count; ++i)
-        to[i] = ed->scripts[i].pos;
+        to[i] = ed->scripts[i].glide_t < 1.0f ? ed->scripts[i].glide_to : ed->scripts[i].pos;
     const uint32_t n = file_order(ed, order);
-    if (how == CCR_ARRANGE_TILES)
+    if (a)
+        arrange_custom(ed, order, n, to, a);
+    else if (how == CCR_ARRANGE_TILES)
         arrange_tiles(ed, order, n, to, aspect);
     else if (how == CCR_ARRANGE_CALLS)
         arrange_calls(ed, order, n, to);
     else
         arrange_columns(ed, order, n, to);
+    free(order);
+    return true;
+}
+
+static bool arrange_now(ccr_editor *ed, ccr_arrange how, const ccr_arrangement *a, float aspect)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE || !ed->script_count)
+        return false;
+    ccr_vec2 *to = malloc(ed->script_count * sizeof *to);
+    if (!to || !arrange_targets(ed, how, a, aspect, to)) {
+        free(to);
+        return false;
+    }
     /* one undo step: recorded at the end, then glided to */
     begin_change(ed);
     ccr_vec2 *from = malloc(ed->script_count * sizeof *from);
@@ -3073,9 +3258,45 @@ bool ccr_editor_arrange(ccr_editor *ed, ccr_arrange how, float aspect)
             s->pos = from[i];
         }
     free(from);
-    free(order);
     free(to);
     return moved;
+}
+
+bool ccr_editor_arrange(ccr_editor *ed, ccr_arrange how, float aspect)
+{
+    return arrange_now(ed, how, NULL, aspect);
+}
+
+bool ccr_editor_arrange_custom(ccr_editor *ed, const ccr_arrangement *a)
+{
+    return a && arrange_now(ed, CCR_ARRANGE_COLUMNS, a, 1.6f);
+}
+
+int ccr_editor_arrange_preview(const ccr_editor *ed, ccr_arrange how, const ccr_arrangement *a, float aspect,
+                               ccr_rect *boxes, unsigned *kinds, int cap)
+{
+    ccr_vec2 *to = malloc((ed->script_count ? ed->script_count : 1) * sizeof *to);
+    if (!to || !arrange_targets(ed, how, a, aspect, to)) {
+        free(to);
+        return 0;
+    }
+    int n = 0;
+    for (uint32_t i = 0; i < ed->script_count && n < cap; ++i, ++n) {
+        const ccr_rect b = ed->scripts[i].blocks.bounds;
+        boxes[n] = (ccr_rect){ to[i].x + b.x, to[i].y + b.y, b.w, b.h };
+        kinds[n] = ccr_editor_akind(ed, i);
+    }
+    free(to);
+    return n;
+}
+
+void ccr_editor_arrange_quietly(ccr_editor *ed, ccr_arrange how, const ccr_arrangement *a, float aspect)
+{
+    ccr_vec2 *to = malloc((ed->script_count ? ed->script_count : 1) * sizeof *to);
+    if (to && arrange_targets(ed, how, a, aspect, to))
+        for (uint32_t i = 0; i < ed->script_count; ++i)
+            ed->scripts[i].pos = to[i];
+    free(to);
 }
 
 /* ------------------------------------------------- the layout, kept */

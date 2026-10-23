@@ -1,0 +1,7 @@
+# A Ccratch arrangement: a card index, everything by name.
+@name    = Card index
+@name.ru = Картотека
+column = includes macros types
+column = protos globals | order=name
+column = main funcs classes | order=name wrap=1800
+column = loose rest

@@ -8,6 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* the clip rectangles open now, innermost last (ccr_gui_clip_begin) */
+#define CLIP_DEPTH 32
+static ccr_rect g_clips[CLIP_DEPTH];
+static int      g_clip_n;
+
 static Texture2D g_shapes_tex;
 static float     g_scale = 1.0f;  /* interface size: everything is drawn in units this many pixels big */
 
@@ -122,6 +127,16 @@ void ccr_gui_cancel_close(void)
 }
 void ccr_gui_end_frame(void)
 {
+    if (g_clip_n) {   /* one left open: closed, so the next frame starts unclipped */
+#ifndef NDEBUG
+        static bool said;
+        if (!said)
+            fprintf(stderr, "ccr_gui: %d clip(s) left open at the end of a frame\n", g_clip_n);
+        said = true;
+#endif
+        g_clip_n = 0;
+        EndScissorMode();
+    }
     rlDrawRenderBatchActive();
     rlPopMatrix();
     EndDrawing();
@@ -401,14 +416,49 @@ void ccr_gui_triangle(ccr_vec2 a, ccr_vec2 b, ccr_vec2 c, ccr_color col)
     DrawTriangle((Vector2){ a.x, a.y }, (Vector2){ b.x, b.y }, (Vector2){ c.x, c.y }, to_rl(col));
 }
 
+/* Clips nest: an inner one is cut to the one around it, and ending it
+ * puts the outer one back (not no clip at all, which let a list's rows
+ * run over the panel above it once one row had clipped its own text). */
+
+static void apply_clip(void)
+{
+    if (g_clip_n == 0) {
+        EndScissorMode();
+        return;
+    }
+    const ccr_rect r = g_clips[g_clip_n - 1];
+    scissor_units(r.x, r.y, r.w > 0.0f ? r.w : 0.0f, r.h > 0.0f ? r.h : 0.0f);
+}
+
 void ccr_gui_clip_begin(ccr_rect r)
 {
-    scissor_units(r.x, r.y, r.w, r.h);
+    if (g_clip_n > 0) {   /* inside the one around it */
+        const ccr_rect o = g_clips[g_clip_n - 1];
+        const float x0 = r.x > o.x ? r.x : o.x, y0 = r.y > o.y ? r.y : o.y;
+        const float x1 = r.x + r.w < o.x + o.w ? r.x + r.w : o.x + o.w;
+        const float y1 = r.y + r.h < o.y + o.h ? r.y + r.h : o.y + o.h;
+        r = (ccr_rect){ x0, y0, x1 - x0, y1 - y0 };
+    }
+    if (g_clip_n < CLIP_DEPTH)
+        g_clips[g_clip_n] = r;
+    ++g_clip_n;
+    rlDrawRenderBatchActive();
+    apply_clip();
 }
 
 void ccr_gui_clip_end(void)
 {
-    EndScissorMode();
+#ifndef NDEBUG
+    static bool said;
+    if (g_clip_n == 0 && !said) {
+        fprintf(stderr, "ccr_gui: a clip ended that was not begun\n");
+        said = true;
+    }
+#endif
+    if (g_clip_n > 0)
+        --g_clip_n;
+    rlDrawRenderBatchActive();
+    apply_clip();
 }
 
 /* The default raylib font is a 10px pixel font; spacing scales with size. */

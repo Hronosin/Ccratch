@@ -14,6 +14,7 @@
 #ifndef CCR_EDITOR_H
 #define CCR_EDITOR_H
 
+#include "ccr_arrange.h"
 #include "ccr_ast.h"
 #include "ccr_blocks.h"
 #include "ccr_canvas.h"
@@ -361,6 +362,17 @@ typedef enum ccr_arrange {
 
 /* `aspect`: the screen's width / height, for TILES. False if nothing moved. */
 bool ccr_editor_arrange(ccr_editor *ed, ccr_arrange how, float aspect);
+/* An arrangement of your own (ccr_arrange.h), the same way. */
+bool ccr_editor_arrange_custom(ccr_editor *ed, const ccr_arrangement *a);
+/* Where everything would go (`a`, or built-in `how` when `a` is NULL),
+ * nothing moved: each script's box and kind (CCR_AK_*), for a preview.
+ * How many (up to `cap`). */
+int  ccr_editor_arrange_preview(const ccr_editor *ed, ccr_arrange how, const ccr_arrangement *a, float aspect,
+                                ccr_rect *boxes, unsigned *kinds, int cap);
+/* As a file opens: arranged so at once, no glide, no undo step. */
+void ccr_editor_arrange_quietly(ccr_editor *ed, ccr_arrange how, const ccr_arrangement *a, float aspect);
+/* What script `i` is: one CCR_AK_* bit. */
+unsigned ccr_editor_akind(const ccr_editor *ed, uint32_t i);
 
 /* Where the file's top-level stacks are, as text to keep beside it
  * (malloc'd; "kind<TAB>name<TAB>nth<TAB>x<TAB>y" lines). */

@@ -36,6 +36,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 25: commits made together: co-authors on the cards, the badges and the history, and picked when committing.
 - Step 26: C and C++ as the palette's catalogue tabs, in each theme's colours, with the standard library's switch beside them.
 - Step 27: search and replace across the project, as VS Code's (text, or names as the compiler sees them); blocks put anywhere and kept there, arranged as columns, a newspaper or by calls.
+- Step 28: arrangements of your own (a builder, and files to write by hand), one of them for files opening for the first time; Code Hater reads context.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -517,6 +518,40 @@ Or arrange the whole file at once with the button left of autosave:
 
 The stacks glide to their new places, and one Ctrl+Z puts them back.
 
+### Arrangements of your own
+
+**+ An arrangement of your own...** in the same menu opens a builder:
+columns, left to right; in each, ticks for what it takes (`#include`,
+`#define`, types, globals, function declarations, `main`, the other
+functions, classes and namespaces, loose stacks, everything else), an
+order down it (as in the file, by name, the biggest first, callers
+first) and whether it wraps into a next column when it gets too tall,
+like a newspaper. Underneath, the file on screen as it would be laid out,
+changing as you tick. **Try on this file** arranges it (Ctrl+Z puts it
+back), **Save** puts it in the menu, where a pencil changes it and x
+deletes it.
+
+The **star** on any row of the menu (built in or your own) makes it the
+one files are laid out with when they open for the first time; a file
+you have already arranged keeps its own places.
+
+An arrangement is rules, not places, so it fits any file. It is kept as a
+small text file, `~/.local/share/ccratch/arrangements/NAME.arrange`, and
+can be written by hand (`ccratch --check-arrangement FILE` says what is
+wrong with one). Two come with Ccratch, `arrangements/kernel.arrange` and
+`arrangements/index.arrange`:
+
+```
+@name    = Kernel style
+@name.ru = Как в ядре
+column = includes macros
+column = types globals protos
+column = funcs main | order=calls wrap=2400
+column = classes loose rest
+```
+
+![the builder: three columns of ticks, an order and a wrap under each, and tour.c as it would be laid out](docs/arrange_own.png)
+
 ![the arrange menu, and tour.c as a newspaper](docs/arrange.png)
 
 ## Building
@@ -992,6 +1027,8 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_parse   the only code that knows libclang exists
   ccr_blocks  one script -> blocks: flat display list + snap points
   ccr_editor  scripts on the canvas, drag and drop, edits the tree
+  ccr_arrange arrangements of your own: rules for laying out a file's blocks
+  ccr_search  text found and replaced in files: code, strings, comments
   ccr_codegen tree -> C: copies untouched text, rebuilds changed blocks
   ccr_template what the palette offers, as syntax trees (no window)
   ccr_palette the palette: categories, real blocks, scrolling
@@ -1013,6 +1050,7 @@ plugins/    each plugin is its own .so: code_hater/, and hello/, the template
 examples/   C files to feed the parser
 lang/       language packs (ru.lang...); English is built in
 blocks/     block packs (raylib.yaml...)
+arrangements/ ways to lay out the blocks (kernel.arrange...)
 themes/     themes (serious.theme...); Shrine is built in
 assets/     icon and font, built into libccratch
 tools/      make_font.py: how assets/fonts was made from upstream Nunito
@@ -1185,14 +1223,28 @@ with the fix.
 
 | | What it catches |
 | --- | --- |
-| **NAK** | `return &local;` and returning a local array; use after `free`; double `free`; `gets()`; `void main`; anything that smells of Rust (`unwrap_or`, "rewrite it in Rust", "blazingly fast") |
+| **NAK** | `return &local;` and returning a local array; use after `free`; double `free`; `gets()`; `void main`; Rust pushed in a comment or a string ("rewrite it in Rust", "blazingly fast", "TODO: port to Rust"), a name like `unwrap_or` |
 | **!** | a `malloc` never freed, returned or stored; `p = realloc(p, n)`; `malloc` used without a NULL check; `strcpy`, `strcat`, `sprintf`; `=` in a condition (unless `((x = f()))`, on purpose); variable-length arrays; `alloca`; `goto` backwards |
-| **nit** | four levels of nesting (`else if` chains don't count); functions over 80 lines or with more than 12 locals; `sizeof(int)` where `sizeof *p` would follow the pointer; casting `malloc`'s result; `f()` instead of `f(void)`; `atoi` |
+| **nit** | four levels of nesting (`else if` chains don't count); functions over 80 lines or with more than 12 locals; `sizeof(int)` where `sizeof *p` would follow the pointer; casting `malloc`'s result; `f()` instead of `f(void)`; `atoi`; Rust only mentioned, nobody pushing it |
 | **+1** | a `goto` forward, to cleanup: the kernel way |
 | **C++** | raw `new` (a nit: who deletes it?), `using namespace` in a header (a warning); C's nits about `f()` and casting `malloc` stay quiet in C++, where both are right |
 
 It looks at what is in the program: loose blocks on the canvas and
-commented-out ones are left alone. The persona is made up; no real person
+commented-out ones are left alone. And it reads context:
+
+- Rust **pushed** ("rewrite it in Rust", "TODO: port this", "memory safe")
+  is a NAK; Rust only **mentioned** ("Привет, Rust!") is a nit;
+- a string in a table (`{ "...", "..." }`) or one a search looks for
+  (`strstr(name, "rust")`) is data, not something the program says, and
+  a name that hunts Rust (`is_rust`, `mentions_rust`) is on its side;
+- the same thing about the same block is said once, "and 11 more like it
+  in this block", not twelve times;
+- a statement clang could not read (a type it did not know) has no
+  condition to judge, so it does not guess one;
+- quotes are shown as written: `«Привет»`, not `\320\237...`;
+- and opened on its own source it recognises itself: every "Rust" in
+  there is a rant about Rust, so it says "this is me" instead of NAKing
+  its own insults (and reviews the rest like anyone else's). The persona is made up; no real person
 said any of it, although several would have.
 
 ## Interface size

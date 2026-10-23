@@ -30,7 +30,7 @@ enum {
     R_DANGLING, R_RETURN_ARRAY, R_UAF, R_DOUBLE_FREE, R_LEAK, R_REALLOC, R_GETS, R_STRCPY, R_SPRINTF,
     R_ATOI, R_ALLOCA, R_ASSIGN_COND, R_NESTING, R_LONG_FN, R_LOCALS, R_VOID_MAIN, R_UNCHECKED, R_VLA,
     R_RUST_NAME, R_RUST_TEXT, R_GOTO, R_GOTO_BACK, R_MALLOC_CAST, R_SIZEOF_TYPE, R_EMPTY_PARAMS,
-    R_RAW_NEW, R_USING_HEADER, R_COUNT
+    R_RAW_NEW, R_USING_HEADER, R_SELF, R_RUST_MENTION, R_COUNT
 };
 
 typedef struct rant {
@@ -267,6 +267,19 @@ static const rant g_rants[R_COUNT] = {
           { "using namespace {x}; в заголовке. Теперь каждый файл, который его подключит, получает весь {x} в "
             "глобальное пространство имён, хотел он того или нет. Имена конфликтуют в файлах, которых ты в "
             "глаза не видел. В заголовках пиши {x}::, а using оставь для своих .cpp.", NULL } } },
+    [R_RUST_MENTION] = { CCR_FINDING_NIT,
+        { "Rust, mentioned", "упомянут Rust" },
+        { { "\"{x}\". Just a mention, nobody's asking to rewrite anything. Yet. I'm keeping an eye on this "
+            "file.", "\"{x}\". A word about Rust, no sermon attached. Fine. But I saw it." },
+          { "«{x}». Просто упоминание, никто ничего переписывать не просит. Пока. Я за этим файлом "
+            "присматриваю.", "«{x}». Слово про Rust, без проповеди. Ладно. Но я видел." } } },
+    [R_SELF] = { CCR_FINDING_PRAISE,
+        { "this is me", "это же я" },
+        { { "Oh. This file is me. Every \"Rust\" in here is a rant about Rust, not Rust: I don't NAK my own "
+            "insults, they're perfect. Everything else in this file I review like anyone else's. "
+            "Especially the mallocs.", NULL },
+          { "О. Этот файл — это я. Каждый «Rust» здесь — ругань про Rust, а не Rust: свои оскорбления я не "
+            "NAK-аю, они идеальны. Всё остальное в этом файле ревьюю как у всех. Особенно malloc-и.", NULL } } },
     [R_EMPTY_PARAMS] = { CCR_FINDING_NIT,
         { "() is not (void)", "() — это не (void)" },
         { { "{x}() is declared with (). In C that doesn't mean 'no arguments', it means 'any arguments, and "
@@ -282,6 +295,17 @@ static int g_lang;                 /* 0 en, 1 ru */
 static bool g_cpp;                 /* the file is C++: f() means f(void), casts on malloc are needed */
 static int g_said[R_COUNT];        /* per rant, this file */
 static int g_total;
+static bool g_self;                /* the file is Code Hater itself: its Rust is rants about Rust */
+
+/* What it will say, held until the file is read: the same thing about the
+ * same block, said once ("and 11 more like it here"), not 12 times. */
+typedef struct pending {
+    uint32_t node;
+    int      r, more;
+    char     title[128], msg[1200];
+} pending;
+static pending g_pend[96];
+static int     g_npend;
 
 #define MAX_PER_RANT 12
 #define MAX_TOTAL    80
@@ -434,7 +458,14 @@ static void fill(char *out, size_t cap, const char *tmpl, const char *x, int n)
 
 static void say(uint32_t node, int r, const char *x, int n)
 {
-    if (node == NONE || outside(node) || g_said[r] >= MAX_PER_RANT || g_total >= MAX_TOTAL)
+    if (node == NONE || outside(node))
+        return;
+    for (int i = 0; i < g_npend; ++i)   /* this again, about the same block: counted, not repeated */
+        if (g_pend[i].node == node && g_pend[i].r == r) {
+            ++g_pend[i].more;
+            return;
+        }
+    if (g_said[r] >= MAX_PER_RANT || g_total >= MAX_TOTAL || g_npend >= (int)(sizeof g_pend / sizeof g_pend[0]))
         return;
     ++g_said[r];
     ++g_total;
@@ -442,10 +473,29 @@ static void say(uint32_t node, int r, const char *x, int n)
     /* the same block gets the same words every time: no flicker */
     const unsigned h = hash(x ? x : "", (unsigned)N(node)->line * 131u + (unsigned)r);
     const char *tmpl = ra->say[g_lang][1] && (h & 1u) ? ra->say[g_lang][1] : ra->say[g_lang][0];
-    char title[128], msg[1200];
-    fill(title, sizeof title, ra->title[g_lang], x ? x : "", n);
-    fill(msg, sizeof msg, tmpl, x ? x : "", n);
-    F->report(F, node, ra->level, title, msg);
+    pending *p = &g_pend[g_npend++];
+    p->node = node;
+    p->r = r;
+    p->more = 0;
+    fill(p->title, sizeof p->title, ra->title[g_lang], x ? x : "", n);
+    fill(p->msg, sizeof p->msg, tmpl, x ? x : "", n);
+}
+
+/* Everything held, said. */
+static void say_all(void)
+{
+    for (int i = 0; i < g_npend; ++i) {
+        pending *p = &g_pend[i];
+        if (p->more) {
+            const size_t l = strlen(p->msg);
+            snprintf(p->msg + l, sizeof p->msg - l,
+                     g_lang ? "\n\n(И ещё %d таких же в этом блоке. Одного раза хватит, чтобы понять.)"
+                            : "\n\n(And %d more like it in this block. Once is enough to get the idea.)",
+                     p->more);
+        }
+        F->report(F, p->node, g_rants[p->r].level, p->title, p->msg);
+    }
+    g_npend = 0;
 }
 
 /* --------------------------------------------------------------- checks */
@@ -748,6 +798,25 @@ static void check_function(uint32_t fn)
 static void check_condition(uint32_t s)
 {
     const uint32_t cond = is(s, "DoWhile") ? child(s, 1) : child(s, 0);
+    if (cond == NONE || is(cond, "Block"))
+        return;
+    /* the condition is what is between its parentheses; a statement the
+     * compiler could not read (a type it did not know) has none, and its
+     * body is no condition: no guessing */
+    if (!is(s, "DoWhile") && N(s)->src_end > N(s)->src_begin && N(s)->src_end <= F->source_len) {
+        uint32_t i = N(s)->src_begin;
+        while (i < N(s)->src_end && F->source[i] != '(')
+            ++i;
+        int depth = 0;
+        for (; i < N(s)->src_end; ++i) {
+            depth += F->source[i] == '(';
+            depth -= F->source[i] == ')';
+            if (depth == 0)
+                break;
+        }
+        if (N(cond)->src_begin > i)
+            return;
+    }
     if (!is(cond, "BinaryOp") || strcmp(N(cond)->op, "=") != 0)
         return;
     uint32_t b = N(cond)->src_begin;
@@ -815,6 +884,25 @@ static bool rusty(const char *s, size_t n, size_t *at, size_t *len)
     return false;
 }
 
+/* Does the text push Rust (rewrite, port, should, better, safer, TODO...),
+ * or only mention it? A phrase only a Rustacean writes counts as pushing. */
+static bool advocates(const char *s, size_t n)
+{
+    static const char *const pushy[] = { "rewrite", "riir", "port ", "porting", "migrat", "should", "better",
+                                         "safer", "blazing", "fearless", "todo", "switch to", "move to",
+                                         "memory safe", "borrow checker", "rustacean", "cargo build", "love",
+                                         "перепис", "переход", "лучше", "безопасн", "надо", "нужно", "стоит", NULL };
+    char low[600];
+    size_t m = n < sizeof low - 1 ? n : sizeof low - 1;
+    for (size_t i = 0; i < m; ++i)
+        low[i] = (char)tolower((unsigned char)s[i]);
+    low[m] = '\0';
+    for (const char *const *p = pushy; *p; ++p)
+        if (strstr(low, *p))
+            return true;
+    return false;
+}
+
 static bool rusty_name(const char *name)
 {
     static const char *const words[] = { "unwrap", "borrow", "lifetime", "rustc", "cargo", "ferris", "crab", NULL };
@@ -823,6 +911,12 @@ static bool rusty_name(const char *name)
     for (; name[n] && n < sizeof low - 1; ++n)
         low[n] = (char)tolower((unsigned char)name[n]);
     low[n] = '\0';
+    /* is_rust, detect_rust, mentions_rust, no_rust: it hunts Rust, it is on our side */
+    static const char *const hunters[] = { "is_", "has_", "detect", "mention", "find", "check", "no_", "anti",
+                                           "hate", "ban", "block", "reject", "nak", NULL };
+    for (const char *const *h = hunters; *h; ++h)
+        if (strstr(low, *h))
+            return false;
     for (const char *const *w = words; *w; ++w)
         if (strstr(low, *w))
             return true;
@@ -849,12 +943,64 @@ static uint32_t node_at_line(uint32_t line)
     return best != NONE ? best : before;
 }
 
+/* Text to quote, one line: escapes of a literal read back (\" is ", \320\242
+ * is the letter it spells), and cut on a whole letter. */
 static void quote(char *out, size_t cap, const char *s, size_t n)
 {
     size_t o = 0;
-    for (size_t i = 0; i < n && o + 1 < cap; ++i)
-        out[o++] = (s[i] == '\n' || s[i] == '\t') ? ' ' : s[i];
+    for (size_t i = 0; i < n && o + 1 < cap; ++i) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '\\' && i + 1 < n) {
+            const char e = s[++i];
+            if (e >= '0' && e <= '7') {   /* \ooo */
+                unsigned v = 0;
+                int k = 0;
+                for (; k < 3 && i < n && s[i] >= '0' && s[i] <= '7'; ++k, ++i)
+                    v = v * 8u + (unsigned)(s[i] - '0');
+                --i;
+                c = (unsigned char)v;
+            } else if (e == 'x') {        /* \xHH */
+                unsigned v = 0;
+                while (i + 1 < n && isxdigit((unsigned char)s[i + 1])) {
+                    ++i;
+                    v = v * 16u + (unsigned)(isdigit((unsigned char)s[i]) ? s[i] - '0' : (tolower((unsigned char)s[i]) - 'a' + 10));
+                }
+                c = (unsigned char)v;
+            } else {
+                c = (unsigned char)(e == 'n' || e == 't' || e == 'r' ? ' ' : e);
+            }
+        } else if (c == '\n' || c == '\t') {
+            c = ' ';
+        }
+        out[o++] = (char)c;
+    }
+    while (o > 0 && ((unsigned char)out[o - 1] & 0xC0u) == 0x80u)   /* a letter cut in two: dropped */
+        --o;
+    if (o > 0 && ((unsigned char)out[o - 1] & 0xC0u) == 0xC0u)
+        --o;
     out[o] = '\0';
+}
+
+/* Is the literal at `k` data, not something the code says: an entry of a
+ * table ({...}), or what a search looks for (strstr(name, "rust"))? */
+static bool literal_is_data(uint32_t k)
+{
+    static const char *const lookers[] = { "strcmp", "strncmp", "strcasecmp", "strncasecmp", "strstr",
+                                           "strcasestr", "memcmp", "strchr", "strrchr", "strspn", "strcspn",
+                                           "regcomp", "fnmatch", NULL };
+    for (uint32_t p = N(k)->parent; p != NONE; p = N(p)->parent) {
+        if (is(p, "InitList"))
+            return true;
+        if (is(p, "Call")) {
+            for (const char *const *l = lookers; *l; ++l)
+                if (named(p, *l))
+                    return true;
+            return false;
+        }
+        if (is(p, "Block") || is(p, "Function"))
+            return false;
+    }
+    return false;
 }
 
 static void check_rust_text(void)
@@ -898,6 +1044,8 @@ static void check_rust_text(void)
                 ++qe;
             while (qe > b + at + len && (s[qe - 1] == ' ' || s[qe - 1] == '\t'))
                 --qe;
+            while (qb > b && isalnum((unsigned char)s[qb - 1]))   /* not in the middle of a word */
+                --qb;
             while (qb < b + at && (s[qb] == '/' || s[qb] == '*' || s[qb] == ' '))
                 ++qb;
             char q[96];
@@ -905,7 +1053,7 @@ static void check_rust_text(void)
             uint32_t at_line = line;
             for (size_t k = b; k < b + at; ++k)
                 at_line += s[k] == '\n';
-            say(node_at_line(at_line), R_RUST_TEXT, q, 0);
+            say(node_at_line(at_line), advocates(s + b, e - b) ? R_RUST_TEXT : R_RUST_MENTION, q, 0);
             ++found;
         }
         for (size_t k = i; k < e; ++k)
@@ -923,6 +1071,16 @@ static bool is_header(const char *path)
            (n > 3 && strcmp(path + n - 3, ".hh") == 0);
 }
 
+/* Does the text (not NUL-terminated) say `what` somewhere? */
+static bool says(const char *s, size_t n, const char *what)
+{
+    const size_t wl = strlen(what);
+    for (size_t i = 0; i + wl <= n; ++i)
+        if (s[i] == what[0] && memcmp(s + i, what, wl) == 0)
+            return true;
+    return false;
+}
+
 static void check(const ccr_plugin_file *file)
 {
     const bool cpp = strcmp(file->language, "c++") == 0;
@@ -933,6 +1091,10 @@ static void check(const ccr_plugin_file *file)
     g_lang = strncmp(file->ui_language, "ru", 2) == 0 ? 1 : 0;
     memset(g_said, 0, sizeof g_said);
     g_total = 0;
+    g_npend = 0;
+    /* context: is this file Code Hater itself? (a plugin, its name, its rants) */
+    g_self = says(F->source, F->source_len, "ccr_plugin.h") && says(F->source, F->source_len, "\"code_hater\"") &&
+             says(F->source, F->source_len, "R_RUST_TEXT");
     for (uint32_t k = 0; k < F->node_count; ++k) {
         if (outside(k))
             continue;
@@ -954,26 +1116,41 @@ static void check(const ccr_plugin_file *file)
         else if (cpp && strcmp(kind, "Using") == 0 && is_header(F->path) && N(k)->parent == F->root && N(k)->src_end > N(k)->src_begin &&
                  strncmp(F->source + N(k)->src_begin, "using namespace", 15) == 0)
             say(k, R_USING_HEADER, N(k)->name, 0);
-        else if (strcmp(kind, "String") == 0) {
+        else if (strcmp(kind, "String") == 0 && !g_self && !literal_is_data(k)) {
             size_t at, len;
+            /* as the file spells it (the tree's own copy has its letters escaped) */
             const char *s = N(k)->name;
-            if (rusty(s, strlen(s), &at, &len)) {
+            size_t sl = strlen(s);
+            if (N(k)->src_end > N(k)->src_begin && N(k)->src_end <= F->source_len) {
+                s = F->source + N(k)->src_begin;
+                sl = N(k)->src_end - N(k)->src_begin;
+            }
+            if (rusty(s, sl, &at, &len)) {
                 char q[96];
-                size_t sl = strlen(s);
                 if (sl >= 2 && s[0] == '"' && s[sl - 1] == '"') {   /* without its quotes */
                     ++s;
                     sl -= 2;
                 }
                 quote(q, sizeof q, s, sl);
-                say(statement_of(k), R_RUST_TEXT, q, 0);
+                say(statement_of(k), advocates(s, sl) ? R_RUST_TEXT : R_RUST_MENTION, q, 0);
             }
         }
-        if ((strcmp(kind, "Var") == 0 || strcmp(kind, "Function") == 0 || strcmp(kind, "Param") == 0 ||
+        if (!g_self &&
+            (strcmp(kind, "Var") == 0 || strcmp(kind, "Function") == 0 || strcmp(kind, "Param") == 0 ||
              strcmp(kind, "Field") == 0 || strcmp(kind, "Struct") == 0 || strcmp(kind, "Typedef") == 0) &&
             rusty_name(N(k)->name))
             say(is(N(k)->parent, "Function") ? N(k)->parent : k, R_RUST_NAME, N(k)->name, 0);
     }
-    check_rust_text();
+    if (g_self) {   /* says so once, on its own plugin descriptor (or the first thing in the file) */
+        uint32_t at = NONE;
+        for (uint32_t k = 0; k < F->node_count && at == NONE; ++k)
+            if (is(k, "Var") && strstr(N(k)->type, "ccr_plugin") && N(k)->parent == F->root)
+                at = k;
+        say(at != NONE ? at : N(F->root)->first_child, R_SELF, "", 0);
+    } else {
+        check_rust_text();
+    }
+    say_all();
     F = NULL;
 }
 

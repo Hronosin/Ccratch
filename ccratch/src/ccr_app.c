@@ -29,10 +29,12 @@
 #include "ccr_theme.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* Colours: whatever the theme says */
 #define COL_BG        ccr_th(CCR_C_BG)
@@ -279,6 +281,7 @@ static void print_usage(const char *argv0)
            "  --theme NAME           look: shrine, serious, masochist, scratch...\n"
            "  --list-themes          show the themes found, and where\n"
            "  --check-theme FILE     check a theme file for unknown keys and bad colours\n"
+           "  --check-arrangement FILE  check an arrangement of the blocks (.arrange)\n"
            "  --check-lang FILE      check a language pack for missing or broken text\n"
            "  --check-explain FILE   check a block explanation file (lang/CODE.explain);\n"
            "                         --complete after it: every block must be there\n"
@@ -427,6 +430,9 @@ static int run_roundtrip(const ccr_options *opt)
 }
 
 /* Returns -1 to keep running, otherwise an exit code. */
+static char *read_file(const char *path, size_t *len);
+static void arrange_on_open(ccr_editor *ed);
+
 static int parse_args(int argc, char **argv, ccr_options *opt)
 {
     for (int i = 1; i < argc; ++i) {
@@ -464,6 +470,17 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             return 0;
         } else if (strcmp(a, "--check-theme") == 0 && i + 1 < argc) {
             return ccr_theme_check(argv[++i], true, stdout) == 0 ? 0 : 1;
+        } else if (strcmp(a, "--check-arrangement") == 0 && i + 1 < argc) {
+            size_t len = 0;
+            char *text = read_file(argv[++i], &len), err[300];
+            ccr_arrangement arr;
+            const bool ok = text && ccr_arrangement_parse(text, &arr, err, sizeof err);
+            if (ok)
+                printf("%s: %s, %d columns\n", argv[i], arr.name, arr.ncols);
+            else
+                printf("%s: %s\n", argv[i], text ? err : "cannot read it");
+            free(text);
+            return ok ? 0 : 1;
         } else if (strcmp(a, "--eula") == 0) {
             opt->eula = true;
         } else if (strcmp(a, "--ranges") == 0) {
@@ -801,9 +818,10 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
         char lp[1200];
         size_t ll = 0;
         char *lt = ccr_config_layout_path(path, lp, sizeof lp, false) ? read_file(lp, &ll) : NULL;
-        if (lt)
-            ccr_editor_layout_apply(&next.ed, lt);
+        const int placed = lt ? ccr_editor_layout_apply(&next.ed, lt) : 0;
         free(lt);
+        if (!placed && next.ed.ast.lang == CCR_LANG_C)   /* opened for the first time: the starred arrangement */
+            arrange_on_open(&next.ed);
     }
     if (errors)
         ccr_trnf(next.status, sizeof next.status, CCR_T_LOADED_ERRORS, errors,
@@ -8108,34 +8126,473 @@ static void arrange_button(float right, int h, bool input)
         tip(r, ccr_tr(CCR_T_ARR_TIP));
 }
 
-/* The menu, over the canvas, above the button. */
+/* --------------------------------------- arrangements of your own
+ *
+ * Besides the three built in, arrangements made in the builder (or written
+ * by hand: arrangements/NAME.arrange, ccr_arrange.h) are in the menu too.
+ * Any of them can be the one files are laid out with when they open for
+ * the first time (the star).
+ */
+#define ARR_MAX 32
+
+static struct {
+    ccr_arrangement list[ARR_MAX];
+    char            path[ARR_MAX][1300];
+    int             n;
+    bool            loaded;
+} g_arrs;
+
+/* "" or "columns": as opened; "tiles", "calls"; "custom:CODE" */
+static char g_arr_default[96];
+
+static bool arrs_user_dir(char *out, size_t cap, bool make)
+{
+    char home[1024];
+    if (!ccr_config_home("XDG_DATA_HOME", ".local/share", home, sizeof home))
+        return false;
+    snprintf(out, cap, "%s/ccratch/arrangements", home);
+    if (make) {
+        char p[1100];
+        snprintf(p, sizeof p, "%s/ccratch", home);
+        mkdir(p, 0755);
+        mkdir(out, 0755);
+    }
+    return true;
+}
+
+static void arrs_load(void)
+{
+    g_arrs.n = 0;
+    g_arrs.loaded = true;
+    char dirs[4][1024];
+    int nd = ccr_config_data_dirs("arrangements", "CCRATCH_ARRANGE_DIR", dirs, 4);
+    for (int d = 0; d < nd; ++d) {
+        DIR *dir = opendir(dirs[d]);
+        if (!dir)
+            continue;
+        for (struct dirent *e; (e = readdir(dir)) != NULL && g_arrs.n < ARR_MAX;) {
+            const size_t l = strlen(e->d_name);
+            if (l < 9 || strcmp(e->d_name + l - 8, ".arrange") != 0)
+                continue;
+            char code[64];
+            snprintf(code, sizeof code, "%.*s", (int)(l - 8), e->d_name);
+            bool seen = false;   /* the same one further down the list: the first one found wins */
+            for (int k = 0; k < g_arrs.n && !seen; ++k)
+                seen = strcmp(g_arrs.list[k].code, code) == 0;
+            if (seen)
+                continue;
+            char path[1300], err[200];
+            snprintf(path, sizeof path, "%.1023s/%.255s", dirs[d], e->d_name);
+            size_t len = 0;
+            char *text = read_file(path, &len);
+            ccr_arrangement *a = &g_arrs.list[g_arrs.n];
+            if (text && ccr_arrangement_parse(text, a, err, sizeof err)) {
+                snprintf(a->code, sizeof a->code, "%s", code);
+                snprintf(g_arrs.path[g_arrs.n], sizeof g_arrs.path[0], "%s", path);
+                ++g_arrs.n;
+            } else if (text) {
+                fprintf(stderr, "ccratch: %s: %s\n", path, err);
+            }
+            free(text);
+        }
+        closedir(dir);
+    }
+}
+
+static const ccr_arrangement *arrs_find(const char *code)
+{
+    if (!g_arrs.loaded)
+        arrs_load();
+    for (int k = 0; k < g_arrs.n; ++k)
+        if (strcmp(g_arrs.list[k].code, code) == 0)
+            return &g_arrs.list[k];
+    return NULL;
+}
+
+/* Into the user's folder, under its own name's code. */
+static bool arrs_save(ccr_arrangement *a, char *err, size_t cap)
+{
+    char dir[1100], path[1300], text[4096];
+    if (!a->code[0])
+        ccr_arrangement_code(a->name, a->code, sizeof a->code);
+    if (!arrs_user_dir(dir, sizeof dir, true)) {
+        snprintf(err, cap, "no home folder");
+        return false;
+    }
+    snprintf(path, sizeof path, "%s/%s.arrange", dir, a->code);
+    ccr_arrangement_write(a, text, sizeof text);
+    if (!write_file(path, text, strlen(text))) {
+        snprintf(err, cap, "cannot write %.150s", path);
+        return false;
+    }
+    arrs_load();
+    return true;
+}
+
+static void arr_default_set(const char *v)
+{
+    snprintf(g_arr_default, sizeof g_arr_default, "%s", v);
+    settings_remember("arrange_default", v[0] ? v : "columns");
+}
+
+/* A file opening with no layout kept for it: the arrangement the star is on. */
+static void arrange_on_open(ccr_editor *ed)
+{
+    static bool read;
+    if (!read) {
+        read = true;
+        ccr_config_get("arrange_default", g_arr_default, sizeof g_arr_default);
+    }
+    if (!g_arr_default[0] || strcmp(g_arr_default, "columns") == 0)
+        return;   /* as it opens anyway */
+    if (strncmp(g_arr_default, "custom:", 7) == 0) {
+        const ccr_arrangement *a = arrs_find(g_arr_default + 7);
+        if (a)
+            ccr_editor_arrange_quietly(ed, CCR_ARRANGE_COLUMNS, a, 1.6f);
+        return;
+    }
+    ccr_editor_arrange_quietly(ed, strcmp(g_arr_default, "calls") == 0 ? CCR_ARRANGE_CALLS : CCR_ARRANGE_TILES, NULL,
+                               1.6f);
+}
+
+/* The colour a kind of thing has in the builder and its preview: its blocks'. */
+static ccr_color akind_color(unsigned bit)
+{
+    switch (bit) {
+    case CCR_AK_INCLUDES:
+    case CCR_AK_MACROS:  return ccr_th_cat(CCR_CAT_PREPROC, CCR_FILL);
+    case CCR_AK_TYPES:   return ccr_th_cat(CCR_CAT_TYPE, CCR_FILL);
+    case CCR_AK_GLOBALS: return ccr_th_cat(CCR_CAT_VARIABLE, CCR_FILL);
+    case CCR_AK_PROTOS:  return ccr_th_cat(CCR_CAT_CALL, CCR_FILL);
+    case CCR_AK_MAIN:    return ccr_th_cat(CCR_CAT_CONTROL, CCR_FILL);
+    case CCR_AK_FUNCS:   return ccr_th_cat(CCR_CAT_EVENT, CCR_FILL);
+    case CCR_AK_CLASSES: return ccr_th_cat(CCR_CAT_TYPE, CCR_EDGE);
+    default:             return ccr_th_cat(CCR_CAT_DRAGON, CCR_FILL);
+    }
+}
+
+static const ccr_text g_akind_text[CCR_AK_COUNT] = {
+    CCR_T_ARR_K_INCLUDES, CCR_T_ARR_K_MACROS, CCR_T_ARR_K_TYPES, CCR_T_ARR_K_GLOBALS, CCR_T_ARR_K_PROTOS,
+    CCR_T_ARR_K_MAIN, CCR_T_ARR_K_FUNCS, CCR_T_ARR_K_CLASSES, CCR_T_ARR_K_LOOSE, CCR_T_ARR_K_REST,
+};
+static const ccr_text g_aorder_text[CCR_AO_COUNT] = { CCR_T_ARR_ORDER_FILE, CCR_T_ARR_ORDER_NAME,
+                                                     CCR_T_ARR_ORDER_SIZE, CCR_T_ARR_ORDER_CALLS };
+static const float g_wraps[4] = { 0.0f, 1200.0f, 2400.0f, 4800.0f };
+static const ccr_text g_wrap_text[4] = { CCR_T_ARR_WRAP_NONE, CCR_T_ARR_WRAP_OFTEN, CCR_T_ARR_WRAP_SOME,
+                                         CCR_T_ARR_WRAP_RARE };
+
+/* The builder: a dialog over everything. */
+static struct {
+    bool            open;
+    ccr_arrangement a;
+    bool            name_focus;
+    bool            on_open;    /* the star: files are arranged so when they open */
+    char            err[300];
+} g_ab;
+
+static void builder_open(const ccr_arrangement *from)
+{
+    memset(&g_ab, 0, sizeof g_ab);
+    g_ab.open = true;
+    if (from) {
+        g_ab.a = *from;
+        char want[96];
+        snprintf(want, sizeof want, "custom:%s", from->code);
+        g_ab.on_open = strcmp(g_arr_default, want) == 0;
+    } else {   /* a start: as a file opens, with a column for what is left */
+        snprintf(g_ab.a.name, sizeof g_ab.a.name, "%s", ccr_tr(CCR_T_ARR_MINE));
+        g_ab.a.ncols = 3;
+        g_ab.a.cols[0].kinds = CCR_AK_INCLUDES | CCR_AK_MACROS | CCR_AK_TYPES | CCR_AK_GLOBALS | CCR_AK_PROTOS;
+        g_ab.a.cols[1].kinds = CCR_AK_MAIN | CCR_AK_FUNCS | CCR_AK_CLASSES;
+        g_ab.a.cols[2].kinds = CCR_AK_LOOSE | CCR_AK_REST;
+        g_ab.name_focus = true;
+        ccr_gui_textbox_reset();
+        ccr_gui_textbox_select_all();
+    }
+}
+
+/* A star: the default. */
+static void draw_star(ccr_vec2 c, float r, bool filled, ccr_color col)
+{
+    ccr_vec2 p[10];
+    for (int i = 0; i < 10; ++i) {
+        const float a = -1.5707963f + (float)i * 0.6283185f, rr = (i & 1) ? r * 0.45f : r;
+        p[i] = (ccr_vec2){ c.x + cosf(a) * rr, c.y + sinf(a) * rr };
+    }
+    for (int i = 0; i < 10; ++i) {
+        if (filled)
+            ccr_gui_triangle(c, p[i], p[(i + 1) % 10], col);
+        ccr_gui_line(p[i], p[(i + 1) % 10], 1.2f, col);
+    }
+}
+
+static void builder_frame(int w, int h, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport)
+{
+    if (!g_ab.open)
+        return;
+    const ccr_vec2 m = ccr_gui_mouse();
+    const ccr_button_style plain = *button_style(false), *mainb = button_style(true);
+    ccr_gui_rect((ccr_rect){ 0, 0, (float)w, (float)h }, ccr_th(CCR_C_BACKDROP));
+    const float colw = 168.0f, gap = 10.0f;
+    const float cols_w = (float)(g_ab.a.ncols + (g_ab.a.ncols < CCR_ARRANGE_MAX_COLS)) * (colw + gap);
+    const float dw = fminf(fmaxf(cols_w + 40.0f, 760.0f), (float)w - 40.0f), dh = fminf(680.0f, (float)h - 40.0f);
+    const ccr_rect d = { ((float)w - dw) * 0.5f, ((float)h - dh) * 0.5f, dw, dh };
+    ccr_gui_rect_rounded((ccr_rect){ d.x + 4, d.y + 5, d.w, d.h }, 0.03f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ d.x - 1, d.y - 1, d.w + 2, d.h + 2 }, 0.03f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(d, 0.03f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    float y = d.y + 14.0f;
+    const float l = d.x + 20.0f, r = d.x + d.w - 20.0f;
+    ccr_gui_text(ccr_tr(CCR_T_ARR_BUILDER), l, y, 18.0f, ccr_th(CCR_C_PANEL_TEXT));
+    y += 30.0f;
+    /* its name */
+    {
+        const ccr_rect nb = { l, y, fminf(320.0f, r - l), 30.0f };
+        bool other = false;
+        srch_field(nb, g_ab.a.name, (int)sizeof g_ab.a.name, &g_ab.name_focus, &other, ccr_tr(CCR_T_ARR_NAME), true);
+        wrap_text(ccr_tr(CCR_T_ARR_HINT), nb.x + nb.w + 16.0f, y, r - (nb.x + nb.w + 16.0f), 12.5f,
+                  ccr_th(CCR_C_PANEL_HINT), true);
+        y += 46.0f;
+    }
+
+    /* the columns */
+    const float ch = 10.0f * 21.0f + 96.0f;
+    int remove = -1, move = -1, move_by = 0;
+    ccr_gui_clip_begin((ccr_rect){ l - 4, y - 4, r - l + 8, ch + 8 });
+    for (int c = 0; c < g_ab.a.ncols; ++c) {
+        ccr_arrange_col *col = &g_ab.a.cols[c];
+        const ccr_rect cr = { l + (float)c * (colw + gap), y, colw, ch };
+        ccr_gui_rect_rounded(cr, 0.06f, (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0x70u);
+        char head[48];
+        ccr_trf(head, sizeof head, CCR_T_ARR_COLUMN, c + 1);
+        ccr_gui_text(head, cr.x + 10.0f, cr.y + 8.0f, 14.0f, ccr_th(CCR_C_PANEL_TEXT));
+        /* <  >  x */
+        const char *icons[3] = { "<", ">", "x" };
+        for (int k = 0; k < 3; ++k) {
+            const ccr_rect ib = { cr.x + cr.w - 70.0f + 23.0f * (float)k, cr.y + 5.0f, 20.0f, 20.0f };
+            const bool can = k == 0 ? c > 0 : k == 1 ? c + 1 < g_ab.a.ncols : g_ab.a.ncols > 1;
+            if (!can)
+                continue;
+            const bool over = point_in(m, ib);
+            if (over)
+                ccr_gui_rect_rounded(ib, 0.3f, ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_text(icons[k], ib.x + 6.0f, ib.y + 2.0f, 14.0f, over ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+            if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+                if (k == 2)
+                    remove = c;
+                else {
+                    move = c;
+                    move_by = k == 0 ? -1 : 1;
+                }
+            }
+        }
+        /* what it takes: a tick per kind (a kind is in one column only) */
+        float ky = cr.y + 34.0f;
+        for (int k = 0; k < CCR_AK_COUNT; ++k, ky += 21.0f) {
+            const unsigned bit = 1u << k;
+            const bool on = (col->kinds & bit) != 0;
+            const ccr_rect kr = { cr.x + 6.0f, ky, cr.w - 12.0f, 19.0f };
+            const bool over = point_in(m, kr);
+            if (over)
+                ccr_gui_rect_rounded(kr, 0.3f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x40u);
+            const ccr_color kc = akind_color(bit);
+            ccr_gui_rect_rounded((ccr_rect){ kr.x + 3.0f, ky + 3.0f, 13.0f, 13.0f }, 0.3f,
+                                 on ? kc : (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0x90u);
+            if (on) {   /* a tick */
+                ccr_gui_line((ccr_vec2){ kr.x + 6.0f, ky + 9.5f }, (ccr_vec2){ kr.x + 8.5f, ky + 12.5f }, 1.8f, 0xFFFFFFFFu);
+                ccr_gui_line((ccr_vec2){ kr.x + 8.5f, ky + 12.5f }, (ccr_vec2){ kr.x + 13.5f, ky + 6.0f }, 1.8f, 0xFFFFFFFFu);
+            }
+            ccr_gui_clip_begin((ccr_rect){ kr.x + 20.0f, ky, kr.w - 22.0f, 19.0f });
+            ccr_gui_text(ccr_tr(g_akind_text[k]), kr.x + 22.0f, ky + 2.0f, 13.0f,
+                         on ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+            ccr_gui_clip_end();
+            if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+                if (on) {
+                    if (col->kinds != bit)   /* a column keeps one at least */
+                        col->kinds &= ~bit;
+                } else {
+                    for (int o = 0; o < g_ab.a.ncols; ++o)
+                        g_ab.a.cols[o].kinds &= ~bit;
+                    col->kinds |= bit;
+                    for (int o = 0; o < g_ab.a.ncols; ++o)   /* one it emptied: gone */
+                        if (!g_ab.a.cols[o].kinds && remove < 0)
+                            remove = o;
+                }
+            }
+        }
+        /* its order, and whether it wraps: a click goes to the next */
+        const char *ol = ccr_tr(g_aorder_text[col->order]);
+        const ccr_rect ob = { cr.x + 6.0f, ky + 6.0f, cr.w - 12.0f, 24.0f };
+        if (ccr_gui_button(ob, ol, &plain))
+            col->order = (ccr_aorder)((col->order + 1) % CCR_AO_COUNT);
+        tip(ob, ccr_tr(CCR_T_ARR_ORDER_TIP));
+        int wi = 0;
+        while (wi < 3 && g_wraps[wi] != col->wrap)
+            ++wi;
+        if (g_wraps[wi] != col->wrap)
+            wi = 0;
+        const ccr_rect wb = { cr.x + 6.0f, ky + 34.0f, cr.w - 12.0f, 24.0f };
+        if (ccr_gui_button(wb, ccr_tr(g_wrap_text[wi]), &plain))
+            col->wrap = g_wraps[(wi + 1) % 4];
+        tip(wb, ccr_tr(CCR_T_ARR_WRAP_TIP));
+    }
+    if (g_ab.a.ncols < CCR_ARRANGE_MAX_COLS) {   /* + a column */
+        const ccr_rect ar = { l + (float)g_ab.a.ncols * (colw + gap), y, 120.0f, 40.0f };
+        if (ccr_gui_button(ar, ccr_tr(CCR_T_ARR_ADD_COLUMN), &plain)) {
+            ccr_arrange_col *nc = &g_ab.a.cols[g_ab.a.ncols++];
+            memset(nc, 0, sizeof *nc);
+            /* it takes what is left over: "everything else" moves to it */
+            for (int o = 0; o + 1 < g_ab.a.ncols; ++o)
+                g_ab.a.cols[o].kinds &= ~CCR_AK_REST;
+            nc->kinds = CCR_AK_REST;
+            for (int o = 0; o + 1 < g_ab.a.ncols; ++o)
+                if (!g_ab.a.cols[o].kinds)
+                    g_ab.a.cols[o].kinds = CCR_AK_LOOSE;
+        }
+    }
+    ccr_gui_clip_end();
+    if (move >= 0 && move + move_by >= 0 && move + move_by < g_ab.a.ncols) {
+        const ccr_arrange_col t = g_ab.a.cols[move];
+        g_ab.a.cols[move] = g_ab.a.cols[move + move_by];
+        g_ab.a.cols[move + move_by] = t;
+    }
+    if (remove >= 0 && g_ab.a.ncols > 1) {
+        const unsigned lost = g_ab.a.cols[remove].kinds;
+        memmove(&g_ab.a.cols[remove], &g_ab.a.cols[remove + 1],
+                (size_t)(g_ab.a.ncols - remove - 1) * sizeof g_ab.a.cols[0]);
+        --g_ab.a.ncols;
+        g_ab.a.cols[remove < g_ab.a.ncols ? remove : g_ab.a.ncols - 1].kinds |= lost;   /* nothing lost */
+    }
+    y += ch + 16.0f;
+
+    /* this file, so arranged: a little map of it */
+    const float bottom = d.y + d.h - 56.0f;
+    if (doc->loaded && bottom - y > 60.0f) {
+        ccr_gui_text(ccr_tr(CCR_T_ARR_PREVIEW), l, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+        y += 20.0f;
+        const ccr_rect pv = { l, y, r - l, bottom - y - 8.0f };
+        ccr_gui_rect_rounded(pv, 0.04f, ccr_th(CCR_C_BG));
+        enum { PMAX = 512 };
+        static ccr_rect boxes[PMAX];
+        static unsigned kinds[PMAX];
+        const int n = ccr_editor_arrange_preview(&doc->ed, CCR_ARRANGE_COLUMNS, &g_ab.a, 1.6f, boxes, kinds, PMAX);
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        for (int i = 0; i < n; ++i) {
+            x0 = fminf(x0, boxes[i].x);
+            y0 = fminf(y0, boxes[i].y);
+            x1 = fmaxf(x1, boxes[i].x + boxes[i].w);
+            y1 = fmaxf(y1, boxes[i].y + boxes[i].h);
+        }
+        if (n && x1 > x0 && y1 > y0) {
+            const float k = fminf((pv.w - 16.0f) / (x1 - x0), (pv.h - 16.0f) / (y1 - y0));
+            ccr_gui_clip_begin(pv);
+            for (int i = 0; i < n; ++i)
+                ccr_gui_rect_rounded((ccr_rect){ pv.x + 8.0f + (boxes[i].x - x0) * k, pv.y + 8.0f + (boxes[i].y - y0) * k,
+                                                 fmaxf(boxes[i].w * k, 2.0f), fmaxf(boxes[i].h * k, 2.0f) },
+                                     0.2f, akind_color(kinds[i]));
+            ccr_gui_clip_end();
+        }
+    }
+
+    /* the star, and the buttons */
+    const float by = d.y + d.h - 46.0f;
+    const char *labels[3] = { ccr_tr(CCR_T_ARR_SAVE), ccr_tr(CCR_T_ARR_TRY), ccr_tr(CCR_T_ARR_CANCEL) };
+    float buttons_w = 0.0f;
+    for (int k = 0; k < 3; ++k)
+        buttons_w += ccr_gui_text_width(labels[k], 15.0f) + 36.0f;
+    {
+        const ccr_rect sr = { l, by + 2.0f, r - l - buttons_w - 12.0f, 26.0f };
+        draw_star((ccr_vec2){ l + 9.0f, by + 15.0f }, 8.0f, g_ab.on_open, ccr_th(CCR_C_GLOW));
+        ccr_gui_clip_begin((ccr_rect){ l + 22.0f, by, sr.w - 22.0f, 30.0f });
+        ccr_gui_text(ccr_tr(CCR_T_ARR_ON_OPEN), l + 24.0f, by + 7.0f, 13.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_clip_end();
+        if (point_in(m, sr) && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+            g_ab.on_open = !g_ab.on_open;
+    }
+    if (g_ab.err[0])
+        ccr_gui_text(g_ab.err, l, by - 18.0f, 12.5f, ccr_th(CCR_C_ERROR));
+    float bx = r;
+    int pressed = -1;
+    for (int k = 0; k < 3; ++k) {
+        const float bw = ccr_gui_text_width(labels[k], 15.0f) + 28.0f;
+        bx -= bw;
+        if (ccr_gui_button((ccr_rect){ bx, by, bw, 30.0f }, labels[k], k == 0 ? mainb : &plain))
+            pressed = k;
+        bx -= 8.0f;
+    }
+    if (ccr_gui_key_pressed(CCR_KEY_ESCAPE) && !g_ab.name_focus)
+        pressed = 2;
+    if (pressed == 1 && doc->loaded) {   /* try it: on this file, Ctrl+Z takes it back */
+        if (ccr_editor_arrange_custom(&doc->ed, &g_ab.a))
+            fit_view_smooth(cv, doc, viewport);
+    } else if (pressed == 0) {
+        char err[200];
+        if (!g_ab.a.name[0])
+            snprintf(g_ab.a.name, sizeof g_ab.a.name, "%s", ccr_tr(CCR_T_ARR_MINE));
+        if (!arrs_save(&g_ab.a, err, sizeof err)) {
+            ccr_trf(g_ab.err, sizeof g_ab.err, CCR_T_ARR_NOT_SAVED, err);
+            return;
+        }
+        char def[96];
+        snprintf(def, sizeof def, "custom:%s", g_ab.a.code);
+        if (g_ab.on_open)
+            arr_default_set(def);
+        else if (strcmp(g_arr_default, def) == 0)
+            arr_default_set("");
+        if (doc->loaded)
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_ARR_SAVED, g_ab.a.name);
+        g_ab.open = false;
+    } else if (pressed == 2) {
+        g_ab.open = false;
+    }
+}
+
+/* The menu, over the canvas, above the button: the three built in, the
+ * ones of your own (a pencil changes one, x deletes it), "+ your own...",
+ * and a star on each: files that open for the first time are laid out
+ * like the one it is on. */
 static void arrange_menu(int w, int h, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, float right)
 {
     if (!g_arr.open)
         return;
+    if (!g_arrs.loaded) {
+        arrs_load();
+        ccr_config_get("arrange_default", g_arr_default, sizeof g_arr_default);
+    }
     const ccr_vec2 m = ccr_gui_mouse();
     static const ccr_text names[CCR_ARRANGE_COUNT] = { CCR_T_ARR_COLUMNS, CCR_T_ARR_TILES, CCR_T_ARR_CALLS };
     static const ccr_text hints[CCR_ARRANGE_COUNT] = { CCR_T_ARR_COLUMNS_HINT, CCR_T_ARR_TILES_HINT,
                                                       CCR_T_ARR_CALLS_HINT };
-    float mw = 360.0f;
-    const float row = 54.0f;
+    static const char *const keys[CCR_ARRANGE_COUNT] = { "columns", "tiles", "calls" };
+    static int delete_ask = -1;
+    static double delete_at;
+    float mw = 380.0f;
+    const float row = 54.0f, crow = 34.0f;
     for (int i = 0; i < CCR_ARRANGE_COUNT; ++i)   /* as wide as its longest line */
-        mw = fmaxf(mw, ccr_gui_text_width(ccr_tr(hints[i]), 12.5f) + 72.0f);
+        mw = fmaxf(mw, ccr_gui_text_width(ccr_tr(hints[i]), 12.5f) + 100.0f);
     mw = fminf(mw, (float)w - 16.0f);
     const float foot = wrap_text(ccr_tr(CCR_T_ARR_FREE), 0, 0, mw - 28.0f, 12.5f, 0, false);
-    const float mh = 40.0f + row * CCR_ARRANGE_COUNT + foot + 18.0f;
+    const float mh = 40.0f + row * CCR_ARRANGE_COUNT + crow * (float)(g_arrs.n + 1) + 8.0f + foot + 18.0f;
     ccr_rect r = { right - mw, (float)h - STATUSBAR_H - mh - 6.0f, mw, mh };
     if (r.x < 8.0f)
         r.x = 8.0f;
-    ccr_gui_rect_rounded((ccr_rect){ r.x + 3, r.y + 4, r.w, r.h }, 0.06f, ccr_th(CCR_C_SHADOW));
-    ccr_gui_rect_rounded((ccr_rect){ r.x - 1, r.y - 1, r.w + 2, r.h + 2 }, 0.06f, ccr_th(CCR_C_PANEL_EDGE));
-    ccr_gui_rect_rounded(r, 0.06f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    if (r.y < 8.0f)
+        r.y = 8.0f;
+    ccr_gui_rect_rounded((ccr_rect){ r.x + 3, r.y + 4, r.w, r.h }, 0.04f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ r.x - 1, r.y - 1, r.w + 2, r.h + 2 }, 0.04f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(r, 0.04f, ccr_th(CCR_C_PANEL) | 0xFFu);
     ccr_gui_text(ccr_tr(CCR_T_ARR_TITLE), r.x + 14.0f, r.y + 12.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
-    int pick = -1;
-    for (int i = 0; i < CCR_ARRANGE_COUNT; ++i) {
-        const ccr_rect it = { r.x + 6.0f, r.y + 38.0f + row * (float)i, r.w - 12.0f, row - 4.0f };
-        const bool over = point_in(m, it) && doc->loaded;
-        if (over) {
+    int pick = -1, pick_custom = -1, edit = -1, del = -1;
+    bool new_one = false;
+    char star_to[96] = "\x01";   /* not set */
+    float y = r.y + 38.0f;
+    /* the star at the right of a row: on, it is the default */
+    #define STAR_AT(it) (ccr_rect){ (it).x + (it).w - 26.0f, (it).y + ((it).h - 22.0f) * 0.5f, 22.0f, 22.0f }
+    for (int i = 0; i < CCR_ARRANGE_COUNT; ++i, y += row) {
+        const ccr_rect it = { r.x + 6.0f, y, r.w - 12.0f, row - 4.0f };
+        const ccr_rect st = STAR_AT(it);
+        const bool is_default = strcmp(g_arr_default, keys[i]) == 0 || (i == 0 && !g_arr_default[0]);
+        const bool over = point_in(m, it) && doc->loaded, on_star = point_in(m, st);
+        if (over && !on_star) {
             ccr_gui_rect_rounded(it, 0.15f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x50u);
             g_hand = true;
             if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
@@ -8143,19 +8600,150 @@ static void arrange_menu(int w, int h, ccr_document *doc, ccr_canvas *cv, ccr_re
         }
         arrange_icon((ccr_rect){ it.x + 10.0f, it.y + (it.h - 16.0f * 1.1f) * 0.5f, 0, 0 }, i, 1.1f);
         ccr_gui_text(ccr_tr(names[i]), it.x + 48.0f, it.y + 6.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
-        ccr_gui_clip_begin((ccr_rect){ it.x + 48.0f, it.y, it.w - 52.0f, it.h });
+        ccr_gui_clip_begin((ccr_rect){ it.x + 48.0f, it.y, it.w - 80.0f, it.h });
         ccr_gui_text(ccr_tr(hints[i]), it.x + 48.0f, it.y + 26.0f, 12.5f, ccr_th(CCR_C_PANEL_HINT));
         ccr_gui_clip_end();
+        draw_star((ccr_vec2){ st.x + 11.0f, st.y + 11.0f }, 7.5f, is_default,
+                  is_default ? ccr_th(CCR_C_GLOW) : ccr_th(CCR_C_PANEL_HINT));
+        if (on_star) {
+            tip(st, ccr_tr(CCR_T_ARR_DEFAULT_TIP));
+            g_hand = true;
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                snprintf(star_to, sizeof star_to, "%s", i == 0 ? "" : keys[i]);
+        }
     }
-    wrap_text(ccr_tr(CCR_T_ARR_FREE), r.x + 14.0f, r.y + 42.0f + row * CCR_ARRANGE_COUNT, mw - 28.0f, 12.5f,
-              ccr_th(CCR_C_PANEL_HINT), true);
+    /* your own */
+    if (g_arrs.n)
+        ccr_gui_rect((ccr_rect){ r.x + 12.0f, y - 2.0f, r.w - 24.0f, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+    for (int i = 0; i < g_arrs.n; ++i, y += crow) {
+        const ccr_arrangement *a = &g_arrs.list[i];
+        const ccr_rect it = { r.x + 6.0f, y, r.w - 12.0f, crow - 2.0f };
+        const ccr_rect st = STAR_AT(it), xb = { st.x - 26.0f, st.y, 22.0f, 22.0f }, pb = { xb.x - 26.0f, st.y, 22.0f, 22.0f };
+        char def[96];
+        snprintf(def, sizeof def, "custom:%s", a->code);
+        const bool is_default = strcmp(g_arr_default, def) == 0;
+        const bool on_icons = point_in(m, st) || point_in(m, xb) || point_in(m, pb);
+        const bool over = point_in(m, it) && doc->loaded;
+        if (over && !on_icons) {
+            ccr_gui_rect_rounded(it, 0.15f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x50u);
+            g_hand = true;
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                pick_custom = i;
+        }
+        /* its columns, as little bars in the colours of what they take */
+        for (int c = 0; c < a->ncols && c < 5; ++c) {
+            unsigned first = CCR_AK_REST;
+            for (int k = 0; k < CCR_AK_COUNT; ++k)
+                if (a->cols[c].kinds & (1u << k)) {
+                    first = 1u << k;
+                    break;
+                }
+            ccr_gui_rect_rounded((ccr_rect){ it.x + 10.0f + (float)c * 6.0f, it.y + 7.0f, 4.5f, crow - 16.0f }, 0.5f,
+                                 akind_color(first));
+        }
+        ccr_gui_clip_begin((ccr_rect){ it.x + 48.0f, it.y, pb.x - it.x - 52.0f, it.h });
+        ccr_gui_text(ccr_arrangement_title(a, ccr_lang_code()), it.x + 48.0f, it.y + 7.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_clip_end();
+        if (over || is_default) {
+            draw_star((ccr_vec2){ st.x + 11.0f, st.y + 11.0f }, 7.5f, is_default,
+                      is_default ? ccr_th(CCR_C_GLOW) : ccr_th(CCR_C_PANEL_HINT));
+        }
+        if (over) {
+            /* a pencil, an x */
+            const bool op = point_in(m, pb), ox = point_in(m, xb);
+            const ccr_color pc = op ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PANEL_HINT);
+            ccr_gui_line((ccr_vec2){ pb.x + 6, pb.y + 16 }, (ccr_vec2){ pb.x + 15, pb.y + 7 }, 2.2f, pc);
+            ccr_gui_line((ccr_vec2){ pb.x + 5, pb.y + 17 }, (ccr_vec2){ pb.x + 7, pb.y + 15 }, 1.2f, pc);
+            const bool asking = delete_ask == i && ccr_gui_time() - delete_at < 3.0;
+            const ccr_color xc = asking ? ccr_th(CCR_C_ERROR) : ox ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PANEL_HINT);
+            ccr_gui_line((ccr_vec2){ xb.x + 7, xb.y + 7 }, (ccr_vec2){ xb.x + 15, xb.y + 15 }, 1.6f, xc);
+            ccr_gui_line((ccr_vec2){ xb.x + 7, xb.y + 15 }, (ccr_vec2){ xb.x + 15, xb.y + 7 }, 1.6f, xc);
+            if (op) {
+                tip(pb, ccr_tr(CCR_T_ARR_EDIT_TIP));
+                g_hand = true;
+                if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                    edit = i;
+            }
+            if (ox) {
+                tip(xb, ccr_tr(asking ? CCR_T_ARR_DELETE_ASK : CCR_T_ARR_DELETE_TIP));
+                g_hand = true;
+                if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+                    if (asking)
+                        del = i;
+                    else {
+                        delete_ask = i;
+                        delete_at = ccr_gui_time();
+                    }
+                }
+            }
+            if (point_in(m, st)) {
+                tip(st, ccr_tr(CCR_T_ARR_DEFAULT_TIP));
+                g_hand = true;
+                if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                    snprintf(star_to, sizeof star_to, "%s", is_default ? "" : def);
+            }
+        }
+    }
+    {   /* + your own */
+        const ccr_rect it = { r.x + 6.0f, y, r.w - 12.0f, crow - 2.0f };
+        const bool over = point_in(m, it);
+        if (over) {
+            ccr_gui_rect_rounded(it, 0.15f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x50u);
+            g_hand = true;
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                new_one = true;
+        }
+        ccr_gui_text(ccr_tr(CCR_T_ARR_NEW), it.x + 48.0f, it.y + 7.0f, 15.0f, ccr_th(CCR_C_ACCENT));
+        y += crow + 8.0f;
+    }
+    #undef STAR_AT
+    wrap_text(ccr_tr(CCR_T_ARR_FREE), r.x + 14.0f, y, mw - 28.0f, 12.5f, ccr_th(CCR_C_PANEL_HINT), true);
+
+    if (star_to[0] != '\x01') {
+        arr_default_set(star_to);
+        if (doc->loaded) {
+            const char *what = ccr_tr(names[0]);
+            for (int i = 1; i < CCR_ARRANGE_COUNT; ++i)
+                if (strcmp(star_to, keys[i]) == 0)
+                    what = ccr_tr(names[i]);
+            if (strncmp(star_to, "custom:", 7) == 0 && arrs_find(star_to + 7))
+                what = ccr_arrangement_title(arrs_find(star_to + 7), ccr_lang_code());
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_ARR_DEFAULT_NOW, what);
+        }
+        g_arr.just = false;
+        return;
+    }
+    const ccr_rect vis = visible_view(viewport, ccr_gui_width(), ccr_gui_height());
     if (pick >= 0) {
-        const ccr_rect vis = visible_view(viewport, ccr_gui_width(), ccr_gui_height());
         if (ccr_editor_arrange(&doc->ed, (ccr_arrange)pick, vis.w / fmaxf(vis.h, 1.0f)))
             fit_view_smooth(cv, doc, viewport);
         ccr_trf(doc->status, sizeof doc->status, CCR_T_ARR_DONE, ccr_tr(names[pick]));
         doc->has_errors = false;
         g_arr.open = false;
+        return;
+    }
+    if (pick_custom >= 0) {
+        if (ccr_editor_arrange_custom(&doc->ed, &g_arrs.list[pick_custom]))
+            fit_view_smooth(cv, doc, viewport);
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_ARR_DONE,
+                ccr_arrangement_title(&g_arrs.list[pick_custom], ccr_lang_code()));
+        doc->has_errors = false;
+        g_arr.open = false;
+        return;
+    }
+    if (edit >= 0 || new_one) {
+        builder_open(edit >= 0 ? &g_arrs.list[edit] : NULL);
+        g_arr.open = false;
+        return;
+    }
+    if (del >= 0) {
+        remove(g_arrs.path[del]);
+        char def[96];
+        snprintf(def, sizeof def, "custom:%s", g_arrs.list[del].code);
+        if (strcmp(g_arr_default, def) == 0)
+            arr_default_set("");
+        delete_ask = -1;
+        arrs_load();
         return;
     }
     if ((ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(m, r) && !g_arr.just) || ccr_gui_key_pressed(CCR_KEY_ESCAPE))
@@ -9633,7 +10221,7 @@ int ccr_run(int argc, char **argv)
             g_drop.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
         const bool modal = eula.open || g_libs.open || g_quit.open || g_help || g_git.diff_open || g_pick.kind ||
-                           g_ren.open || g_set.open || g_arr.open;   /* a dialog has the mouse */
+                           g_ren.open || g_set.open || g_arr.open || g_ab.open;   /* a dialog has the mouse */
         if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open && !g_set.open)
             g_help = !g_help;
         if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_COMMA) && !eula.open && !g_quit.open) {
@@ -9697,6 +10285,7 @@ int ccr_run(int argc, char **argv)
         palette_follow(&doc);
         const bool git_typing = (g_files_open && g_git.tab && (g_git.msg_focus || g_git.new_focus || g_git.co_focus)) ||
                                 (g_files_open && g_search_tab_on() && (g_srch.find_focus || g_srch.with_focus)) ||
+                                (g_ab.open && g_ab.name_focus) ||
                                 (g_dbg.in_focus && g_dbg.view && g_bp.t > 0.0f);   /* or to the program */
         const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
                              g_fpanel.naming == CCR_NAMING_NONE && !git_typing;   /* typing a new file's name */
@@ -9902,7 +10491,9 @@ int ccr_run(int argc, char **argv)
         const bool gliding = glide_step(&canvas, dt);
         if (!pie.open && !was_open && !modal && !(te.node != CCR_NONE && drop_has_mouse())) {
             const ccr_canvas before = canvas;
-            ccr_canvas_update(&canvas, viewport);
+            /* only where the canvas shows: the wheel over a panel on top of it scrolls the panel */
+            if (!refs_has_mouse(viewport))
+                ccr_canvas_update(&canvas, visible_view(viewport, w, h));
             /* the user panned or zoomed: they have the wheel now */
             if (gliding && (canvas.zoom != before.zoom || canvas.offset.x != before.offset.x ||
                             canvas.offset.y != before.offset.y))
@@ -10128,6 +10719,7 @@ int ccr_run(int argc, char **argv)
         pf_chip(zx - autosave_width() - ARRANGE_W, h, &doc, &canvas, viewport,
                 !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         arrange_menu(w, h, &doc, &canvas, viewport, zx - autosave_width());
+        builder_frame(w, h, &doc, &canvas, viewport);
         ccr_pie_draw(&pie);
         if (doc.loaded)
             op_menu_draw(&opm, &doc.ed, m, w, h);

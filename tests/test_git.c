@@ -255,6 +255,36 @@ int main(void)
     snprintf(path, sizeof path, "%s/c.c", repo);
     CHECK(j.ok && access(path, F_OK) == 0, "pulled: %s", j.said);
 
+    /* a pull with changes not committed in a file the pull changes too:
+     * put aside, pulled, put back (git alone would refuse) */
+    {
+        char ten[200] = "", mine[220], theirs[220];
+        for (int i = 0; i < 10; ++i)
+            snprintf(ten + strlen(ten), sizeof ten - strlen(ten), "int c%d;\n", i);
+        write_text(other, "c.c", ten);
+        CHECK(ccr_git_stage_all(other, err, (int)sizeof err) && ccr_git_commit(other, "Ten", false, false, err, (int)sizeof err) &&
+              ccr_git_net_start(&j, other, CCR_GIT_NET_PUSH, false, err, (int)sizeof err), "ten: %s", err);
+        wait_net(&j);
+        CHECK(ccr_git_net_start(&j, repo, CCR_GIT_NET_PULL, false, err, (int)sizeof err), "pull ten");
+        wait_net(&j);
+        snprintf(mine, sizeof mine, "/* mine */\n%s", ten);
+        write_text(repo, "c.c", mine);
+        snprintf(theirs, sizeof theirs, "%s/* theirs */\n", ten);
+        write_text(other, "c.c", theirs);
+        CHECK(ccr_git_stage_all(other, err, (int)sizeof err) && ccr_git_commit(other, "Theirs", false, false, err, (int)sizeof err) &&
+              ccr_git_net_start(&j, other, CCR_GIT_NET_PUSH, false, err, (int)sizeof err), "theirs: %s", err);
+        wait_net(&j);
+        CHECK(ccr_git_net_start(&j, repo, CCR_GIT_NET_PULL, false, err, (int)sizeof err), "pull over a change");
+        wait_net(&j);
+        FILE *f = fopen(path, "r");
+        char got[400] = "";
+        if (f) {
+            got[fread(got, 1, sizeof got - 1, f)] = '\0';
+            fclose(f);
+        }
+        CHECK(j.ok && strstr(got, "/* mine */") && strstr(got, "/* theirs */"), "both kept: %s\n%s", j.said, got);
+    }
+
     /* a push that cannot work says why, and does not hang */
     const char *bad[] = { "remote", "set-url", "origin", "https://127.0.0.1:1/nothing.git", NULL };
     free(ccr_git_run(repo, bad, NULL));

@@ -88,6 +88,45 @@
     X(ARR_CALLS_HINT,   "arrange.calls_hint",    0, "main on the left, what it calls to its right, and on") \
     X(ARR_FREE,         "arrange.free",          0, "Or drag any block anywhere: it stays where you put it, lines up with its neighbours on the way, and is there again when the file opens. Ctrl+Z puts an arrangement back.") \
     X(ARR_DONE,         "arrange.done",          0, "Arranged: %s (Ctrl+Z puts it back)") \
+    X(ARR_NEW,          "arrange.new",           0, "+ An arrangement of your own...")  \
+    X(ARR_MINE,         "arrange.mine",          0, "Mine")                              \
+    X(ARR_EDIT_TIP,     "arrange.edit_tip",      0, "Change it")                         \
+    X(ARR_DELETE_TIP,   "arrange.delete_tip",    0, "Delete it")                         \
+    X(ARR_DELETE_ASK,   "arrange.delete_ask",    0, "Click again: it is deleted")        \
+    X(ARR_DEFAULT_TIP,  "arrange.default_tip",   0, "The star: files that open for the first time are laid out like this") \
+    X(ARR_DEFAULT_NOW,  "arrange.default_now",   0, "Files that open for the first time are laid out: %s") \
+    X(ARR_BUILDER,      "arrange.builder",       0, "An arrangement of your own")        \
+    X(ARR_NAME,         "arrange.name",          0, "Its name")                          \
+    X(ARR_HINT,         "arrange.hint",          0, "Columns, left to right. Each takes what is ticked in it; what no column takes goes to \"everything else\". It fits any file: it is rules, not places.") \
+    X(ARR_COLUMN,       "arrange.column",        0, "Column %d")                         \
+    X(ARR_ADD_COLUMN,   "arrange.add_column",    0, "+ column")                          \
+    X(ARR_K_INCLUDES,   "arrange.k_includes",    0, "#include, using")                   \
+    X(ARR_K_MACROS,     "arrange.k_macros",      0, "#define")                           \
+    X(ARR_K_TYPES,      "arrange.k_types",       0, "types")                             \
+    X(ARR_K_GLOBALS,    "arrange.k_globals",     0, "global variables")                  \
+    X(ARR_K_PROTOS,     "arrange.k_protos",      0, "function declarations")             \
+    X(ARR_K_MAIN,       "arrange.k_main",        0, "main")                              \
+    X(ARR_K_FUNCS,      "arrange.k_funcs",       0, "functions")                         \
+    X(ARR_K_CLASSES,    "arrange.k_classes",     0, "classes, namespaces")               \
+    X(ARR_K_LOOSE,      "arrange.k_loose",       0, "loose stacks")                      \
+    X(ARR_K_REST,       "arrange.k_rest",        0, "everything else")                   \
+    X(ARR_ORDER_FILE,   "arrange.order_file",    0, "as in the file")                    \
+    X(ARR_ORDER_NAME,   "arrange.order_name",    0, "by name")                           \
+    X(ARR_ORDER_SIZE,   "arrange.order_size",    0, "the biggest first")                 \
+    X(ARR_ORDER_CALLS,  "arrange.order_calls",   0, "callers first")                     \
+    X(ARR_ORDER_TIP,    "arrange.order_tip",     0, "The order down the column (a click: the next one)") \
+    X(ARR_WRAP_NONE,    "arrange.wrap_none",     0, "one column")                        \
+    X(ARR_WRAP_OFTEN,   "arrange.wrap_often",    0, "wraps often")                       \
+    X(ARR_WRAP_SOME,    "arrange.wrap_some",     0, "wraps now and then")                \
+    X(ARR_WRAP_RARE,    "arrange.wrap_rare",     0, "wraps rarely")                      \
+    X(ARR_WRAP_TIP,     "arrange.wrap_tip",      0, "Too tall: goes on in a column beside it, like a newspaper (a click: the next)") \
+    X(ARR_PREVIEW,      "arrange.preview",       0, "The file on screen, so arranged:")  \
+    X(ARR_ON_OPEN,      "arrange.on_open",       0, "lay out files like this when they open for the first time") \
+    X(ARR_SAVE,         "arrange.save",          0, "Save")                              \
+    X(ARR_TRY,          "arrange.try",           0, "Try on this file")                  \
+    X(ARR_CANCEL,       "arrange.cancel",        0, "Cancel")                            \
+    X(ARR_SAVED,        "arrange.saved",         0, "Saved: %s (in the arrange menu now)") \
+    X(ARR_NOT_SAVED,    "arrange.not_saved",     0, "Not saved: %s")                     \
     X(SRCH_TITLE,       "search.title",          0, "Search")                            \
     X(SRCH_TAB_TIP,     "search.tab_tip",        0, "Find in every file, and replace (Ctrl+Shift+F, Ctrl+Shift+H)") \
     X(SRCH_TEXT,        "search.text",           0, "Text")                              \

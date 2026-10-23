@@ -649,6 +649,7 @@ bool ccr_git_net_start(ccr_git_job *j, const char *root, ccr_git_net what, bool 
         argv[n++] = "pull";
         argv[n++] = "--no-rebase";
         argv[n++] = "--no-edit";
+        argv[n++] = "--autostash";   /* changes not committed: put aside, pulled, put back */
         break;
     case CCR_GIT_NET_PUSH:
         argv[n++] = "push";

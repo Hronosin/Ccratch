@@ -398,6 +398,33 @@ static void test_arrange(ccr_editor *ed, const char *path)
         CHECK(top_left(ed, pt).x == top_left(ed, fdesc).x, "the struct did not line up with describe");
     }
 
+    /* an arrangement of your own: main alone, the other functions by name, the rest */
+    {
+        ccr_arrangement own;
+        char aerr[200];
+        CHECK(ccr_arrangement_parse("@name = t\ncolumn = main\ncolumn = funcs | order=name\ncolumn = rest\n", &own,
+                                    aerr, sizeof aerr), "arrangement: %s", aerr);
+        const uint32_t hist = ed->history_len;
+        CHECK(ccr_editor_arrange_custom(ed, &own) && ed->history_len == hist + 1, "own arrangement: one undo step");
+        const ccr_vec2 mm = top_left(ed, fmain), ss = top_left(ed, fsum), dd = top_left(ed, fdesc);
+        CHECK(mm.x < ss.x && ss.x == dd.x && dd.y < ss.y, "main, then describe above sum: %.0f %.0f %.0f / %.0f %.0f",
+              mm.x, ss.x, dd.x, dd.y, ss.y);
+        const ccr_node_id inc = N(ed, 0)->first_child;
+        CHECK(top_left(ed, inc).x > ss.x, "the rest: right of the functions");
+        ccr_rect boxes[256];
+        unsigned kinds[256];
+        const int np = ccr_editor_arrange_preview(ed, CCR_ARRANGE_COLUMNS, NULL, 1.6f, boxes, kinds, 256);
+        CHECK(np == (int)ed->script_count && top_left(ed, fmain).x == mm.x, "a preview moves nothing");
+        CHECK(ccr_editor_undo(ed), "undo the own arrangement");
+        ccr_editor_arrange_quietly(&fresh, CCR_ARRANGE_COLUMNS, &own, 1.6f);
+        CHECK(fresh.history_len == 0 &&
+              top_left(&fresh, find_function(&fresh, "main")).x < top_left(&fresh, find_function(&fresh, "sum")).x,
+              "quietly, as a file opens: no undo step");
+        ccr_editor_free(&fresh);
+        ccr_ast_init(&ast);
+        CHECK(ccr_parse_file(path, NULL, 0, &ast) && ccr_editor_init(&fresh, &ast), "reopen again");
+    }
+
     /* the layout, kept and read back into the fresh one */
     char *text = ccr_editor_layout_text(ed);
     CHECK(text && ccr_editor_layout_apply(&fresh, text) > 3, "layout text not read back");
