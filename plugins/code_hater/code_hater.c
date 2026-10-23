@@ -1793,8 +1793,8 @@ static void check_asm_function(uint32_t fn, bool att)
                     depth = labels[i].depth;
                     known = true;
                 }
-            if (!known && last != NONE && !ends_flow(last))
-                known = true;   /* fell into it: the same depth */
+            if (!known && (last == NONE || !ends_flow(last)))
+                known = true;   /* fell into it (or it is where the function starts) */   /* fell into it: the same depth */
             continue;
         }
         const bool directive = is(k, "Call") && !is_insn(k);
@@ -1973,8 +1973,8 @@ static void check_arm_function(uint32_t fn, bool a64)
                     depth = labels[i].depth;
                     known = true;
                 }
-            if (!known && last != NONE && !ends_flow(last))
-                known = true;
+            if (!known && (last == NONE || !ends_flow(last)))
+                known = true;   /* fell into it (or it is where the function starts) */
             continue;
         }
         if (is(k, "Call") && !is_insn(k))
@@ -2103,7 +2103,7 @@ static void check_asm_file(void)
     for (uint32_t h = N(F->root)->first_child; h != NONE; h = N(h)->next_sibling) {
         if (!is(h, "Function") || outside(h))
             continue;
-        if (strcmp(N(h)->type, "label") == 0) {
+        if (strcmp(N(h)->type, "label") == 0 || strcmp(N(h)->type, "function") == 0) {
             if (arch)
                 check_arm_function(h, arch == 1);
             else

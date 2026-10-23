@@ -277,7 +277,8 @@ static bool goes_right(const ccr_editor *ed, ccr_node_id id)
 {
     const ccr_node *n = N(ed, id);
     if (n->kind == CCR_NODE_FUNCTION && ed->ast.lang == CCR_LANG_ASM)   /* code at a label: right; sections: left */
-        return strcmp(ccr_ast_str(&ed->ast, n->type), "label") == 0;
+        return strcmp(ccr_ast_str(&ed->ast, n->type), "label") == 0 ||
+               strcmp(ccr_ast_str(&ed->ast, n->type), "function") == 0;
     if (n->kind == CCR_NODE_FUNCTION)
         return (n->flags & CCR_FLAG_DEFINITION) != 0;
     if (n->kind == CCR_NODE_NAMESPACE)

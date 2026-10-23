@@ -333,7 +333,10 @@ static void test_arm(void)
           strcmp(S(&a, N(&a, kid(&a, push, 0))->name), "{r4, lr}") == 0, "push {r4, lr}: one operand");
     CHECK(find(&a, CCR_NODE_GOTO, ".L3", 0) != CCR_NONE, "bne .L3");
     ccr_node_id nop = ccr_asm_build(&a, CCR_NONE, "mov r0, #0", CCR_ASM_ARM32);
-    ccr_ast_insert_first(&a, kid(&a, find(&a, CCR_NODE_FUNCTION, "g", 0), 0), nop);
+    /* its .globl and .type came first: they and its label are in its own stack */
+    CHECK(strcmp(S(&a, N(&a, find(&a, CCR_NODE_FUNCTION, "g", 0))->type), "function") == 0 &&
+          find(&a, CCR_NODE_LABEL, "g", 0) != CCR_NONE, "g's hat holds its .globl, .type and label");
+    ccr_ast_insert_after(&a, find(&a, CCR_NODE_LABEL, "g", 0), nop);
     a.nodes[nop].flags |= CCR_FLAG_COMMENTED;
     dirty(&a, kid(&a, find(&a, CCR_NODE_FUNCTION, "g", 0), 0));
     t = gen(&a);

@@ -1509,6 +1509,8 @@ static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
     items head = { .n = 0, .used = 0 };
     if (L->ast->lang == CCR_LANG_CMAKE)
         it_text(&head, S(L, N(L, fn)->name));   /* the file: CMake runs it top to bottom */
+    else if (L->ast->lang == CCR_LANG_ASM && strcmp(S(L, N(L, fn)->type), "function") == 0)
+        it_text(&head, S(L, N(L, fn)->name));   /* its label is in the stack, after its .globl and .type */
     else if (L->ast->lang == CCR_LANG_ASM && strcmp(S(L, N(L, fn)->type), "label") == 0)
         it_fmt(&head, "%s:", S(L, N(L, fn)->name));   /* where code starts: a global label */
     else if (L->ast->lang == CCR_LANG_ASM)

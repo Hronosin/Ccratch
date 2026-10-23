@@ -647,6 +647,12 @@ static bool span_eq(const scan *S, span a, span b)
     return a.e - a.b == b.e - b.b && memcmp(S->s + a.b, S->s + b.b, a.e - a.b) == 0;
 }
 
+static bool span_eq_str(const scan *S, span a, const char *s)
+{
+    const size_t n = strlen(s);
+    return a.e - a.b == n && memcmp(S->s + a.b, s, n) == 0;
+}
+
 static bool is_global(const build *B, span name)
 {
     for (uint32_t i = 0; i < B->nglobals; ++i)
@@ -782,6 +788,8 @@ typedef struct hat {
     ccr_node_id fn, block;
     int         kind;    /* 0 file, 1 section, 2 label */
     bool        code;    /* holds more than directives */
+    bool        inside;  /* a label hat whose .globl/.type/.p2align came first: they
+                            and the label are in its stack, in the file's order */
     uint32_t    start;   /* where text for its first statement starts */
 } hat;
 
@@ -823,7 +831,8 @@ static ccr_node_id stmt_node(build *B, ccr_node_id parent, const astmt *t)
                 while (g.b < g.e && hspace(S->s[g.b]))
                     ++g.b;
             }
-            if (read_word(S, g.b) == g.e && g.e > g.b && is_label(B, S->s + g.b, g.e - g.b)) {
+            /* (a jump to a global label is a tail call: another hat, no arrow) */
+            if (read_word(S, g.b) == g.e && g.e > g.b && is_label(B, S->s + g.b, g.e - g.b) && !is_global(B, g)) {
                 id = node(B, CCR_NODE_GOTO, parent, t->all.b, t->all.e, t->line);
                 if (id != CCR_NONE) {
                     a->nodes[id].name = bsub(B, g);
@@ -993,6 +1002,52 @@ static bool build_tree(build *B, const char *name)
             a->nodes[h->fn].type = ccr_ast_intern(a, "section");
             h->kind = 1;
         } else if (global_label || section || !h) {
+            /* clang puts `.globl g`, `.type g`, `.p2align` at the end of the
+             * function before g: they are g's, so they go with it */
+            ccr_node_id run[16];
+            int nrun = 0;
+            if (global_label && h) {
+                static const char *const named[] = { ".globl", ".global", ".type", ".weak", ".hidden", ".protected",
+                                                     ".func", NULL };
+                static const char *const align[] = { ".p2align", ".align", ".balign", NULL };
+                int kids = 0;
+                for (ccr_node_id c = a->nodes[h->block].first_child; c != CCR_NONE; c = a->nodes[c].next_sibling)
+                    ++kids;
+                for (ccr_node_id c = a->nodes[h->block].last_child; c != CCR_NONE && nrun < 16 && nrun + 1 < kids;) {
+                    const ccr_node *k = &a->nodes[c];
+                    char cw[32];
+                    lower(ccr_ast_str(a, k->name), cw, sizeof cw);
+                    const ccr_node_id arg = k->first_child;
+                    const bool mine = k->kind == CCR_NODE_CALL && arg != CCR_NONE && in_list(cw, named) &&
+                                      span_eq_str(S, t->name, ccr_ast_str(a, a->nodes[arg].name));
+                    if (!mine && !(k->kind == CCR_NODE_CALL && in_list(cw, align)))
+                        break;
+                    run[nrun++] = c;
+                    /* the one before it */
+                    ccr_node_id before = CCR_NONE;
+                    for (ccr_node_id q = a->nodes[h->block].first_child; q != c; q = a->nodes[q].next_sibling)
+                        before = q;
+                    c = before;
+                }
+                while (nrun && a->nodes[run[nrun - 1]].kind == CCR_NODE_CALL) {   /* alignment alone stays */
+                    char cw[32];
+                    lower(ccr_ast_str(a, a->nodes[run[nrun - 1]].name), cw, sizeof cw);
+                    if (!in_list(cw, (const char *const[]){ ".p2align", ".align", ".balign", NULL }))
+                        break;
+                    --nrun;
+                }
+                bool any_named = false;
+                for (int q = 0; q < nrun; ++q) {
+                    char cw[32];
+                    lower(ccr_ast_str(a, a->nodes[run[q]].name), cw, sizeof cw);
+                    any_named |= !in_list(cw, (const char *const[]){ ".p2align", ".align", ".balign", NULL });
+                }
+                if (!any_named)
+                    nrun = 0;
+                /* a hat of `.text` and then main's: gcc's way, the hat says it already */
+                if (nrun && nrun + 1 == kids && h->kind == 1)
+                    nrun = 0;
+            }
             if (!grow((void **)&hats, &hcap, nh + 1, sizeof *hats))
                 goto oom;
             h = &hats[nh++];
@@ -1015,6 +1070,18 @@ static bool build_tree(build *B, const char *name)
             h->block = node(B, CCR_NODE_BLOCK, h->fn, t->all.e, t->all.e, t->line);
             if (h->block == CCR_NONE)
                 goto oom;
+            if (nrun) {
+                /* its directives first, then the label itself, in the file's order */
+                h->inside = true;
+                a->nodes[h->fn].type = ccr_ast_intern(a, "function");
+                for (int q = nrun - 1; q >= 0; --q) {
+                    ccr_ast_unlink(a, run[q]);
+                    ccr_ast_append(a, h->block, run[q]);
+                }
+                if (stmt_node(B, h->block, t) == CCR_NONE)
+                    goto oom;
+                continue;
+            }
             if (global_label)
                 continue;   /* the label is the hat's own text */
         }
@@ -1099,7 +1166,7 @@ static bool build_tree(build *B, const char *name)
     uint32_t prev = 0;
     for (uint32_t k = 0; k < nh; ++k) {
         ccr_node *fn = &a->nodes[hats[k].fn];
-        if (hats[k].kind == 2) {
+        if (hats[k].kind == 2 && !hats[k].inside) {
             const uint32_t label_e = fn->src_e;
             finish_block(B, hats[k].block, label_e, label_e, 0);
             fn = &a->nodes[hats[k].fn];

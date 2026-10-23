@@ -1409,8 +1409,33 @@ typedef struct eula_view {
  * Lays out `text` in lines at most `w` wide at (x, y); draws them if
  * `draw`. Returns the height used.
  */
+static float wrap_line(const char *text, float x, float y, float w, float size, ccr_color c, bool draw);
+
+/* Wraps `text` into `w`; its own line breaks stay (an empty line: a gap
+ * between paragraphs). Draws it when `draw`. Its height. */
 static float wrap_text(const char *text, float x, float y, float w, float size, ccr_color c,
                        bool draw)
+{
+    if (!strchr(text, '\n'))
+        return wrap_line(text, x, y, w, size, c, draw);
+    float h = 0.0f;
+    char para[2400];
+    for (const char *p = text;;) {
+        const char *nl = strchr(p, '\n');
+        const size_t n = nl ? (size_t)(nl - p) : strlen(p);
+        snprintf(para, sizeof para, "%.*s", (int)(n < sizeof para ? n : sizeof para - 1), p);
+        if (n == 0)
+            h += size * 0.6f;   /* a blank line: a little air */
+        else
+            h += wrap_line(para, x, y + h, w, size, c, draw);
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    return h;
+}
+
+static float wrap_line(const char *text, float x, float y, float w, float size, ccr_color c, bool draw)
 {
     const float lh = size * 1.3f;
     char line[1200] = "", trial[2400];
@@ -4570,8 +4595,7 @@ static void pf_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewport, 
         ccr_gui_rect_rounded((ccr_rect){ x - 4.0f, y - 2.0f, w + 8.0f, 24.0f }, 0.2f, ccr_th(CCR_C_FIELD));
         ccr_gui_clip_begin((ccr_rect){ x, y - 2.0f, w, 24.0f });
         ccr_gui_text(quoted, x + 4.0f, y + 2.0f, 14.0f, ccr_th(CCR_C_FIELD_TEXT));
-        ccr_gui_clip_end();
-        ccr_gui_clip_begin((ccr_rect){ clip.x - 3, clip.y - 3, clip.w + 6, clip.h + 6 });
+        ccr_gui_clip_end();   /* back to the outer clip: they nest */
         y += 30.0f;
     }
     for (int i = first; i < g_pf.n; ++i) {
@@ -4783,8 +4807,7 @@ static void explain_card(int h, bool interactive, float dt)
         ccr_gui_rect((ccr_rect){ box.x, box.y + 4.0f, 3.0f, box.h - 8.0f }, ccr_th(CCR_C_ACCENT));
         ccr_gui_clip_begin((ccr_rect){ box.x + 8.0f, box.y, box.w - 12.0f, box.h });
         code_lines(example, x + 8.0f, y + 7.0f, 13.0f, ccr_th(CCR_C_FIELD_TEXT), true);
-        ccr_gui_clip_end();
-        ccr_gui_clip_begin((ccr_rect){ card.x, card.y, card.w, card.h });
+        ccr_gui_clip_end();   /* back to the outer clip: they nest */
         y += eh + 4.0f;
     }
     if (fh > 0)
@@ -9755,8 +9778,7 @@ static bool settings_frame(int w, int h, ccr_document *doc, float dt)
             ccr_gui_text(ccr_tr(mode_name[i]), c.x + 12.0f, c.y + 10.0f, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
             ccr_gui_clip_begin((ccr_rect){ c.x, c.y, c.w, c.h - 4.0f });
             wrap_text(ccr_tr(mode_hint[i]), c.x + 12.0f, c.y + 34.0f, c.w - 24.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT), true);
-            ccr_gui_clip_end();
-            ccr_gui_clip_begin(area);
+            ccr_gui_clip_end();   /* back to the outer clip: they nest */
             if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !cur) {
                 g_build_mode = (ccr_build_mode)i;
                 settings_remember("build_mode", g_build_mode_key[g_build_mode]);
