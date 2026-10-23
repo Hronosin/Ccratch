@@ -175,3 +175,7 @@ palette.asm_att = GNU as, AT&T синтаксиси: адегенде кайда
 palette.asm_intel = GNU as, Intel синтаксиси (.intel_syntax): адегенде кайда (mov rax, 1)
 palette.asm_nasm = NASM: адегенде кайда (mov rax, 1); ; түшүндүрмө баштайт
 files.name_file = Файлдын аты (.c, .h, .s же .asm), Enter: түзүү
+
+# ARM assembly
+palette.asm_arm64 = 64 биттик ARM (AArch64: телефондор, Apple M, Raspberry Pi 4 жана 5), GNU as: адегенде кайда (mov x0, #1); сандар # менен, // түшүндүрмө баштайт
+palette.asm_arm32 = 32 биттик ARM жана Thumb (32 биттик Raspberry Pi OS, эски телефондор), GNU as: адегенде кайда (mov r0, #1); сандар # менен, @ түшүндүрмө баштайт

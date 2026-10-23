@@ -147,6 +147,18 @@ int main(void)
         nasm |= k != CCR_NONE && strcmp(ccr_ast_str(&p.ast, p.ast.nodes[k].name), "global") == 0;
     }
     CHECK(nasm, "NASM's: global main");
+    bool a64 = false, a32 = false;
+    CHECK(ccr_palette_set_asm_syntax(&p, CCR_ASM_ARM64), "AArch64");
+    for (uint32_t i = 0; i < p.item_count; ++i) {
+        const ccr_node_id r = p.items[i].root, k = r != CCR_NONE ? p.ast.nodes[r].first_child : CCR_NONE;
+        a64 |= k != CCR_NONE && strcmp(ccr_ast_str(&p.ast, p.ast.nodes[k].name), "stp") == 0;
+    }
+    CHECK(ccr_palette_set_asm_syntax(&p, CCR_ASM_ARM32), "ARM");
+    for (uint32_t i = 0; i < p.item_count; ++i) {
+        const ccr_node_id r = p.items[i].root, k = r != CCR_NONE ? p.ast.nodes[r].first_child : CCR_NONE;
+        a32 |= k != CCR_NONE && strcmp(ccr_ast_str(&p.ast, p.ast.nodes[k].name), "bx") == 0;
+    }
+    CHECK(a64 && a32, "ARM's blocks: stp, bx lr");
     check_hits(&p);
     CHECK(ccr_palette_set_lang(&p, CCR_LANG_C) && p.item_count == expected(false), "back to C");
 

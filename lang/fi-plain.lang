@@ -175,3 +175,7 @@ palette.asm_att = GNU as, AT&T-syntaksi: ensin lähde, sitten kohde; rekisterit 
 palette.asm_intel = GNU as, Intel-syntaksi (.intel_syntax): kohde ensin (mov rax, 1)
 palette.asm_nasm = NASM: kohde ensin (mov rax, 1); ; aloittaa kommentin
 files.name_file = Tiedoston nimi (.c, .h, .s tai .asm), Enter luo
+
+# ARM assembly
+palette.asm_arm64 = 64-bittinen ARM (AArch64: puhelimet, Apple M, Raspberry Pi 4 ja 5), GNU as: kohde ensin (mov x0, #1); luvut #-merkillä, // aloittaa kommentin
+palette.asm_arm32 = 32-bittinen ARM ja Thumb (32-bittinen Raspberry Pi OS, vanhat puhelimet), GNU as: kohde ensin (mov r0, #1); luvut #-merkillä, @ aloittaa kommentin

@@ -144,6 +144,35 @@ static void collect(const scanned *sc, libs *l)
     }
 }
 
+/* What a whole assembly file is written for. */
+static ccr_asm_syntax asm_syntax_of_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return ccr_asm_syntax_of(path, NULL, 0);
+    static char buf[1 << 16];
+    const size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    return ccr_asm_syntax_of(path, buf, n);
+}
+
+/* 0 x86, 1 64-bit ARM, 2 32-bit ARM. */
+static int asm_family(ccr_asm_syntax s)
+{
+    return s == CCR_ASM_ARM64 ? 1 : s == CCR_ASM_ARM32 ? 2 : 0;
+}
+
+static int host_family(void)
+{
+#if defined(__aarch64__)
+    return 1;
+#elif defined(__arm__)
+    return 2;
+#else
+    return 0;
+#endif
+}
+
 /* An assembly file with a main: of its own (the program starts there). */
 static bool asm_has_main(const char *path)
 {
@@ -199,9 +228,17 @@ char *ccr_build_cmake_text(const char *project, const char *main_hint, int *file
         const char *rel = e->path + root_len + (e->path[root_len] == '/');
         if (s_file) {
             /* GNU as: built with the C files (gcc assembles it); NASM would want a language of its own */
-            if (ccr_asm_syntax_of(e->path, NULL, 0) == CCR_ASM_NASM) {
+            const ccr_asm_syntax syn = asm_syntax_of_file(e->path);
+            if (syn == CCR_ASM_NASM) {
                 const size_t k = strlen(nasm_note);
                 snprintf(nasm_note + k, sizeof nasm_note - k, "# %s is NASM: build it with nasm (it is left out)\n", rel);
+                continue;
+            }
+            if (asm_family(syn) != host_family()) {   /* ARM on a PC, x86 on a Pi */
+                const size_t k = strlen(nasm_note);
+                snprintf(nasm_note + k, sizeof nasm_note - k,
+                         "# %s is %s assembly: it builds on such a machine, or with a cross compiler (left out)\n",
+                         rel, syn == CCR_ASM_ARM64 ? "64-bit ARM" : syn == CCR_ASM_ARM32 ? "32-bit ARM" : "x86");
                 continue;
             }
             if (skip_for_program(rel))

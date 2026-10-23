@@ -7581,8 +7581,8 @@ static void langbar_frame(const ccr_document *doc, bool input)
         const ccr_rect r = { bar.x + 10.0f, base - th, tw, th };
         ccr_gui_rect((ccr_rect){ bar.x, base - 1.0f, bar.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
         lang_tab(r, ccr_th(CCR_C_LANG_ASM), true, false, "asm", NULL, base_name(doc->path), false);
-        static const char *const names[] = { "AT&T", "Intel", "NASM" };
-        const char *syn = names[doc->ed.ast.asm_syntax];
+        static const char *const names[] = { "AT&T", "Intel", "NASM", "AArch64", "ARM" };
+        const char *syn = names[(unsigned)doc->ed.ast.asm_syntax < 5 ? doc->ed.ast.asm_syntax : 0];
         const float fs = 15.0f, sw = ccr_gui_text_width(syn, fs);
         const ccr_rect pill = { r.x + r.w + 12.0f, base - th + 8.0f, sw + 18.0f, 24.0f };
         ccr_gui_rect_rounded(pill, 0.45f, mix_color(ccr_th(CCR_C_LANG_ASM), pal, 0.75f));
@@ -7590,7 +7590,9 @@ static void langbar_frame(const ccr_document *doc, bool input)
         ccr_gui_clip_end();
         if (input && point_in(m, pill))
             tip(pill, ccr_tr(doc->ed.ast.asm_syntax == CCR_ASM_NASM ? CCR_T_PAL_ASM_NASM
-                             : doc->ed.ast.asm_syntax == CCR_ASM_INTEL ? CCR_T_PAL_ASM_INTEL : CCR_T_PAL_ASM_ATT));
+                             : doc->ed.ast.asm_syntax == CCR_ASM_INTEL ? CCR_T_PAL_ASM_INTEL
+                             : doc->ed.ast.asm_syntax == CCR_ASM_ARM64 ? CCR_T_PAL_ASM_ARM64
+                             : doc->ed.ast.asm_syntax == CCR_ASM_ARM32 ? CCR_T_PAL_ASM_ARM32 : CCR_T_PAL_ASM_ATT));
         return;
     }
     /* the std switch, on the right */

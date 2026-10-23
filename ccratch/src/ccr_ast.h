@@ -227,8 +227,14 @@ typedef struct ccr_journal {
 typedef enum ccr_lang_kind { CCR_LANG_C, CCR_LANG_CMAKE, CCR_LANG_ASM } ccr_lang_kind;
 
 /* Which assembly: GNU as with AT&T operands (`movq $1, %rax`, what gcc
- * writes and asm() in C speaks), GNU as after .intel_syntax, or NASM. */
-typedef enum ccr_asm_syntax { CCR_ASM_ATT, CCR_ASM_INTEL, CCR_ASM_NASM } ccr_asm_syntax;
+ * writes and asm() in C speaks), GNU as after .intel_syntax, NASM; or ARM,
+ * in GNU as: 64-bit (AArch64: `mov x0, #1`, // comments) or 32-bit (ARM
+ * and Thumb, unified syntax: `mov r0, #1`, @ comments). */
+typedef enum ccr_asm_syntax {
+    CCR_ASM_ATT, CCR_ASM_INTEL, CCR_ASM_NASM, CCR_ASM_ARM64, CCR_ASM_ARM32
+} ccr_asm_syntax;
+
+#define CCR_ASM_IS_ARM(s) ((s) == CCR_ASM_ARM64 || (s) == CCR_ASM_ARM32)
 
 typedef struct ccr_ast {
     ccr_lang_kind lang;

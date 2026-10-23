@@ -8,7 +8,9 @@
  * same statements, maybe spaced differently); when it can be assembled
  * (as / nasm), the rebuilt one must assemble to the very same bytes. A C
  * file after --from-c is compiled to assembly first (cc -S, AT&T and
- * Intel): gcc's own output makes a big corpus.
+ * Intel): gcc's own output makes a big corpus. --target TRIPLE FILE.c:
+ * clang's for another machine (aarch64-linux-gnu, armv7a-linux-gnueabihf,
+ * thumbv7...), assembled by clang for it too.
  */
 #define _DEFAULT_SOURCE
 #include "ccr_asm.h"
@@ -261,6 +263,85 @@ static void test_nasm(void)
     ccr_ast_free(&a);
 }
 
+/* ------------------------------------------------------------- ARM */
+
+static const char *g_arm64 =
+    "// AArch64\n"
+    "\t.text\n"
+    "\t.globl\tf\n"
+    "\t.type\tf, @function\n"
+    "f:\n"
+    "\tstp\tx29, x30, [sp, #-16]!   // save\n"
+    "\tmov\tw8, #0\n"
+    ".L1:\n"
+    "\tcbz\tx0, .L2\n"
+    "\tldr\tw9, [x0], #4\n"
+    "\tb.ne\t.L1\n"
+    ".L2:\n"
+    "\tldp\tx29, x30, [sp], #16\n"
+    "\tret\n";
+
+static const char *g_arm32 =
+    "@ ARM\n"
+    "\t.syntax unified\n"
+    "\t.globl\tg\n"
+    "\t.type\tg, %function\n"
+    "g:\n"
+    "\tpush\t{r4, lr}   @ save\n"
+    "\tmov\tr4, #1\n"
+    "# 12 \"g.c\"\n"
+    ".L3:\n"
+    "\tsubs\tr4, r4, #1\n"
+    "\tbne\t.L3\n"
+    "\tpop\t{r4, pc}\n";
+
+static void test_arm(void)
+{
+    CHECK(ccr_asm_syntax_of("x.s", g_arm64, strlen(g_arm64)) == CCR_ASM_ARM64, "AArch64 recognised");
+    CHECK(ccr_asm_syntax_of("x.s", g_arm32, strlen(g_arm32)) == CCR_ASM_ARM32, "32-bit ARM recognised");
+    CHECK(ccr_asm_syntax_of("x.s", g_att, strlen(g_att)) == CCR_ASM_ATT, "x86 stays x86");
+    ccr_ast a;
+    CHECK(parse(g_arm64, CCR_ASM_ARM64, &a), "AArch64 does not read");
+    const ccr_node_id mov = find(&a, CCR_NODE_CALL, "mov", 0);
+    CHECK(mov != CCR_NONE && count_kids(&a, mov) == 2 && strcmp(S(&a, N(&a, kid(&a, mov, 1))->name), "#0") == 0,
+          "# is a number, not a comment");
+    const ccr_node_id cbz = find(&a, CCR_NODE_GOTO, ".L2", 0);
+    CHECK(cbz != CCR_NONE && strcmp(S(&a, N(&a, cbz)->op), "cbz") == 0 && count_kids(&a, cbz) == 1 &&
+          strcmp(S(&a, N(&a, kid(&a, cbz, 0))->name), "x0") == 0, "cbz x0, .L2: a jump, testing x0");
+    CHECK(find(&a, CCR_NODE_GOTO, ".L1", 0) != CCR_NONE, "b.ne .L1");
+    const ccr_node_id stp = find(&a, CCR_NODE_CALL, "stp", 0);
+    CHECK(stp != CCR_NONE && count_kids(&a, stp) == 3 &&
+          strcmp(S(&a, N(&a, kid(&a, stp, 2))->name), "[sp, #-16]!") == 0, "stp's address, writeback and all");
+    CHECK(ccr_asm_ends_flow("ret") && ccr_asm_ends_flow("b") && !ccr_asm_ends_flow("b.ne") &&
+          !ccr_asm_ends_flow("bl") && ccr_asm_is_jump("bne") && ccr_asm_is_jump("b.eq") && !ccr_asm_is_jump("bl") &&
+          !ccr_asm_is_jump("bic") && ccr_asm_is_jump("beq.n"), "ARM's jumps");
+    CHECK(ccr_asm_category("ldr") == 2 && ccr_asm_category("add") == 1 && ccr_asm_category("addeq") == 1 &&
+          ccr_asm_category("bl") == 0 && ccr_asm_category("stp") == 2, "ARM's colours");
+    /* everything printed anew: the same text, the way Ccratch spaces it */
+    for (uint32_t i = 0; i < a.node_count; ++i)
+        if (N(&a, i)->flags & CCR_FLAG_ASM)
+            a.nodes[i].flags |= CCR_FLAG_NEW;
+    char *t = gen(&a);
+    CHECK(t && strstr(t, "\tcbz x0, .L2\n") && strstr(t, "\tstp x29, x30, [sp, #-16]!   // save\n") && strstr(t, ".L1:\n"),
+          "reprinted:\n%s", t);
+    free(t);
+    ccr_ast_free(&a);
+
+    CHECK(parse(g_arm32, CCR_ASM_ARM32, &a), "ARM does not read");
+    const ccr_node_id push = find(&a, CCR_NODE_CALL, "push", 0);
+    CHECK(push != CCR_NONE && count_kids(&a, push) == 1 &&
+          strcmp(S(&a, N(&a, kid(&a, push, 0))->name), "{r4, lr}") == 0, "push {r4, lr}: one operand");
+    CHECK(find(&a, CCR_NODE_GOTO, ".L3", 0) != CCR_NONE, "bne .L3");
+    ccr_node_id nop = ccr_asm_build(&a, CCR_NONE, "mov r0, #0", CCR_ASM_ARM32);
+    ccr_ast_insert_first(&a, kid(&a, find(&a, CCR_NODE_FUNCTION, "g", 0), 0), nop);
+    a.nodes[nop].flags |= CCR_FLAG_COMMENTED;
+    dirty(&a, kid(&a, find(&a, CCR_NODE_FUNCTION, "g", 0), 0));
+    t = gen(&a);
+    CHECK(t && strstr(t, "g:\n\t@ mov r0, #0\n\tpush\t{r4, lr}   @ save\n"), "ARM comments with @:\n%s", t);
+    free(t);
+    ccr_ast_free(&a);
+}
+
 /* ------------------------------------------------------- asm() in C */
 
 static const char *g_inline =
@@ -386,13 +467,18 @@ static char *assembled(const char *path, ccr_asm_syntax syn, const char *tmp)
     char cmd[2048], obj[600], dump[640];
     snprintf(obj, sizeof obj, "%s.o", tmp);
     snprintf(dump, sizeof dump, "%s.dump", tmp);
+    const bool arm = CCR_ASM_IS_ARM(syn);
     if (syn == CCR_ASM_NASM)
         snprintf(cmd, sizeof cmd, "nasm -f elf64 -o '%s' '%s' 2>/dev/null", obj, path);
+    else if (arm)   /* clang assembles for any target, no cross binutils needed */
+        snprintf(cmd, sizeof cmd, "clang --target=%s -c -x assembler -o '%s' '%s' 2>/dev/null",
+                 syn == CCR_ASM_ARM64 ? "aarch64-linux-gnu" : "armv7a-linux-gnueabihf", obj, path);
     else
         snprintf(cmd, sizeof cmd, "cc -c -x assembler -o '%s' '%s' 2>/dev/null", obj, path);
     if (system(cmd) != 0)
         return NULL;
-    snprintf(cmd, sizeof cmd, "objdump -s -d '%s' | tail -n +3 > '%s' 2>/dev/null", obj, dump);
+    snprintf(cmd, sizeof cmd, "%s -s -d '%s' | tail -n +3 > '%s' 2>/dev/null", arm ? "llvm-objdump" : "objdump", obj,
+             dump);
     char *out = NULL;
     size_t n;
     if (system(cmd) == 0)
@@ -448,8 +534,61 @@ static void corpus_file(const char *path)
         }
     }
     free(t);
+
+    /* every instruction, label and jump printed anew from its parts (as the
+     * palette's are): spaced the way Ccratch spaces, the same program */
+    for (uint32_t i = 0; i < a.node_count; ++i)
+        if ((N(&a, i)->flags & CCR_FLAG_ASM) &&
+            (N(&a, i)->kind == CCR_NODE_CALL || N(&a, i)->kind == CCR_NODE_GOTO || N(&a, i)->kind == CCR_NODE_LABEL))
+            a.nodes[i].flags |= CCR_FLAG_NEW;
+    t = gen(&a);
+    CHECK(t != NULL, "%s: not saved reprinted", path);
+    if (t) {
+        char tmp[512], again[600];
+        snprintf(tmp, sizeof tmp, "/tmp/ccratch_test_asm_new_%d", (int)getpid());
+        snprintf(again, sizeof again, "%s%s", tmp, syn == CCR_ASM_NASM ? ".asm" : ".s");
+        FILE *f = fopen(again, "w");
+        if (f) {
+            fputs(t, f);
+            fclose(f);
+        }
+        char *want = assembled(path, syn, tmp);
+        if (want) {
+            char *got = assembled(again, syn, tmp);
+            CHECK(got && strcmp(got, want) == 0, "%s: reprinted, it assembles to something else (see %s)", path,
+                  again);
+            if (got && strcmp(got, want) == 0)
+                remove(again);
+            free(got);
+            free(want);
+        } else {
+            remove(again);
+        }
+    }
+    free(t);
     ccr_ast_free(&a);
     free(text);
+}
+
+/* clang's assembly for another machine (aarch64-linux-gnu...), -O0 and -O2. */
+static void corpus_for_target(const char *target, const char *c_file)
+{
+    char out[512], cmd[2048];
+    for (int o = 0; o < 2; ++o) {
+        snprintf(out, sizeof out, "/tmp/ccratch_test_asm_%d_%s_%d.s", (int)getpid(), target, o);
+        snprintf(cmd, sizeof cmd, "clang --target=%s -S -O%d -w -o '%s' '%s' 2>/dev/null", target, o * 2, out, c_file);
+        if (system(cmd) != 0) {
+            fprintf(stderr, "(no clang for %s: skipped)\n", target);
+            return;
+        }
+        size_t len = 0;
+        char *text = slurp(out, &len);
+        CHECK(text && CCR_ASM_IS_ARM(ccr_asm_syntax_of(out, text, len)) == (strncmp(target, "x86", 3) != 0),
+              "%s: %s taken for %s", out, target, text ? ccr_asm_syntax_name(ccr_asm_syntax_of(out, text, len)) : "?");
+        free(text);
+        corpus_file(out);
+        remove(out);
+    }
 }
 
 static void corpus_from_c(const char *c_file, const char *flags)
@@ -472,6 +611,7 @@ int main(int argc, char **argv)
 {
     test_structure();
     test_nasm();
+    test_arm();
     test_inline();
     const char *flags = "";
     for (int i = 1; i < argc; ++i) {
@@ -479,6 +619,9 @@ int main(int argc, char **argv)
             flags = argv[++i];
         } else if (strcmp(argv[i], "--from-c") == 0 && i + 1 < argc) {
             corpus_from_c(argv[++i], flags);
+        } else if (strcmp(argv[i], "--target") == 0 && i + 2 < argc) {
+            corpus_for_target(argv[i + 1], argv[i + 2]);
+            i += 2;
         } else {
             corpus_file(argv[i]);
         }

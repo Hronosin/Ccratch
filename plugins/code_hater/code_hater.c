@@ -38,7 +38,7 @@ enum {
     R_RAW_NEW, R_USING_HEADER, R_SELF, R_RUST_MENTION,
     /* assembly: asm() in C, and .s/.asm files */
     R_ASM_CLOBBER, R_ASM_MEMORY, R_ASM_INTRINSIC, R_ASM_STACK, R_ASM_FALLTHROUGH, R_ASM_CALLEE, R_ASM_ZERO,
-    R_ASM_NOSTACK, R_ASM_DEAD, R_COUNT
+    R_ASM_NOSTACK, R_ASM_DEAD, R_ARM_LR, R_ARM_STACK, R_COUNT
 };
 
 #define R_FIRST_ASM R_ASM_CLOBBER
@@ -348,11 +348,36 @@ static const rant g_rants[R_COUNT] = {
     [R_ASM_CALLEE] = { CCR_FINDING_ERROR,
         { "NAK: {x} is not yours", "NAK: {x} — не твой" },
         { { "{x} is callee-saved: whoever called you expects it back exactly as it was. You write it without "
-            "saving it first. Push it at the start, pop it before ret, or use rax, rcx, rdx, rsi, rdi, r8-r11, "
+            "saving it first. Save it on the stack at the start, load it back before you return, or use {y}, "
             "which are yours to trash.", NULL },
           { "{x} сохраняется вызываемым: тот, кто тебя позвал, ждёт его обратно ровно таким, каким дал. А ты "
-            "пишешь в него, ничего не сохранив. push в начале, pop перед ret, или бери rax, rcx, rdx, rsi, rdi, "
-            "r8–r11: их портить можно.", NULL } } },
+            "пишешь в него, ничего не сохранив. Положи его на стек в начале, достань перед возвратом, или бери "
+            "{y}: их портить можно.", NULL } } },
+    [R_ARM_LR] = { CCR_FINDING_ERROR,
+        { "NAK: bl eats the way back", "NAK: bl съедает дорогу назад" },
+        { { "This function calls {x} with bl, and bl writes its own return address into {y}. Yours was there: "
+            "whoever called this function was waiting for it. Now the return goes back to the line after the "
+            "bl, again and again, forever. Save {y} first (stp x29, x30, [sp, #-16]! on AArch64, push {lr} on "
+            "32-bit ARM) and take it back at the end.",
+            "bl {x} without saving {y} first. On ARM the way back is not on the stack, it is in {y}, and bl "
+            "just overwrote it with its own. Your return is now a loop with extra steps. Save it, call, load it "
+            "back." },
+          { "Эта функция вызывает {x} через bl, а bl записывает свой адрес возврата в {y}. Там был твой: тот, "
+            "кто позвал эту функцию, его ждал. Теперь возврат уходит на строку после bl — снова и снова, "
+            "навсегда. Сохрани {y} заранее (stp x29, x30, [sp, #-16]! на AArch64, push {lr} на 32-битном ARM) и "
+            "достань в конце.",
+            "bl {x}, а {y} не сохранён. На ARM дорога назад лежит не на стеке, а в {y}, и bl только что "
+            "затёр её своей. Твой возврат теперь — это цикл с дополнительными шагами. Сохрани, вызови, достань." } } },
+    [R_ARM_STACK] = { CCR_FINDING_ERROR,
+        { "NAK: sp is off by {n} at the return", "NAK: sp съехал на {n} к возврату" },
+        { { "This returns with sp not where it found it: {n} more down than up. On ARM the return itself still "
+            "finds its way (it jumps to the link register, not the stack), but the caller's locals now live at "
+            "the wrong address, and the next one to touch the stack reads garbage. Every sub sp or stp ...]! has "
+            "its add sp or ldp ..., #N; every push its pop.", NULL },
+          { "Это возвращается со sp не там, где нашло: вниз на {n} больше, чем вверх. На ARM сам возврат дорогу "
+            "найдёт (он прыгает по регистру связи, а не по стеку), но локальные переменные вызывающего теперь "
+            "живут по чужому адресу, и следующий, кто тронет стек, прочитает мусор. У каждого sub sp и stp ...]! "
+            "есть свой add sp или ldp ..., #N; у каждого push — свой pop.", NULL } } },
     [R_ASM_ZERO] = { CCR_FINDING_NIT,
         { "mov 0 into {x}", "mov нуля в {x}" },
         { { "Moving 0 into {x}. xor {x}, {x} is shorter (no four zero bytes in the instruction), and every CPU "
@@ -1723,8 +1748,16 @@ static bool ends_flow(uint32_t k)
         base_op(N(k)->name, b, sizeof b);
     else
         return false;
+    const size_t n = strlen(b);
+    if (n > 2 && b[n - 2] == '.' && (b[n - 1] == 'w' || b[n - 1] == 'n'))
+        b[n - 2] = '\0';   /* Thumb's b.w */
+    if ((strcmp(b, "pop") == 0 || strncmp(b, "ldm", 3) == 0) && is(k, "Call"))
+        for (uint32_t c = N(k)->first_child; c != NONE; c = N(c)->next_sibling)
+            if (strstr(N(c)->name, "pc"))
+                return true;   /* pop {r4, pc}: ARM's way back */
     return strcmp(b, "jmp") == 0 || strcmp(b, "jmpq") == 0 || strncmp(b, "ret", 3) == 0 || strcmp(b, "ud2") == 0 ||
-           strcmp(b, "hlt") == 0 || strncmp(b, "iret", 4) == 0;
+           strcmp(b, "hlt") == 0 || strncmp(b, "iret", 4) == 0 || strcmp(b, "b") == 0 || strcmp(b, "br") == 0 ||
+           strcmp(b, "bx") == 0 || strcmp(b, "eret") == 0 || strcmp(b, "udf") == 0;
 }
 
 /* A label's depth, as the jumps to it left the stack. */
@@ -1802,7 +1835,9 @@ static void check_asm_function(uint32_t fn, bool att)
         } else if (f >= 0 && ((1u << f) & callee) && writes_dest(m) && !((1u << f) & saved) &&
                    !((1u << f) & said_callee)) {
             said_callee |= 1u << f;
+            g_y = "rax, rcx, rdx, rsi, rdi, r8-r11";
             say(k, R_ASM_CALLEE, g_reg64[f], 0);
+            g_y = "";
         }
         /* mov $0, %eax: xor is shorter */
         if (operand_count(k) == 2 && op_is(m, (const char *const[]){ "mov", NULL }) && f >= 0) {
@@ -1820,6 +1855,242 @@ static void check_asm_function(uint32_t fn, bool att)
         say(fn, R_ASM_FALLTHROUGH, N(fn)->name, 0);
 }
 
+
+/* --- ARM ---------------------------------------------------------------- */
+
+/* An ARM register's number (x5, w5, r5: 5; fp, lr, sp, pc by name), or -1.
+ * AArch64: 31 the zero register, 32 sp. */
+static int arm_reg(const char *op, bool a64)
+{
+    char w[8];
+    size_t n = 0;
+    while (*op == ' ' || *op == '{')
+        ++op;
+    while (n < sizeof w - 1 && isalnum((unsigned char)op[n])) {
+        w[n] = (char)tolower((unsigned char)op[n]);
+        ++n;
+    }
+    w[n] = '\0';
+    if (op[n] && op[n] != ' ' && op[n] != '!' && op[n] != '}' && op[n] != ',')
+        return -1;
+    if (a64) {
+        if (strcmp(w, "xzr") == 0 || strcmp(w, "wzr") == 0) return 31;
+        if (strcmp(w, "sp") == 0 || strcmp(w, "wsp") == 0) return 32;
+        if (strcmp(w, "fp") == 0) return 29;
+        if (strcmp(w, "lr") == 0) return 30;
+        if ((w[0] == 'x' || w[0] == 'w') && isdigit((unsigned char)w[1]) && n <= 3 &&
+            (n == 2 || isdigit((unsigned char)w[2])) && atoi(w + 1) <= 30)
+            return atoi(w + 1);
+        return -1;
+    }
+    static const struct { const char *name; int r; } named[] = {
+        { "fp", 11 }, { "ip", 12 }, { "sp", 13 }, { "lr", 14 }, { "pc", 15 } };
+    for (size_t i = 0; i < sizeof named / sizeof named[0]; ++i)
+        if (strcmp(w, named[i].name) == 0)
+            return named[i].r;
+    if (w[0] == 'r' && isdigit((unsigned char)w[1]) && n <= 3 && (n == 2 || isdigit((unsigned char)w[2])) &&
+        atoi(w + 1) <= 15)
+        return atoi(w + 1);
+    return -1;
+}
+
+/* The registers of {r4-r7, lr}, as bits. */
+static unsigned arm_list(const char *s)
+{
+    unsigned bits = 0;
+    int prev = -1;
+    bool range = false;
+    while (*s) {
+        if (*s == '-') {
+            range = true;
+            ++s;
+            continue;
+        }
+        if (!isalpha((unsigned char)*s)) {
+            ++s;
+            continue;
+        }
+        const int r = arm_reg(s, false);
+        if (r >= 0) {
+            if (range && prev >= 0)
+                for (int k = prev; k <= r; ++k)
+                    bits |= 1u << k;
+            bits |= 1u << r;
+            prev = r;
+        }
+        range = false;
+        while (isalnum((unsigned char)*s))
+            ++s;
+    }
+    return bits;
+}
+
+/* x86 or ARM, from the registers the operands name. 0, 1 (AArch64), 2. */
+static int asm_arch(void)
+{
+    int x86 = 0, a64 = 0, a32 = 0;
+    for (uint32_t k = 0; k < F->node_count; ++k) {
+        if (!is(k, "Text") || N(k)->parent == NONE || !(N(N(k)->parent)->flags & CCR_PNODE_ASM))
+            continue;
+        const char *t = N(k)->name;
+        if (t[0] == '%' || t[0] == '$')
+            ++x86;
+        else if (t[0] == '{' || (arm_reg(t, false) >= 0 && arm_reg(t, false) <= 7))
+            ++a32;
+        else if (arm_reg(t, true) >= 0 && arm_reg(t, true) <= 30 && (t[0] == 'x' || t[0] == 'w'))
+            ++a64;
+    }
+    if (x86 >= a64 + a32)
+        return 0;
+    return a64 >= a32 ? 1 : 2;
+}
+
+static bool has_sp(const char *t) { return strstr(t, "sp") != NULL; }
+
+static void check_arm_function(uint32_t fn, bool a64)
+{
+    uint32_t blk = NONE;
+    for (uint32_t c = N(fn)->first_child; c != NONE; c = N(c)->next_sibling)
+        if (is(c, "Block"))
+            blk = c;
+    if (blk == NONE)
+        return;
+    const unsigned callee = a64 ? 0x3FF80000u /* x19-x29 */ : 0x0FF0u /* r4-r11 */;
+    const int lr = a64 ? 30 : 14;
+    label_depth labels[64];
+    int nl = 0, depth = 0, frame = -1;   /* frame: the depth when fp took sp */
+    bool known = true, after_end = false, dead_said = false, code = false, lr_saved = false, said_stack = false;
+    unsigned saved = 0, said_callee = strcmp(N(fn)->name, "_start") == 0 ? ~0u : 0u;
+    uint32_t last = NONE, unsaved_bl = NONE;
+    for (uint32_t k = N(blk)->first_child; k != NONE; k = N(k)->next_sibling) {
+        if (outside(k))
+            continue;
+        if (is(k, "Label")) {
+            after_end = false;
+            known = false;
+            for (int i = 0; i < nl; ++i)
+                if (strcmp(labels[i].name, N(k)->name) == 0) {
+                    depth = labels[i].depth;
+                    known = true;
+                }
+            if (!known && last != NONE && !ends_flow(last))
+                known = true;
+            continue;
+        }
+        if (is(k, "Call") && !is_insn(k))
+            continue;
+        if (after_end && !dead_said) {
+            say(k, R_ASM_DEAD, is(k, "Goto") ? N(k)->op : N(k)->name, 0);
+            dead_said = true;
+        }
+        code = true;
+        last = k;
+        if (is(k, "Goto")) {
+            if (known && nl < 64) {
+                bool there = false;
+                for (int i = 0; i < nl; ++i)
+                    there |= strcmp(labels[i].name, N(k)->name) == 0;
+                if (!there)
+                    labels[nl++] = (label_depth){ N(k)->name, depth };
+            }
+            after_end = ends_flow(k);
+            continue;
+        }
+        if (!is(k, "Call"))
+            continue;
+        char b[24];
+        base_op(N(k)->name, b, sizeof b);
+        const int nops = operand_count(k);
+        const char *op0 = nops > 0 ? N(child(k, 0))->name : "";
+        const char *opl = nops > 0 ? N(child(k, nops - 1))->name : "";
+        bool returns = false;
+        if (a64) {
+            if ((strcmp(b, "stp") == 0 || strncmp(b, "str", 3) == 0) && nops >= 2 && has_sp(opl) == false &&
+                nops >= 3 && has_sp(N(child(k, nops - 2))->name) && opl[0] == '#') {
+                /* str x, [sp], #N: post-index store, not a push */
+            } else if ((strcmp(b, "stp") == 0 || strcmp(b, "str") == 0) && has_sp(opl)) {
+                for (int q = 0; q + 1 < nops; ++q) {
+                    const int r = arm_reg(N(child(k, q))->name, true);
+                    if (r >= 0 && r <= 30)
+                        saved |= 1u << r;
+                    lr_saved |= r == lr;
+                }
+                if (strchr(opl, '!') && strstr(opl, "#-"))
+                    ++depth;   /* stp x29, x30, [sp, #-16]! */
+            } else if ((strcmp(b, "ldp") == 0 || strcmp(b, "ldr") == 0) && nops >= 3 &&
+                       strcmp(N(child(k, nops - 2))->name, "[sp]") == 0) {
+                --depth;       /* ldp x29, x30, [sp], #16 */
+            }
+            if (nops >= 2 && strcmp(b, "sub") == 0 && arm_reg(op0, true) == 32 && arm_reg(N(child(k, 1))->name, true) == 32)
+                ++depth;
+            if (nops >= 2 && strcmp(b, "add") == 0 && arm_reg(op0, true) == 32 && arm_reg(N(child(k, 1))->name, true) == 32)
+                --depth;
+            if (nops == 2 && strcmp(b, "mov") == 0 && arm_reg(op0, true) == 29 && arm_reg(N(child(k, 1))->name, true) == 32)
+                frame = depth;   /* mov x29, sp */
+            if (nops == 2 && strcmp(b, "mov") == 0 && arm_reg(op0, true) == 32 && frame >= 0)
+                depth = frame;   /* mov sp, x29: back to the frame */
+            returns = strcmp(b, "ret") == 0;
+        } else {
+            const bool push = strcmp(b, "push") == 0 || ((strcmp(b, "stmfd") == 0 || strcmp(b, "stmdb") == 0) && nops == 2 && has_sp(op0));
+            const bool pop = strcmp(b, "pop") == 0 || ((strcmp(b, "ldmfd") == 0 || strcmp(b, "ldmia") == 0) && nops == 2 && has_sp(op0));
+            if (push) {
+                const unsigned bits = arm_list(opl);
+                saved |= bits;
+                lr_saved |= (bits >> lr) & 1u;
+                ++depth;
+            } else if (pop) {
+                --depth;
+                returns = (arm_list(opl) >> 15) & 1u;
+            }
+            if (nops >= 2 && strcmp(b, "sub") == 0 && arm_reg(op0, false) == 13 && arm_reg(N(child(k, 1))->name, false) == 13)
+                ++depth;
+            if (nops >= 2 && strcmp(b, "add") == 0 && arm_reg(op0, false) == 13 && arm_reg(N(child(k, 1))->name, false) == 13)
+                --depth;
+            returns |= strcmp(b, "bx") == 0 && arm_reg(op0, false) == 14;
+            if (nops == 2 && strcmp(b, "mov") == 0 && arm_reg(op0, false) == 11 && arm_reg(N(child(k, 1))->name, false) == 13)
+                frame = depth;   /* mov r11, sp */
+            if (nops == 2 && strcmp(b, "mov") == 0 && arm_reg(op0, false) == 13 && frame >= 0)
+                depth = frame;   /* mov sp, r11 */
+        }
+        /* bl: the way back gets overwritten, unless it was saved */
+        if ((strcmp(b, "bl") == 0 || strcmp(b, "blr") == 0 || strcmp(b, "blx") == 0) && !lr_saved &&
+            unsaved_bl == NONE)
+            unsaved_bl = k;
+        if (returns) {
+            if (unsaved_bl != NONE) {
+                g_y = a64 ? "x30" : "lr";
+                say(unsaved_bl, R_ARM_LR, nops ? N(child(unsaved_bl, 0))->name : "", 0);
+                g_y = "";
+                unsaved_bl = NONE;
+            }
+            if (known && depth != 0 && !said_stack) {
+                say(k, R_ARM_STACK, "", depth > 0 ? depth : -depth);
+                said_stack = true;
+            }
+        }
+        /* writing a register that is the caller's */
+        static const char *const no_write[] = { "cmp", "cmn", "tst", "teq", "b", "bl", "blr", "blx", "bx", "br",
+                                                "ret", "svc", "nop", "push", "pop", "prfm", "dmb", "dsb", "isb", NULL };
+        if (nops > 0 && !in_list(b, no_write) && strncmp(b, "str", 3) != 0 && strncmp(b, "stp", 3) != 0 &&
+            strncmp(b, "stm", 3) != 0 && strncmp(b, "stur", 4) != 0 && strncmp(b, "ldm", 3) != 0 &&
+            strncmp(b, "cb", 2) != 0 && strncmp(b, "tb", 2) != 0) {
+            const int r = arm_reg(op0, a64);
+            if (r >= 0 && r < 31 && ((1u << r) & callee) && !((1u << r) & saved) && !((1u << r) & said_callee)) {
+                said_callee |= 1u << r;
+                g_y = a64 ? "x0-x18" : "r0-r3, r12";
+                say(k, R_ASM_CALLEE, op0, 0);
+                g_y = "";
+            }
+        }
+        after_end = ends_flow(k);
+    }
+    if (code && last != NONE && !ends_flow(last) &&
+        !(is(last, "Call") && (strcmp(N(last)->name, "svc") == 0 || strcmp(N(last)->name, "swi") == 0)) &&
+        !(is(last, "Call") && strcmp(N(last)->name, "bl") == 0 && N(last)->first_child != NONE &&
+          (strstr(N(N(last)->first_child)->name, "exit") || strstr(N(N(last)->first_child)->name, "abort"))))
+        say(fn, R_ASM_FALLTHROUGH, N(fn)->name, 0);
+}
+
 static void check_asm_file(void)
 {
     const size_t pl = strlen(F->path);
@@ -1827,12 +2098,16 @@ static void check_asm_file(void)
                       (pl > 5 && strcasecmp(F->path + pl - 5, ".nasm") == 0);
     /* AT&T unless it says otherwise: registers with %, the destination last */
     const bool att = !nasm && !says(F->source, F->source_len, ".intel_syntax");
+    const int arch = nasm ? 0 : asm_arch();
     bool any_code = false, note = false;
     for (uint32_t h = N(F->root)->first_child; h != NONE; h = N(h)->next_sibling) {
         if (!is(h, "Function") || outside(h))
             continue;
         if (strcmp(N(h)->type, "label") == 0) {
-            check_asm_function(h, att);
+            if (arch)
+                check_arm_function(h, arch == 1);
+            else
+                check_asm_function(h, att);
             any_code = true;
         }
     }

@@ -38,6 +38,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 27: search and replace across the project, as VS Code's (text, or names as the compiler sees them); blocks put anywhere and kept there, arranged as columns, a newspaper or by calls.
 - Step 28: arrangements of your own (a builder, and files to write by hand), one of them for files opening for the first time; Code Hater reads context.
 - Step 29: assembly as blocks: `.s`/`.S`/`.asm` files (GNU as, AT&T or Intel, and NASM) and `asm()` inside C; plugins with settings of their own; Code Hater learns assembly, a hundred new ways to say it, and a mother cat who rubs your nose in the bug.
+- Step 30: ARM assembly too: 64-bit (AArch64: phones, Apple M chips, Raspberry Pi 4/5) and 32-bit ARM/Thumb, told from x86 by what the file says; Code Hater learns ARM's ways back (`bl` and the link register).
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -442,6 +443,36 @@ makes a `.s` or an `.asm` that already assembles; the Build button builds
 GNU assembly with the C files (`project(... LANGUAGES C ASM)`), and a
 `main:` in one is the program's `main` (NASM wants its own assembler, so
 an `.asm` is left out, with a note in the CMakeLists).
+
+### ARM
+
+The same `.s` can be for a PC or for a phone, and the file does not say
+which in its name: Ccratch reads the registers and mnemonics in it and
+takes the vote (`%rax` and `movq` for x86; `x0`, `adrp`, `stp` for 64-bit
+ARM; `r4`, `push {r4, lr}`, `bx lr` for 32-bit ARM and Thumb). The pill
+beside the tab says what it decided: **AArch64** or **ARM**.
+
+- `#1` is a number there, not a comment (a `#` comments only at the start
+  of a line); comments are `//` on AArch64 and `@` on 32-bit ARM;
+- `b`, `b.eq`, `bne`, `cbz x0, .L2`, `tbnz w1, #3, .L5` are jumps with
+  arrows (what `cbz` tests stays a slot on its block); `bl` is a call;
+  `b`, `ret`, `bx lr`, `pop {r4, pc}` have flat bottoms;
+- `stp x29, x30, [sp, #-16]!` and `push {r4, lr}` keep their brackets and
+  braces as one operand each;
+- the palette speaks it: `mov x0, #1`, `ldr`/`str`, `stp`/`ldp`, `adr`,
+  `b.eq`, `bl`, `ret` and `svc #0` on AArch64; `push {r4, lr}`, `bx lr`
+  on 32-bit ARM;
+- `asm("...")` in C written for ARM is read as ARM.
+
+The tests have clang write the same C for AArch64, ARM and Thumb (clang
+can, for any machine, with no cross compiler installed), read it, save
+it untouched and rebuilt and with every instruction printed anew, then
+have clang assemble both and compare the bytes. The Build button builds
+the assembly for the machine it runs on and leaves the rest out with a
+note in the CMakeLists (an ARM file on a PC needs a cross compiler, or a
+Raspberry Pi).
+
+![examples/hello_arm64.s as blocks: stp x29, x30, [sp, #-32]!, adrp and add :lo12:, bl printf, b.le .Lagain with its arrow back to the label](docs/asm_arm.png)
 
 ### asm() in C
 
@@ -1095,7 +1126,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_lib     block packs: libraries as blocks
   ccr_api     a library's public functions: headers (API) and .so/.a (ELF ABI)
   ccr_cmake   CMake files into the same syntax tree, as blocks
-  ccr_asm     assembly (.s, .asm, asm() in C) into the same tree, as blocks
+  ccr_asm     assembly (.s, .asm, asm() in C; x86 and ARM) into the same tree, as blocks
   ccr_build   the project as something to build: a first CMakeLists.txt
   ccr_job     the Build button: configure, build, run; output read for errors
   ccr_proc    a program in the background, its output read line by line
@@ -1107,7 +1138,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so: code_hater/, and hello/, the template
-examples/   files to feed the parser: C, C++, assembly (hello.s, hello.asm, inline.c)
+examples/   files to feed the parser: C, C++, assembly (hello.s, hello.asm, hello_arm64.s, hello_arm.s, inline.c)
 lang/       language packs (ru.lang...); English is built in
 blocks/     block packs (raylib.yaml...)
 arrangements/ ways to lay out the blocks (kernel.arrange...)
@@ -1305,6 +1336,7 @@ with the fix.
 | **+1** | a `goto` forward, to cleanup: the kernel way |
 | **C++** | raw `new` (a nit: who deletes it?), `using namespace` in a header (a warning); C's nits about `f()` and casting `malloc` stay quiet in C++, where both are right |
 | **asm()** | a register the instructions write that is neither an output nor a clobber (NAK: `movl $1, %%ecx` with no `"ecx"`; `rdtsc` and `cpuid` count, they write registers without naming them); a store to memory with no `"memory"` clobber (!); `rdtsc`, `pause`, `cpuid`, `bswap`, `popcnt` where a builtin says the same in C (nit) |
+| **ARM** | `bl` in a function that never saved the link register (NAK: its own way back is gone, `ret` loops to after the `bl` forever); `x19`-`x29` or `r4`-`r11` written without saving them (NAK); `sp` not back where it was at `ret` / `bx lr` / `pop {pc}` (NAK, frame pointers and `mov sp, x29` understood); falling off the end, dead code after `b` or `ret`, as for x86 |
 | **.s / .asm** | `ret` with the pushes and pops out of step (NAK, following the jumps to see what the stack is at each label); writing `rbx`, `rbp`, `r12`-`r15` without saving them first (NAK: they are the caller's); a function that ends with no `ret` or `jmp` and falls into the next (!); code right after a `jmp` or `ret` that no label leads to (!); `mov $0` where `xor` would do, no `.note.GNU-stack` (nits) |
 
 It looks at what is in the program: loose blocks on the canvas and

@@ -280,7 +280,19 @@ add_test(NAME asm_blocks COMMAND test_asm
          --from-c ${raylib_SOURCE_DIR}/src/rshapes.c
          --from-c ${raylib_SOURCE_DIR}/src/rtext.c)
 set_tests_properties(asm_blocks PROPERTIES TIMEOUT 300)
-foreach(f examples/hello.s examples/hello.asm examples/inline.c)
+# ARM: clang writes and assembles it for any target, no cross toolchain
+find_program(CCR_CLANG clang)
+find_program(CCR_LLVM_OBJDUMP llvm-objdump)
+if(CCR_CLANG AND CCR_LLVM_OBJDUMP)
+    add_test(NAME asm_blocks_arm COMMAND test_asm
+             ${PROJECT_SOURCE_DIR}/examples/hello_arm64.s ${PROJECT_SOURCE_DIR}/examples/hello_arm.s
+             --target aarch64-linux-gnu ${CMAKE_CURRENT_SOURCE_DIR}/data/asm/corpus.c
+             --target armv7a-linux-gnueabihf ${CMAKE_CURRENT_SOURCE_DIR}/data/asm/corpus.c
+             --target thumbv7-linux-gnueabihf ${CMAKE_CURRENT_SOURCE_DIR}/data/asm/corpus.c
+             --target x86_64-linux-gnu ${CMAKE_CURRENT_SOURCE_DIR}/data/asm/corpus.c)
+    set_tests_properties(asm_blocks_arm PROPERTIES TIMEOUT 300)
+endif()
+foreach(f examples/hello.s examples/hello.asm examples/inline.c examples/hello_arm64.s examples/hello_arm.s)
     get_filename_component(stem ${f} NAME)
     add_test(NAME roundtrip_asm_${stem} COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/${f})
     set_tests_properties(roundtrip_asm_${stem} PROPERTIES PASS_REGULAR_EXPRESSION "identical")
@@ -428,13 +440,34 @@ foreach(expect "bad\\.s:7:[0-9]+: nit: .code_hater. mov 0 into eax"
         ENVIRONMENT "${CCR_HATER_ENV}"
         PASS_REGULAR_EXPRESSION "${expect}")
 endforeach()
+foreach(expect "bad_arm64\\.s:6:[0-9]+: error: .code_hater. NAK: x19 is not yours"
+               "bad_arm64\\.s:7:[0-9]+: error: .code_hater. NAK: bl eats the way back"
+               "bad_arm64\\.s:16:[0-9]+: error: .code_hater. NAK: sp is off by 1"
+               "bad_arm64\\.s:17:[0-9]+: warning: .code_hater. nothing ever gets here"
+               "bad_arm64\\.s:21:[0-9]+: warning: .code_hater. h falls into"
+               "bad_arm\\.s:8:[0-9]+: error: .code_hater. NAK: r4 is not yours"
+               "bad_arm\\.s:17:[0-9]+: error: .code_hater. NAK: sp is off by 1")
+    string(REGEX REPLACE "[^a-z0-9]+" "_" tag "${expect}")
+    string(SUBSTRING "${tag}" 0 50 tag)
+    add_test(NAME code_hater_arm_${tag} COMMAND ${CCR_BIN} --lang en --check-code
+             ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/bad_arm64.s ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/bad_arm.s)
+    set_tests_properties(code_hater_arm_${tag} PROPERTIES
+        ENVIRONMENT "${CCR_HATER_ENV}"
+        PASS_REGULAR_EXPRESSION "${expect}")
+endforeach()
+add_test(NAME code_hater_arm_lr_saved COMMAND ${CCR_BIN} --lang en --check-code
+         ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/bad_arm.s)
+set_tests_properties(code_hater_arm_lr_saved PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "r4 is not yours"
+    FAIL_REGULAR_EXPRESSION "bl eats")
 add_test(NAME code_hater_asm_honest COMMAND ${CCR_BIN} --lang en --check-code
          ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/inline_bad.c)
 set_tests_properties(code_hater_asm_honest PROPERTIES
     ENVIRONMENT "${CCR_HATER_ENV}"
     PASS_REGULAR_EXPRESSION "inline_bad\\.c:6:"
     FAIL_REGULAR_EXPRESSION "inline_bad\\.c:2[6-9]:")
-foreach(f examples/hello.s examples/hello.asm examples/inline.c)
+foreach(f examples/hello.s examples/hello.asm examples/inline.c examples/hello_arm64.s examples/hello_arm.s)
     get_filename_component(stem ${f} NAME)
     add_test(NAME code_hater_quiet_${stem} COMMAND ${CCR_BIN} --lang en --check-code ${PROJECT_SOURCE_DIR}/${f})
     set_tests_properties(code_hater_quiet_${stem} PROPERTIES

@@ -175,3 +175,7 @@ palette.asm_att = GNU as, AT&T sintaksisi: avval qayerdan, keyin qayerga; regist
 palette.asm_intel = GNU as, Intel sintaksisi (.intel_syntax): avval qayerga (mov rax, 1)
 palette.asm_nasm = NASM: avval qayerga (mov rax, 1); ; izohni boshlaydi
 files.name_file = Fayl nomi (.c, .h, .s yoki .asm), Enter: yaratish
+
+# ARM assembly
+palette.asm_arm64 = 64 bitli ARM (AArch64: telefonlar, Apple M, Raspberry Pi 4 va 5), GNU as: avval qayerga (mov x0, #1); sonlar # bilan, // izohni boshlaydi
+palette.asm_arm32 = 32 bitli ARM va Thumb (32 bitli Raspberry Pi OS, eski telefonlar), GNU as: avval qayerga (mov r0, #1); sonlar # bilan, @ izohni boshlaydi

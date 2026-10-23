@@ -914,9 +914,14 @@ static bool ends_flow(ccr_node_kind k)
 static bool stmt_ends_flow(const layout *L, ccr_node_id id)
 {
     const ccr_node *n = N(L, id);
-    if (n->flags & CCR_FLAG_ASM)
+    if (n->flags & CCR_FLAG_ASM) {
+        if (n->kind == CCR_NODE_CALL && (strcmp(S(L, n->name), "pop") == 0 || strncmp(S(L, n->name), "ldm", 3) == 0))
+            for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
+                if (strstr(S(L, N(L, c)->name), "pc"))
+                    return true;   /* pop {r4, pc}: ARM's way back */
         return (n->kind == CCR_NODE_GOTO && ccr_asm_ends_flow(S(L, n->op))) ||
                (n->kind == CCR_NODE_CALL && ccr_asm_ends_flow(S(L, n->name)));
+    }
     return ends_flow(n->kind);
 }
 
@@ -1056,6 +1061,11 @@ static float emit_asm_stmt(layout *L, ccr_node_id id, float x, float y, float *m
     case CCR_NODE_GOTO:
         push_jump(L, id);
         it_text(&head, S(L, n->op));
+        for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling)
+            if (!(N(L, c)->flags & CCR_FLAG_WORD)) {   /* cbz x0, ...: what it tests */
+                it_expr(&head, c);
+                it_text(&head, ",");
+            }
         if (n->flags & CCR_FLAG_NEW)
             it_expr(&head, word_of(L, id, CCR_FLAG_WORD_NAME));
         else

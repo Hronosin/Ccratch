@@ -128,7 +128,8 @@ static void comment_out(gen *g, size_t from, size_t keep)
     const char *bare = g->ast->lang == CCR_LANG_CMAKE ? "#" : "//";
     if (g->ast->lang == CCR_LANG_ASM || g->asm_depth) {
         mark = ccr_asm_comment(g->ast->asm_syntax);
-        bare = g->ast->asm_syntax == CCR_ASM_NASM ? ";" : "#";
+        bare = g->ast->asm_syntax == CCR_ASM_NASM ? ";" : g->ast->asm_syntax == CCR_ASM_ARM64 ? "//"
+             : g->ast->asm_syntax == CCR_ASM_ARM32 ? "@" : "#";
     }
     if (!g->ok)
         return;
@@ -718,8 +719,14 @@ static void asm_operands(gen *g, ccr_node_id id, unsigned depth, uint32_t from)
         const ccr_node *k = N(g, a);
         if (i < from || (k->flags & CCR_FLAG_WORD) || k->kind == CCR_NODE_BLOCK)
             continue;
-        if (k->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, k->name))
-            continue;   /* an empty slot is no operand */
+        if (k->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, k->name)) {
+            /* an empty slot is no operand; one between two (.p2align 4,,10) keeps its comma */
+            bool more = false;
+            for (ccr_node_id r = k->next_sibling; r != CCR_NONE && !more; r = N(g, r)->next_sibling)
+                more = N(g, r)->kind != CCR_NODE_TEXT || *ccr_ast_str(g->ast, N(g, r)->name);
+            if (!more || first)
+                continue;
+        }
         puts_(g, first ? " " : ", ");
         first = false;
         emit(g, a, depth + 1);
@@ -762,7 +769,9 @@ static void print_new_asm(gen *g, ccr_node_id id, unsigned depth)
     case CCR_NODE_GOTO:
         if (filled(g, id, name)) {
             puts_(g, ccr_ast_str(g->ast, n->op));
-            puts_(g, " ");
+            asm_operands(g, id, depth, 0);   /* cbz x0, ...: what it tests */
+            puts_(g, N(g, id)->first_child != CCR_NONE && !(N(g, N(g, id)->first_child)->flags & CCR_FLAG_WORD)
+                         ? ", " : " ");
             puts_(g, name);
         }
         break;

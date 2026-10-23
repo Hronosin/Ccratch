@@ -36,6 +36,67 @@ static bool mentions(const char *text, size_t len, const char *word)
     return false;
 }
 
+static bool word_in(const char *w, const char *const *list)
+{
+    for (; *list; ++list)
+        if (strcmp(w, *list) == 0)
+            return true;
+    return false;
+}
+
+/* x86 or ARM? The same .s says neither, so the words in it vote: its
+ * registers (%rax, x0, r4, lr) and mnemonics only one of them has. */
+static ccr_asm_syntax guess_arch(const char *text, size_t len)
+{
+    static const char *const x86[] = { "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "eax", "ebx", "ecx",
+                                       "edx", "esi", "edi", "ebp", "esp", "movq", "movl", "movb", "pushq", "popq",
+                                       "leaq", "leal", "addq", "addl", "subq", "subl", "cmpq", "cmpl", "syscall",
+                                       "cltq", "cqto", "retq", "jmp", "jne", "je", "jle", "jg", "movzbl", NULL };
+    static const char *const a64[] = { "xzr", "wzr", "adrp", "ldp", "stp", "cbz", "cbnz", "tbz", "tbnz", "movk",
+                                       "movz", "csel", "csinc", "cset", "madd", "msub", "sxtw", "uxtw", "ldur",
+                                       "stur", "fp", NULL };
+    static const char *const a32[] = { "bx", "blx", "ldmfd", "stmfd", "ldmia", "stmia", "stmdb", ".syntax", ".thumb",
+                                       ".thumb_func", ".arm", ".fpu", ".eabi_attribute", ".code", "lr", "pc", "ip",
+                                       "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "bne", "beq", "ble", "blt",
+                                       "bgt", "bge", "bhi", "bls", NULL };
+    int vx = 0, v64 = 0, v32 = 0;
+    for (size_t i = 0; i < len;) {
+        const char c = text[i];
+        if (!(isalnum((unsigned char)c) || c == '_' || c == '.')) {
+            ++i;
+            continue;
+        }
+        size_t k = i;
+        char w[24];
+        size_t n = 0;
+        while (k < len && (isalnum((unsigned char)text[k]) || text[k] == '_' || text[k] == '.')) {
+            if (n + 1 < sizeof w)
+                w[n++] = (char)tolower((unsigned char)text[k]);
+            ++k;
+        }
+        w[n] = '\0';
+        const bool percent = i > 0 && text[i - 1] == '%';
+        if (percent && isalpha((unsigned char)w[0]) && strcmp(w, "function") != 0 && strcmp(w, "progbits") != 0 &&
+            strcmp(w, "object") != 0 && strcmp(w, "nobits") != 0)
+            vx += 2;   /* %rax: AT&T */
+        else if (word_in(w, x86))
+            ++vx;
+        else if (word_in(w, a64) || (n >= 2 && n <= 3 && (w[0] == 'x' || w[0] == 'w') &&
+                                     isdigit((unsigned char)w[1]) && atoi(w + 1) <= 30 &&
+                                     (n == 2 || isdigit((unsigned char)w[2]))) ||
+                 strncmp(w, "b.", 2) == 0)
+            ++v64;
+        else if (word_in(w, a32))
+            ++v32;
+        i = k;
+    }
+    if (v64 == 0 && v32 == 0)
+        return CCR_ASM_ATT;
+    if (vx >= v64 + v32)
+        return CCR_ASM_ATT;
+    return v64 >= v32 ? CCR_ASM_ARM64 : CCR_ASM_ARM32;
+}
+
 ccr_asm_syntax ccr_asm_syntax_of(const char *path, const char *text, size_t len)
 {
     const char *e = path ? ext_of(path) : "";
@@ -43,15 +104,19 @@ ccr_asm_syntax ccr_asm_syntax_of(const char *path, const char *text, size_t len)
         return CCR_ASM_NASM;
     if (text && mentions(text, len, ".intel_syntax") && !mentions(text, len, ".att_syntax"))
         return CCR_ASM_INTEL;
-    return CCR_ASM_ATT;
+    return text ? guess_arch(text, len) : CCR_ASM_ATT;
 }
 
 const char *ccr_asm_syntax_name(ccr_asm_syntax s)
 {
-    return s == CCR_ASM_NASM ? "nasm" : s == CCR_ASM_INTEL ? "intel" : "att";
+    static const char *const names[] = { "att", "intel", "nasm", "arm64", "arm32" };
+    return (unsigned)s < 5 ? names[s] : "att";
 }
 
-const char *ccr_asm_comment(ccr_asm_syntax s) { return s == CCR_ASM_NASM ? "; " : "# "; }
+const char *ccr_asm_comment(ccr_asm_syntax s)
+{
+    return s == CCR_ASM_NASM ? "; " : s == CCR_ASM_ARM64 ? "// " : s == CCR_ASM_ARM32 ? "@ " : "# ";
+}
 
 /* ------------------------------------------------------------ words */
 
@@ -94,13 +159,33 @@ static const char *last_word(const char *m)
     return sp ? sp + 1 : m;
 }
 
+/* ARM's condition codes: beq, b.ne, bhi... */
+static bool arm_cond(const char *c)
+{
+    static const char *const conds[] = { "eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc", "hi", "ls",
+                                         "ge", "lt", "gt", "le", "al", NULL };
+    return in_list(c, conds);
+}
+
+/* Thumb's width: beq.n, b.w */
+static void no_width(char *w)
+{
+    const size_t n = strlen(w);
+    if (n > 2 && w[n - 2] == '.' && (w[n - 1] == 'n' || w[n - 1] == 'w'))
+        w[n - 2] = '\0';
+}
+
 bool ccr_asm_is_jump(const char *mnemonic)
 {
     char w[32];
     lower(last_word(mnemonic), w, sizeof w);
     static const char *const loops[] = { "loop", "loope", "loopne", "loopz", "loopnz", "jecxz", "jrcxz", "jcxz",
-                                         NULL };
-    return (w[0] == 'j' && w[1] && isalpha((unsigned char)w[1])) || in_list(w, loops);
+                                         "cbz", "cbnz", "tbz", "tbnz", NULL };
+    if ((w[0] == 'j' && w[1] && isalpha((unsigned char)w[1])) || in_list(w, loops))
+        return true;
+    no_width(w);
+    return strcmp(w, "b") == 0 || (w[0] == 'b' && w[1] == '.' && arm_cond(w + 2)) ||
+           (w[0] == 'b' && strlen(w) == 3 && arm_cond(w + 1));
 }
 
 bool ccr_asm_ends_flow(const char *mnemonic)
@@ -108,7 +193,9 @@ bool ccr_asm_ends_flow(const char *mnemonic)
     char w[32];
     lower(last_word(mnemonic), w, sizeof w);
     static const char *const ends[] = { "jmp", "jmpq", "jmpl", "ret", "retq", "retl", "retn", "retf", "iret",
-                                        "iretq", "iretd", "ud2", "sysret", "sysretq", "sysexit", NULL };
+                                        "iretq", "iretd", "ud2", "sysret", "sysretq", "sysexit",
+                                        "b", "br", "bx", "eret", "udf", NULL };
+    no_width(w);
     return in_list(w, ends);
 }
 
@@ -141,6 +228,29 @@ int ccr_asm_category(const char *mnemonic)
                                          "lzcnt", "tzcnt", "bsf", "bsr", "shld", "shrd", "andn", NULL };
     if (w[0] == '#' || w[0] == '%')
         return CCR_CAT_PREPROC;
+    /* ARM's: loads and stores move data; b, bl, cbz, svc are control */
+    {
+        char a[48];
+        snprintf(a, sizeof a, "%s", w);
+        no_width(a);
+        static const char *const arm_ctl[] = { "b", "bl", "blx", "blr", "br", "bx", "cbz", "cbnz", "tbz", "tbnz",
+                                               "svc", "swi", "eret", "udf", "wfi", "wfe", NULL };
+        static const char *const arm_move[] = { "adr", "adrp", "movz", "movk", "movn", "mvn", "push", "pop", "sxtw",
+                                                "uxtw", "sxtb", "uxtb", "sxth", "uxth", NULL };
+        static const char *const arm_math[] = { "add", "adds", "sub", "subs", "mul", "madd", "msub", "sdiv", "udiv",
+                                                "and", "ands", "orr", "eor", "bic", "lsl", "lsr", "asr", "ror", "cmp",
+                                                "cmn", "tst", "teq", "neg", "negs", "rsb", "rsbs", "csel", "csinc",
+                                                "cset", "cinc", "umull", "smull", "mla", "mls", NULL };
+        if (in_list(a, arm_ctl) || ccr_asm_is_jump(a) || (a[0] == 'b' && a[1] == 'l' && arm_cond(a + 2)))
+            return CCR_CAT_CONTROL;
+        if (in_list(a, arm_move) || strncmp(a, "ldr", 3) == 0 || strncmp(a, "str", 3) == 0 ||
+            strncmp(a, "ldp", 3) == 0 || strncmp(a, "stp", 3) == 0 || strncmp(a, "ldm", 3) == 0 ||
+            strncmp(a, "stm", 3) == 0 || strncmp(a, "ldur", 4) == 0 || strncmp(a, "stur", 4) == 0)
+            return CCR_CAT_VARIABLE;
+        const size_t n = strlen(a);
+        if (in_list(a, arm_math) || (n > 2 && arm_cond(a + n - 2) && (a[n - 2] = '\0', in_list(a, arm_math))))
+            return CCR_CAT_OPERATOR;   /* addeq: add, if equal */
+    }
     if (in_list(w, g_data) || (strcmp(w, "=") == 0))
         return CCR_CAT_TYPE;
     if (w[0] == '.' || w[0] == '[' || in_list(w, nasm_dir))
@@ -210,9 +320,19 @@ static bool comment_at(const scan *S, uint32_t i)
     const char c = S->s[i];
     if (nasm(S))
         return c == ';';
-    if (c == '#')
+    if (c == '/' && i + 1 < S->n && (S->s[i + 1] == '*' || S->s[i + 1] == '/'))
         return true;
-    return c == '/' && i + 1 < S->n && (S->s[i + 1] == '*' || S->s[i + 1] == '/');
+    if (!CCR_ASM_IS_ARM(S->syn))
+        return c == '#';
+    if (c == '@')
+        return S->syn == CCR_ASM_ARM32;   /* AArch64 has @function, not @ comments */
+    if (c != '#')
+        return false;
+    /* ARM: # is a number (mov r0, #1), and a comment only first on its line */
+    for (uint32_t k = i; k > 0 && S->s[k - 1] != '\n'; --k)
+        if (!(S->s[k - 1] == ' ' || S->s[k - 1] == '\t' || S->s[k - 1] == '\r'))
+            return false;
+    return true;
 }
 
 /* Past a comment at S->i; a line comment stops before its '\n'. */
@@ -266,10 +386,10 @@ static void trim(const scan *S, uint32_t *b, uint32_t *e)
         --*e;
 }
 
-static void push_arg(scan *S, uint32_t b, uint32_t e)
+static void push_arg_keep(scan *S, uint32_t b, uint32_t e, bool keep_empty)
 {
     trim(S, &b, &e);
-    if (e <= b)
+    if (e <= b && !keep_empty)
         return;
     if (!grow((void **)&S->args, &S->arg_cap, S->narg + 1, sizeof *S->args)) {
         S->oom = true;
@@ -277,6 +397,8 @@ static void push_arg(scan *S, uint32_t b, uint32_t e)
     }
     S->args[S->narg++] = (span){ b, e };
 }
+
+static void push_arg(scan *S, uint32_t b, uint32_t e) { push_arg_keep(S, b, e, false); }
 
 /* Operands up to the statement's end, split at the commas outside ( ) [ ]. */
 static void operands(scan *S)
@@ -296,7 +418,7 @@ static void operands(scan *S)
         else if ((c == ')' || c == ']' || c == '}') && depth > 0)
             --depth;
         else if (c == ',' && depth == 0) {
-            push_arg(S, ab, S->i);
+            push_arg_keep(S, ab, S->i, true);   /* .p2align 4,,10: the empty one counts */
             ab = S->i + 1;
         }
         ++S->i;
@@ -689,8 +811,9 @@ static ccr_node_id stmt_node(build *B, ccr_node_id parent, const astmt *t)
         char w[32];
         name_of(B, t, w, sizeof w);
         /* jne .L2: a jump to a label here gets its arrow */
-        if (t->kind == ST_INSN && t->nargs == 1 && ccr_asm_is_jump(w)) {
-            span g = S->args[t->arg0];
+        /* (cbz x0, .L2, tbz w1, #3, .L2: the label last, what is tested before it) */
+        if (t->kind == ST_INSN && t->nargs >= 1 && t->nargs <= 3 && ccr_asm_is_jump(w)) {
+            span g = S->args[t->arg0 + t->nargs - 1];
             static const char *const dist[] = { "short", "near", "far", NULL };
             uint32_t k = g.b;
             while (k < g.e && isalpha((unsigned char)S->s[k]))
@@ -706,6 +829,12 @@ static ccr_node_id stmt_node(build *B, ccr_node_id parent, const astmt *t)
                     a->nodes[id].name = bsub(B, g);
                     a->nodes[id].op = bsub(B, t->name);
                     a->nodes[id].flags |= CCR_FLAG_ASM;
+                    for (uint32_t q = 0; q + 1 < t->nargs; ++q) {
+                        const span sp = S->args[t->arg0 + q];
+                        ccr_node_id x = node(B, CCR_NODE_TEXT, id, sp.b, sp.e, t->line);
+                        if (x != CCR_NONE)
+                            a->nodes[x].name = bsub(B, sp);
+                    }
                 }
                 return id;
             }
@@ -1414,7 +1543,10 @@ void ccr_asm_split_inline(ccr_ast *ast)
         if (blk == CCR_NONE)
             return;
         ccr_ast_insert_first(ast, id, blk);
-        if (!ccr_asm_parse_into(ast, blk, base, base + (uint32_t)len, ast->asm_syntax))
+        /* asm() for an ARM target: its syntax, from what it says */
+        const ccr_asm_syntax own = guess_arch(text, (size_t)len);
+        if (!ccr_asm_parse_into(ast, blk, base, base + (uint32_t)len,
+                                CCR_ASM_IS_ARM(own) ? own : ast->asm_syntax))
             return;
         /* the Block stands for the string(s) in the C text */
         ccr_node *b = &ast->nodes[blk];

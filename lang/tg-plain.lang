@@ -175,3 +175,7 @@ palette.asm_att = GNU as, синтаксиси AT&T: аввал аз куҷо, �
 palette.asm_intel = GNU as, синтаксиси Intel (.intel_syntax): аввал ба куҷо (mov rax, 1)
 palette.asm_nasm = NASM: аввал ба куҷо (mov rax, 1); ; шарҳро сар мекунад
 files.name_file = Номи файл (.c, .h, .s ё .asm), Enter: сохтан
+
+# ARM assembly
+palette.asm_arm64 = ARM-и 64-битӣ (AArch64: телефонҳо, Apple M, Raspberry Pi 4 ва 5), GNU as: аввал ба куҷо (mov x0, #1); ададҳо бо #, // шарҳро сар мекунад
+palette.asm_arm32 = ARM ва Thumb-и 32-битӣ (Raspberry Pi OS-и 32-битӣ, телефонҳои кӯҳна), GNU as: аввал ба куҷо (mov r0, #1); ададҳо бо #, @ шарҳро сар мекунад

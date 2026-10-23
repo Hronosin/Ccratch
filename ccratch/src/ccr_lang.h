@@ -398,6 +398,8 @@
     X(PAL_ASM_ATT,      "palette.asm_att",       0, "GNU as, AT&T syntax: the source first, the destination last; registers start with a percent sign, numbers with $") \
     X(PAL_ASM_INTEL,    "palette.asm_intel",     0, "GNU as, Intel syntax (.intel_syntax): destination first (mov rax, 1)") \
     X(PAL_ASM_NASM,     "palette.asm_nasm",      0, "NASM: destination first (mov rax, 1); ; starts a comment") \
+    X(PAL_ASM_ARM64,    "palette.asm_arm64",     0, "64-bit ARM (AArch64: phones, Apple M chips, Raspberry Pi 4 and 5), GNU as: destination first (mov x0, #1); numbers with #, // starts a comment") \
+    X(PAL_ASM_ARM32,    "palette.asm_arm32",     0, "32-bit ARM and Thumb (Raspberry Pi OS 32-bit, older phones), GNU as: destination first (mov r0, #1); numbers with #, @ starts a comment") \
     X(PAL_STD_ON,       "palette.std_on",        0, "The standard library's blocks (printf, malloc, std::cout...): shown. A click hides them: only the language and your own functions") \
     X(PAL_STD_OFF,      "palette.std_off",       0, "No standard library: only the language and your own functions. A click brings printf and the rest back") \
     X(SET_STD,          "set.std",               0, "Standard library blocks")           \

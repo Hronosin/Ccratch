@@ -176,3 +176,7 @@ palette.asm_att = GNU as, синтаксис AT&T: сначала откуда, 
 palette.asm_intel = GNU as, синтаксис Intel (.intel_syntax): сначала куда (mov rax, 1)
 palette.asm_nasm = NASM: сначала куда (mov rax, 1); ; начинает комментарий
 files.name_file = Имя файла (.c, .h, .s или .asm), Enter — создать
+
+# ARM assembly
+palette.asm_arm64 = 64-битный ARM (AArch64: телефоны, Apple M, Raspberry Pi 4 и 5), GNU as: сначала куда (mov x0, #1); числа с #, // начинает комментарий
+palette.asm_arm32 = 32-битный ARM и Thumb (32-битная Raspberry Pi OS, старые телефоны), GNU as: сначала куда (mov r0, #1); числа с #, @ начинает комментарий

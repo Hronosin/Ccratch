@@ -547,3 +547,7 @@ palette.asm_data = Бөлімдер мен деректер
 palette.asm_att = GNU as, AT&T синтаксисі: алдымен қайдан, содан кейін қайда; регистрлер пайыз белгісімен, сандар $ белгісімен басталады
 palette.asm_intel = GNU as, Intel синтаксисі (.intel_syntax): алдымен қайда (mov rax, 1)
 palette.asm_nasm = NASM: алдымен қайда (mov rax, 1); ; түсініктеме бастайды
+
+# ARM assembly
+palette.asm_arm64 = 64 биттік ARM (AArch64: телефондар, Apple M, Raspberry Pi 4 және 5), GNU as: алдымен қайда (mov x0, #1); сандар # белгісімен, // түсініктеме бастайды
+palette.asm_arm32 = 32 биттік ARM және Thumb (32 биттік Raspberry Pi OS, ескі телефондар), GNU as: алдымен қайда (mov r0, #1); сандар # белгісімен, @ түсініктеме бастайды

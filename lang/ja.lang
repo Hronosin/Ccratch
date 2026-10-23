@@ -548,3 +548,7 @@ palette.asm_data = セクションとデータ
 palette.asm_att = GNU as、AT&T 構文: 先に転送元、後に転送先。レジスタはパーセント記号、数値は $ で始まる
 palette.asm_intel = GNU as、Intel 構文 (.intel_syntax): 先に転送先 (mov rax, 1)
 palette.asm_nasm = NASM: 先に転送先 (mov rax, 1)。; はコメントの始まり
+
+# ARM assembly
+palette.asm_arm64 = 64 ビット ARM (AArch64: スマホ、Apple M、Raspberry Pi 4・5)、GNU as: 先に転送先 (mov x0, #1)。数値は #、// はコメントの始まり
+palette.asm_arm32 = 32 ビット ARM と Thumb (32 ビット版 Raspberry Pi OS、古いスマホ)、GNU as: 先に転送先 (mov r0, #1)。数値は #、@ はコメントの始まり

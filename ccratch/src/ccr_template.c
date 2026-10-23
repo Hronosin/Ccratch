@@ -41,43 +41,43 @@ ccr_lang_kind ccr_tcat_lang(ccr_tcat c)
 /* Each assembly block, the three ways it is written. */
 static const struct asm_line {
     ccr_template t;
-    const char  *intel, *att, *nasm;
+    const char  *intel, *att, *nasm, *arm64, *arm32;
 } g_asm_lines[] = {
-    { CCR_TEMPLATE_INL_MOV,   "mov eax, ebx",        "movl %ebx, %eax",     "mov eax, ebx" },
-    { CCR_TEMPLATE_INL_ADD,   "add eax, 1",          "addl $1, %eax",       "add eax, 1" },
-    { CCR_TEMPLATE_INL_XOR,   "xor eax, eax",        "xorl %eax, %eax",     "xor eax, eax" },
-    { CCR_TEMPLATE_INL_NOP,   "nop",                 "nop",                 "nop" },
-    { CCR_TEMPLATE_INL_PAUSE, "pause",               "pause",               "pause" },
-    { CCR_TEMPLATE_A_MOV,     "mov rax, rbx",        "movq %rbx, %rax",     "mov rax, rbx" },
-    { CCR_TEMPLATE_A_MOV_IMM, "mov rax, 1",          "movq $1, %rax",       "mov rax, 1" },
-    { CCR_TEMPLATE_A_LOAD,    "mov eax, DWORD PTR [rdi]", "movl (%rdi), %eax", "mov eax, [rdi]" },
-    { CCR_TEMPLATE_A_STORE,   "mov DWORD PTR [rdi], eax", "movl %eax, (%rdi)", "mov [rdi], eax" },
-    { CCR_TEMPLATE_A_LEA,     "lea rsi, [rip + msg]", "leaq msg(%rip), %rsi", "lea rsi, [rel msg]" },
-    { CCR_TEMPLATE_A_PUSH,    "push rbp",            "pushq %rbp",          "push rbp" },
-    { CCR_TEMPLATE_A_POP,     "pop rbp",             "popq %rbp",           "pop rbp" },
-    { CCR_TEMPLATE_A_ADD,     "add rax, rbx",        "addq %rbx, %rax",     "add rax, rbx" },
-    { CCR_TEMPLATE_A_SUB,     "sub rsp, 16",         "subq $16, %rsp",      "sub rsp, 16" },
-    { CCR_TEMPLATE_A_IMUL,    "imul rax, rbx",       "imulq %rbx, %rax",    "imul rax, rbx" },
-    { CCR_TEMPLATE_A_INC,     "inc rcx",             "incq %rcx",           "inc rcx" },
-    { CCR_TEMPLATE_A_DEC,     "dec rcx",             "decq %rcx",           "dec rcx" },
-    { CCR_TEMPLATE_A_NEG,     "neg rax",             "negq %rax",           "neg rax" },
-    { CCR_TEMPLATE_A_XOR,     "xor eax, eax",        "xorl %eax, %eax",     "xor eax, eax" },
-    { CCR_TEMPLATE_A_AND,     "and rax, 15",         "andq $15, %rax",      "and rax, 15" },
-    { CCR_TEMPLATE_A_OR,      "or rax, rbx",         "orq %rbx, %rax",      "or rax, rbx" },
-    { CCR_TEMPLATE_A_SHL,     "shl rax, 1",          "shlq $1, %rax",       "shl rax, 1" },
-    { CCR_TEMPLATE_A_SHR,     "shr rax, 1",          "shrq $1, %rax",       "shr rax, 1" },
-    { CCR_TEMPLATE_A_CMP,     "cmp rax, rbx",        "cmpq %rbx, %rax",     "cmp rax, rbx" },
-    { CCR_TEMPLATE_A_TEST,    "test rax, rax",       "testq %rax, %rax",    "test rax, rax" },
-    { CCR_TEMPLATE_A_CALL,    "call puts",           "call puts@PLT",       "call puts wrt ..plt" },
-    { CCR_TEMPLATE_A_RET,     "ret",                 "ret",                 "ret" },
-    { CCR_TEMPLATE_A_SYSCALL, "syscall",             "syscall",             "syscall" },
-    { CCR_TEMPLATE_A_NOP,     "nop",                 "nop",                 "nop" },
-    { CCR_TEMPLATE_A_GLOBL,   ".globl main",         ".globl main",         "global main" },
-    { CCR_TEMPLATE_A_TEXT,    ".text",               ".text",               "section .text" },
-    { CCR_TEMPLATE_A_DATA,    ".data",               ".data",               "section .data" },
-    { CCR_TEMPLATE_A_STRING,  ".string \"Hello\"",   ".string \"Hello\"",   "db \"Hello\", 0" },
-    { CCR_TEMPLATE_A_QUAD,    ".quad 0",             ".quad 0",             "dq 0" },
-    { CCR_TEMPLATE_A_BYTE,    ".byte 1, 2, 3",       ".byte 1, 2, 3",       "db 1, 2, 3" },
+    { CCR_TEMPLATE_INL_MOV,   "mov eax, ebx",        "movl %ebx, %eax",     "mov eax, ebx", "mov x0, x1", "mov r0, r1" },
+    { CCR_TEMPLATE_INL_ADD,   "add eax, 1",          "addl $1, %eax",       "add eax, 1", "add x0, x0, #1", "add r0, r0, #1" },
+    { CCR_TEMPLATE_INL_XOR,   "xor eax, eax",        "xorl %eax, %eax",     "xor eax, eax", "eor x0, x0, x0", "eor r0, r0, r0" },
+    { CCR_TEMPLATE_INL_NOP,   "nop",                 "nop",                 "nop", "nop", "nop" },
+    { CCR_TEMPLATE_INL_PAUSE, "pause",               "pause",               "pause", "yield", "yield" },
+    { CCR_TEMPLATE_A_MOV,     "mov rax, rbx",        "movq %rbx, %rax",     "mov rax, rbx", "mov x0, x1", "mov r0, r1" },
+    { CCR_TEMPLATE_A_MOV_IMM, "mov rax, 1",          "movq $1, %rax",       "mov rax, 1", "mov x0, #1", "mov r0, #1" },
+    { CCR_TEMPLATE_A_LOAD,    "mov eax, DWORD PTR [rdi]", "movl (%rdi), %eax", "mov eax, [rdi]", "ldr w0, [x1]", "ldr r0, [r1]" },
+    { CCR_TEMPLATE_A_STORE,   "mov DWORD PTR [rdi], eax", "movl %eax, (%rdi)", "mov [rdi], eax", "str w0, [x1]", "str r0, [r1]" },
+    { CCR_TEMPLATE_A_LEA,     "lea rsi, [rip + msg]", "leaq msg(%rip), %rsi", "lea rsi, [rel msg]", "adr x0, msg", "adr r0, msg" },
+    { CCR_TEMPLATE_A_PUSH,    "push rbp",            "pushq %rbp",          "push rbp", "stp x29, x30, [sp, #-16]!", "push {r4, lr}" },
+    { CCR_TEMPLATE_A_POP,     "pop rbp",             "popq %rbp",           "pop rbp", "ldp x29, x30, [sp], #16", "pop {r4, pc}" },
+    { CCR_TEMPLATE_A_ADD,     "add rax, rbx",        "addq %rbx, %rax",     "add rax, rbx", "add x0, x0, x1", "add r0, r0, r1" },
+    { CCR_TEMPLATE_A_SUB,     "sub rsp, 16",         "subq $16, %rsp",      "sub rsp, 16", "sub sp, sp, #16", "sub sp, sp, #16" },
+    { CCR_TEMPLATE_A_IMUL,    "imul rax, rbx",       "imulq %rbx, %rax",    "imul rax, rbx", "mul x0, x0, x1", "mul r0, r0, r1" },
+    { CCR_TEMPLATE_A_INC,     "inc rcx",             "incq %rcx",           "inc rcx", "add x0, x0, #1", "add r0, r0, #1" },
+    { CCR_TEMPLATE_A_DEC,     "dec rcx",             "decq %rcx",           "dec rcx", "sub x0, x0, #1", "sub r0, r0, #1" },
+    { CCR_TEMPLATE_A_NEG,     "neg rax",             "negq %rax",           "neg rax", "neg x0, x0", "rsb r0, r0, #0" },
+    { CCR_TEMPLATE_A_XOR,     "xor eax, eax",        "xorl %eax, %eax",     "xor eax, eax", "eor x0, x0, x1", "eor r0, r0, r1" },
+    { CCR_TEMPLATE_A_AND,     "and rax, 15",         "andq $15, %rax",      "and rax, 15", "and x0, x0, #15", "and r0, r0, #15" },
+    { CCR_TEMPLATE_A_OR,      "or rax, rbx",         "orq %rbx, %rax",      "or rax, rbx", "orr x0, x0, x1", "orr r0, r0, r1" },
+    { CCR_TEMPLATE_A_SHL,     "shl rax, 1",          "shlq $1, %rax",       "shl rax, 1", "lsl x0, x0, #1", "lsl r0, r0, #1" },
+    { CCR_TEMPLATE_A_SHR,     "shr rax, 1",          "shrq $1, %rax",       "shr rax, 1", "lsr x0, x0, #1", "lsr r0, r0, #1" },
+    { CCR_TEMPLATE_A_CMP,     "cmp rax, rbx",        "cmpq %rbx, %rax",     "cmp rax, rbx", "cmp x0, x1", "cmp r0, r1" },
+    { CCR_TEMPLATE_A_TEST,    "test rax, rax",       "testq %rax, %rax",    "test rax, rax", "tst x0, x0", "tst r0, r0" },
+    { CCR_TEMPLATE_A_CALL,    "call puts",           "call puts@PLT",       "call puts wrt ..plt", "bl puts", "bl puts" },
+    { CCR_TEMPLATE_A_RET,     "ret",                 "ret",                 "ret", "ret", "bx lr" },
+    { CCR_TEMPLATE_A_SYSCALL, "syscall",             "syscall",             "syscall", "svc #0", "svc #0" },
+    { CCR_TEMPLATE_A_NOP,     "nop",                 "nop",                 "nop", "nop", "nop" },
+    { CCR_TEMPLATE_A_GLOBL,   ".globl main",         ".globl main",         "global main", ".globl main", ".globl main" },
+    { CCR_TEMPLATE_A_TEXT,    ".text",               ".text",               "section .text", ".text", ".text" },
+    { CCR_TEMPLATE_A_DATA,    ".data",               ".data",               "section .data", ".data", ".data" },
+    { CCR_TEMPLATE_A_STRING,  ".string \"Hello\"",   ".string \"Hello\"",   "db \"Hello\", 0", ".string \"Hello\"", ".asciz \"Hello\"" },
+    { CCR_TEMPLATE_A_QUAD,    ".quad 0",             ".quad 0",             "dq 0", ".quad 0", ".word 0" },
+    { CCR_TEMPLATE_A_BYTE,    ".byte 1, 2, 3",       ".byte 1, 2, 3",       "db 1, 2, 3", ".byte 1, 2, 3", ".byte 1, 2, 3" },
 };
 
 const char *ccr_template_asm_line(ccr_template t, ccr_asm_syntax syntax)
@@ -85,7 +85,9 @@ const char *ccr_template_asm_line(ccr_template t, ccr_asm_syntax syntax)
     for (size_t i = 0; i < sizeof g_asm_lines / sizeof g_asm_lines[0]; ++i)
         if (g_asm_lines[i].t == t)
             return syntax == CCR_ASM_NASM ? g_asm_lines[i].nasm
-                 : syntax == CCR_ASM_INTEL ? g_asm_lines[i].intel : g_asm_lines[i].att;
+                 : syntax == CCR_ASM_INTEL ? g_asm_lines[i].intel
+                 : syntax == CCR_ASM_ARM64 ? g_asm_lines[i].arm64
+                 : syntax == CCR_ASM_ARM32 ? g_asm_lines[i].arm32 : g_asm_lines[i].att;
     return NULL;
 }
 
@@ -93,15 +95,15 @@ const char *ccr_template_asm_line(ccr_template t, ccr_asm_syntax syntax)
 static ccr_node_id build_asm(ccr_ast *ast, ccr_template t, ccr_node_id parent)
 {
     const ccr_asm_syntax syn = ast->asm_syntax;
-    const bool nasm = syn == CCR_ASM_NASM;
+    const bool nasm = syn == CCR_ASM_NASM, a64 = syn == CCR_ASM_ARM64, arm = CCR_ASM_IS_ARM(syn);
     switch (t) {
     case CCR_TEMPLATE_INL_ASM:  return ccr_asm_build_inline(ast, parent);
     case CCR_TEMPLATE_A_LABEL:  return ccr_asm_build_label(ast, parent);
-    case CCR_TEMPLATE_A_JMP:    return ccr_asm_build_jump(ast, parent, "jmp");
-    case CCR_TEMPLATE_A_JE:     return ccr_asm_build_jump(ast, parent, "je");
-    case CCR_TEMPLATE_A_JNE:    return ccr_asm_build_jump(ast, parent, "jne");
-    case CCR_TEMPLATE_A_JL:     return ccr_asm_build_jump(ast, parent, "jl");
-    case CCR_TEMPLATE_A_JG:     return ccr_asm_build_jump(ast, parent, "jg");
+    case CCR_TEMPLATE_A_JMP:    return ccr_asm_build_jump(ast, parent, arm ? "b" : "jmp");
+    case CCR_TEMPLATE_A_JE:     return ccr_asm_build_jump(ast, parent, a64 ? "b.eq" : arm ? "beq" : "je");
+    case CCR_TEMPLATE_A_JNE:    return ccr_asm_build_jump(ast, parent, a64 ? "b.ne" : arm ? "bne" : "jne");
+    case CCR_TEMPLATE_A_JL:     return ccr_asm_build_jump(ast, parent, a64 ? "b.lt" : arm ? "blt" : "jl");
+    case CCR_TEMPLATE_A_JG:     return ccr_asm_build_jump(ast, parent, a64 ? "b.gt" : arm ? "bgt" : "jg");
     case CCR_TEMPLATE_A_MACRO:  return ccr_asm_build_scope(ast, parent, nasm ? "%macro" : ".macro", nasm ? "name 0" : "name", false);
     case CCR_TEMPLATE_A_REPT:   return ccr_asm_build_scope(ast, parent, nasm ? "%rep" : ".rept", "4", false);
     case CCR_TEMPLATE_A_LINE: {

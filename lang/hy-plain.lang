@@ -175,3 +175,7 @@ palette.asm_att = GNU as, AT&T շարահյուսություն. նախ՝ որտ
 palette.asm_intel = GNU as, Intel շարահյուսություն (.intel_syntax). նախ՝ ուր (mov rax, 1)
 palette.asm_nasm = NASM. նախ՝ ուր (mov rax, 1)։ ; նշանը սկսում է մեկնաբանություն
 files.name_file = Ֆայլի անունը (.c, .h, .s կամ .asm), Enter՝ ստեղծել
+
+# ARM assembly
+palette.asm_arm64 = 64-բիթանոց ARM (AArch64՝ հեռախոսներ, Apple M, Raspberry Pi 4 և 5), GNU as. նախ՝ ուր (mov x0, #1)։ Թվերը՝ #-ով, // նշանը սկսում է մեկնաբանություն
+palette.asm_arm32 = 32-բիթանոց ARM և Thumb (32-բիթանոց Raspberry Pi OS, հին հեռախոսներ), GNU as. նախ՝ ուր (mov r0, #1)։ Թվերը՝ #-ով, @ նշանը սկսում է մեկնաբանություն

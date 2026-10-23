@@ -175,3 +175,7 @@ palette.asm_att = GNU as, AT&T 문법: 원본이 먼저, 대상이 나중; 레�
 palette.asm_intel = GNU as, Intel 문법 (.intel_syntax): 대상이 먼저 (mov rax, 1)
 palette.asm_nasm = NASM: 대상이 먼저 (mov rax, 1); ; 는 주석의 시작
 files.name_file = 파일 이름 (.c, .h, .s 또는 .asm), Enter로 만들기
+
+# ARM assembly
+palette.asm_arm64 = 64비트 ARM (AArch64: 휴대폰, Apple M, Raspberry Pi 4·5), GNU as: 대상이 먼저 (mov x0, #1); 숫자는 #, // 는 주석의 시작
+palette.asm_arm32 = 32비트 ARM과 Thumb (32비트 Raspberry Pi OS, 오래된 휴대폰), GNU as: 대상이 먼저 (mov r0, #1); 숫자는 #, @ 는 주석의 시작

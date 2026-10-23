@@ -548,3 +548,7 @@ palette.asm_data = 段与数据
 palette.asm_att = GNU as，AT&T 语法：先源后目标；寄存器以百分号开头，数字以 $ 开头
 palette.asm_intel = GNU as，Intel 语法 (.intel_syntax)：目标在前 (mov rax, 1)
 palette.asm_nasm = NASM：目标在前 (mov rax, 1)；; 开始注释
+
+# ARM assembly
+palette.asm_arm64 = 64 位 ARM（AArch64：手机、Apple M、树莓派 4 和 5），GNU as：目标在前 (mov x0, #1)；数字以 # 开头，// 开始注释
+palette.asm_arm32 = 32 位 ARM 与 Thumb（32 位 Raspberry Pi OS、旧手机），GNU as：目标在前 (mov r0, #1)；数字以 # 开头，@ 开始注释
