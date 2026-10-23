@@ -77,6 +77,65 @@
     X(REN_UNDONE,       "ren.undone",            0, "%s is %s again, in every file")     \
     X(REN_UNDO_STALE,   "ren.undo_stale",        0, "The files changed since the rename: it stays") \
     X(HELP_RENAME,      "help.rename",           0, "rename the name under the mouse in every file of the project") \
+    X(HELP_SEARCH,      "help.search",           0, "search the whole project, and replace (Ctrl+Shift+H)") \
+    X(ARR_TIP,          "arrange.tip",           0, "Arrange the blocks: in columns, as a newspaper, by who calls whom") \
+    X(ARR_TITLE,        "arrange.title",         0, "Arrange the blocks")                \
+    X(ARR_COLUMNS,      "arrange.columns",       0, "Columns")                           \
+    X(ARR_COLUMNS_HINT, "arrange.columns_hint",  0, "#include and types on the left, functions on the right") \
+    X(ARR_TILES,        "arrange.tiles",         0, "Newspaper")                             \
+    X(ARR_TILES_HINT,   "arrange.tiles_hint",    0, "in the file's order: down a column, then the next, as wide as the screen") \
+    X(ARR_CALLS,        "arrange.calls",         0, "By calls")                          \
+    X(ARR_CALLS_HINT,   "arrange.calls_hint",    0, "main on the left, what it calls to its right, and on") \
+    X(ARR_FREE,         "arrange.free",          0, "Or drag any block anywhere: it stays where you put it, lines up with its neighbours on the way, and is there again when the file opens. Ctrl+Z puts an arrangement back.") \
+    X(ARR_DONE,         "arrange.done",          0, "Arranged: %s (Ctrl+Z puts it back)") \
+    X(SRCH_TITLE,       "search.title",          0, "Search")                            \
+    X(SRCH_TAB_TIP,     "search.tab_tip",        0, "Find in every file, and replace (Ctrl+Shift+F, Ctrl+Shift+H)") \
+    X(SRCH_TEXT,        "search.text",           0, "Text")                              \
+    X(SRCH_NAMES,       "search.names",          0, "Names")                             \
+    X(SRCH_TEXT_TIP,    "search.text_tip",       0, "Wherever a file says it: the code, the strings, the comments") \
+    X(SRCH_NAMES_TIP,   "search.names_tip",      0, "Everything the project calls that, as the compiler sees it: a function, a field, a local of another function... each on its own") \
+    X(SRCH_PROJECT,     "search.project",        0, "whole project")                     \
+    X(SRCH_THIS_FILE,   "search.this_file",      0, "this file")                         \
+    X(SRCH_SCOPE_TIP,   "search.scope_tip",      0, "Where to look: every file of the project, or only the one on screen") \
+    X(SRCH_FIND,        "search.find",           0, "Find (Enter: to the next one)")     \
+    X(SRCH_FIND_NAME,   "search.find_name",      0, "A name, Enter")                     \
+    X(SRCH_WITH,        "search.with",           0, "Replace with")                      \
+    X(SRCH_WITH_NAME,   "search.with_name",      0, "Rename to")                         \
+    X(SRCH_REPLACE_TIP, "search.replace_tip",    0, "Replace (Ctrl+Shift+H)")            \
+    X(SRCH_CASE_TIP,    "search.case_tip",       0, "The case matters: Hello is not hello") \
+    X(SRCH_WORD_TIP,    "search.word_tip",       0, "Whole words: not inside a longer name") \
+    X(SRCH_KEEP_TIP,    "search.keep_tip",       0, "Keep the case: Hello becomes Hi, HELLO becomes HI") \
+    X(SRCH_IN_ALL,      "search.in_all",         0, "everywhere")                        \
+    X(SRCH_IN_CODE,     "search.in_code",        0, "code")                              \
+    X(SRCH_IN_STRINGS,  "search.in_strings",     0, "strings")                           \
+    X(SRCH_IN_COMMENTS, "search.in_comments",    0, "comments")                          \
+    X(SRCH_COUNT,       "search.count",          0, "Found: %d, files: %d")              \
+    X(SRCH_NONE,        "search.none",           0, "Nothing found")                     \
+    X(SRCH_MANY,        "search.many",           0, "(the first %d shown)")             \
+    X(SRCH_EMPTY,       "search.empty",          0, "Type what to find: every file of the project is looked through as you type. The > opens Replace: one place, a whole file or all of them, and one Ctrl+Z puts it all back.") \
+    X(SRCH_REPLACE_ALL, "search.replace_all",    0, "Replace all (%d)")                  \
+    X(SRCH_RENAME_ALL,  "search.rename_all",     0, "Rename all (%d)")                   \
+    X(SRCH_REPLACE_ONE_TIP, "search.replace_one_tip", 0, "Replace this one")            \
+    X(SRCH_REPLACE_FILE_TIP, "search.replace_file_tip", 0, "Replace all in this file")  \
+    X(SRCH_DISMISS_TIP, "search.dismiss_tip",    0, "Leave this one out")                \
+    X(SRCH_RENAME_TIP,  "search.rename_tip",     0, "Rename this one only")              \
+    X(SRCH_REPLACED,    "search.replaced",       0, "Replaced: %d, files: %d (Ctrl+Z takes it back)") \
+    X(SRCH_CANNOT,      "search.cannot",         0, "Cannot write %s")                   \
+    X(SRCH_NAMES_COUNT, "search.names_count",    0, "Things: %d, places: %d, files: %d") \
+    X(SRCH_NAMES_HINT,  "search.names_hint",     0, "Enter: everything called %s")       \
+    X(SRCH_NOT_OURS,    "search.not_ours",       0, "not the project's")                 \
+    X(SRCH_NOT_OURS_TIP, "search.not_ours_tip",  0, "It comes from outside the project (a system header, a library): it is shown, not renamed") \
+    X(SRCH_SYM_FUNCTION, "search.sym_function",  0, "function")                          \
+    X(SRCH_SYM_METHOD,  "search.sym_method",     0, "method of %s")                      \
+    X(SRCH_SYM_GLOBAL,  "search.sym_global",     0, "global variable")                   \
+    X(SRCH_SYM_LOCAL,   "search.sym_local",      0, "variable in %s()")                  \
+    X(SRCH_SYM_PARAM,   "search.sym_param",      0, "parameter of %s()")                 \
+    X(SRCH_SYM_FIELD,   "search.sym_field",      0, "field of %s")                       \
+    X(SRCH_SYM_TYPE,    "search.sym_type",       0, "type")                              \
+    X(SRCH_SYM_ENUM,    "search.sym_enum",       0, "enum value")                        \
+    X(SRCH_SYM_MACRO,   "search.sym_macro",      0, "macro")                             \
+    X(SRCH_SYM_NAMESPACE, "search.sym_namespace", 0, "namespace")                        \
+    X(SRCH_SYM_OTHER,   "search.sym_other",      0, "name")                              \
     X(LIBS_HEADING,     "libs.heading",          0, "A library, as blocks")              \
     X(LIBS_EXPLAIN,     "libs.explain",          0,                                      \
       "Its header is read for the public functions (and its .so or .a, if found, for what it really exports). They become a block pack, the file includes the header, the blocks show in the palette.") \

@@ -2,6 +2,7 @@
 #include "ccr_config.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -105,6 +106,23 @@ static bool mkdir_p(char *path)
             return false;
     }
     return mkdir(path, 0755) == 0 || errno == EEXIST;
+}
+
+bool ccr_config_layout_path(const char *file, char *out, size_t cap, bool make)
+{
+    char home[1024], real[4096];
+    if (!ccr_config_home("XDG_DATA_HOME", ".local/share", home, sizeof home))
+        return false;
+    if (!realpath(file, real))
+        snprintf(real, sizeof real, "%s", file);
+    uint64_t h = 1469598103934665603ull;   /* FNV-1a */
+    for (const unsigned char *p = (const unsigned char *)real; *p; ++p)
+        h = (h ^ *p) * 1099511628211ull;
+    char dir[1100];
+    snprintf(dir, sizeof dir, "%s/ccratch/layout", home);
+    if (make && !mkdir_p(dir))
+        return false;
+    return snprintf(out, cap, "%s/%016llx.layout", dir, (unsigned long long)h) < (int)cap;
 }
 
 bool ccr_config_file(char *out, size_t cap)

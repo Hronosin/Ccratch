@@ -23,6 +23,8 @@ typedef struct ccr_script {
     ccr_node_id root;      /* top-level declaration or loose Block */
     ccr_vec2    pos;       /* world */
     ccr_blocks  blocks;
+    ccr_vec2    glide_from, glide_to;   /* rearranged: on its way there */
+    float       glide_t;                /* 0..1; 1: not moving */
 } ccr_script;
 
 /* Where a script sits: enough to put the canvas back as it was. */
@@ -138,6 +140,11 @@ typedef struct ccr_editor {
     /* what changed since the last commit: a bar at the left of each block */
     struct ccr_editor_change *changes;
     uint32_t       change_count;
+
+    /* a top-level stack being moved lines up with its neighbours: the
+     * guide lines (world; NAN: none) and how far they reach */
+    float          guide_x, guide_y;
+    float          guide_x0, guide_x1, guide_y0, guide_y1;
 } ccr_editor;
 
 /* A block that differs from the last commit. */
@@ -337,6 +344,31 @@ ccr_node_id ccr_editor_arrow_at(const ccr_editor *ed, ccr_vec2 world, float tole
 /* A ring round `node` once `delay` seconds have passed (after the view
  * has glided to it). Needs animations on. */
 void ccr_editor_flash(ccr_editor *ed, ccr_node_id node, float delay);
+
+/* ------------------------------------------------- arranging the canvas
+ *
+ * The blocks are where you put them: a function, a struct, an #include
+ * dragged anywhere stays there (and lines up with its neighbours on the
+ * way: ed->guide_*). Or the whole file arranged at once, one undo step,
+ * every stack gliding to its new place:
+ */
+typedef enum ccr_arrange {
+    CCR_ARRANGE_COLUMNS,   /* #includes and types on the left, functions on the right (as opened) */
+    CCR_ARRANGE_TILES,     /* in the file's order, in columns as wide as the screen is */
+    CCR_ARRANGE_CALLS,     /* who calls whom: main on the left, what it calls to its right... */
+    CCR_ARRANGE_COUNT
+} ccr_arrange;
+
+/* `aspect`: the screen's width / height, for TILES. False if nothing moved. */
+bool ccr_editor_arrange(ccr_editor *ed, ccr_arrange how, float aspect);
+
+/* Where the file's top-level stacks are, as text to keep beside it
+ * (malloc'd; "kind<TAB>name<TAB>nth<TAB>x<TAB>y" lines). */
+char *ccr_editor_layout_text(const ccr_editor *ed);
+/* Puts them back there (as read when the file opens: no undo step).
+ * Stacks the text does not know (new in the file) go under the others
+ * where they were. How many it placed. */
+int  ccr_editor_layout_apply(ccr_editor *ed, const char *text);
 
 bool ccr_editor_undo(ccr_editor *ed);
 bool ccr_editor_redo(ccr_editor *ed);

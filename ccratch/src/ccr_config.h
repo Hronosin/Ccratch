@@ -21,6 +21,10 @@ bool ccr_config_home(const char *xdg_var, const char *fallback, char *out, size_
  */
 int  ccr_config_data_dirs(const char *sub, const char *env_var, char dirs[][1024], int cap);
 
+/* Where the canvas layout of `file` is kept (~/.local/share/ccratch/
+ * layout/<a hash of its full path>.layout); `make`: the folder made too. */
+bool ccr_config_layout_path(const char *file, char *out, size_t cap, bool make);
+
 /* The value of `key`, if the file has it. */
 bool ccr_config_get(const char *key, char *out, size_t cap);
 

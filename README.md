@@ -35,6 +35,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 24: C++ as blocks (namespaces, classes, methods, range-for, new/delete), C / C++ over the palette, the standard library in a section of its own.
 - Step 25: commits made together: co-authors on the cards, the badges and the history, and picked when committing.
 - Step 26: C and C++ as the palette's catalogue tabs, in each theme's colours, with the standard library's switch beside them.
+- Step 27: search and replace across the project, as VS Code's (text, or names as the compiler sees them); blocks put anywhere and kept there, arranged as columns, a newspaper or by calls.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -456,6 +457,67 @@ look first, and `cmake -S . -B build && cmake --build build` builds it.
 - **Panels you can size**: drag the edge of the palette, the files
   panel or the build log; Ctrl+wheel over the palette makes its blocks
   bigger or smaller. Remembered for next time.
+
+## Search and replace
+
+The right panel's third tab, **Search** (Ctrl+Shift+F; Ctrl+Shift+H
+with Replace open), works as VS Code's: every match in every file of the
+project as you type, under its file, with its line, the match lit up. A
+click goes there: the file opens, the view glides to the block. Enter
+goes from one to the next.
+
+**Text** finds the words wherever a file says them, and you can narrow
+it: **everywhere**, **code**, **strings** or **comments**; **Aa** the
+case matters, **ab** whole words only; **whole project** or **this
+file**. A dot in front of a line says it is in a string or a comment.
+
+The **>** opens **Replace with**. Every line then shows what it will
+become: the old text struck out, the new one after it. Replace one line
+(the a→b on it), a whole file (on its name), or **Replace all**; x
+leaves a line out. **AB** keeps the case: `Hello` becomes `Hi`, `HELLO`
+becomes `HI`, `hello` becomes `hi` (Latin and Cyrillic). Put a quote into
+a string and it is escaped, so the string still ends where it did. Open
+files are searched as they are on screen; replacing saves them first,
+writes every file, reads the open ones again, and one Ctrl+Z puts every
+file back.
+
+**Names** asks the compiler instead (Enter: clang reads the project).
+`count` is then not a word but every thing called that, each on its own,
+the way clang tells them apart: the local `count` of `main()`, the field
+`count` of `struct guest`, the parameter `count` of `sum()`... each with
+its places (green: made there, purple: declared, blue: used). **Rename
+to** renames one of them (the a→b on its row) or all of the project's at
+once; `count_hellos` and the word "count" in a comment stay as they are.
+Things from outside the project (`printf`, a library's) are shown, and
+not renamed.
+
+![left: hello in every file, Replace with hi, the case kept; right: Names, everything called count, renamed to visits](docs/search.png)
+
+## Arranging the blocks
+
+The blocks do not have to go strictly down the page. Drag a function, a
+struct, an `#include` anywhere on the canvas and it stays there. On the
+way it lines up with its neighbours: a dashed guide shows when its left
+edge (or right) is level with another's, or its top, or it is right
+under one. Put it down on other blocks and they make room: the ones it
+covers move down out of its way, and nothing ends up on top of anything.
+Where everything is is kept beside the file (in
+`~/.local/share/ccratch/layout/`, not in your project) and is there again
+the next time it opens; stacks that are new in the file go under the
+others.
+
+Or arrange the whole file at once with the button left of autosave:
+
+- **Columns**: as a file opens, `#include`s and types on the left,
+  functions on the right;
+- **Newspaper**: in the file's order, down a column and on in the next,
+  as many columns as make it about as wide as the screen;
+- **By calls**: `main` (and whatever nobody here calls) on the left, what
+  it calls in the next column beside it, what that calls in the next...
+
+The stacks glide to their new places, and one Ctrl+Z puts them back.
+
+![the arrange menu, and tour.c as a newspaper](docs/arrange.png)
 
 ## Building
 
@@ -1161,6 +1223,7 @@ this sizes everything.
 - F8: debug, continue; F9: breakpoint on the block under the mouse; F10,
   F11, Shift+F11: step, into, out; Shift+F8: stop debugging
 - Ctrl+F: find blocks; Enter / F3: next, Shift: back; Esc: close
+- Ctrl+Shift+F: search the project; Ctrl+Shift+H: and replace
 - Ctrl+= / Ctrl+- / Ctrl+0: zoom in, out, back to 100%
 - F1: keys and mouse
 - Ctrl+,: settings

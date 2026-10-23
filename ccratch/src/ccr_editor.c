@@ -20,6 +20,8 @@
 #define ARROW_GRIP      7.0f    /* pixels from a goto arrow that still hit it */
 #define DOUBLE_CLICK    0.35    /* seconds between the clicks of a double click */
 #define HISTORY_MAX    500
+#define ARRANGE_TIME    0.45f   /* seconds stacks take to glide to a new arrangement */
+#define GUIDE_GRIP     10.0f    /* screen pixels: that close to a neighbour's edge, it lines up */
 
 static const ccr_node *N(const ccr_editor *ed, ccr_node_id id) { return &ed->ast.nodes[id]; }
 
@@ -49,6 +51,7 @@ static bool push_script(ccr_editor *ed, ccr_node_id root, ccr_vec2 pos)
     memset(s, 0, sizeof *s);
     s->root = root;
     s->pos = pos;
+    s->glide_t = 1.0f;
     if (!ccr_blocks_build_script(&s->blocks, &ed->ast, root, &ed->cache))
         return false;
     ed->script_count++;
@@ -298,6 +301,7 @@ bool ccr_editor_init(ccr_editor *ed, ccr_ast *ast)
     ed->last_click = CCR_NONE;
     ed->landed_first = ed->landed_last = CCR_NONE;
     ed->rng = 0x9E3779B9u;
+    ed->guide_x = ed->guide_y = NAN;
     if (ed->ast.node_count == 0)
         return true;
 
@@ -2110,6 +2114,15 @@ void ccr_editor_tick(ccr_editor *ed, float dt)
         step_particles(ed, dt);
         ed->landed_t += dt;
     }
+    for (uint32_t i = 0; i < ed->script_count; ++i) {   /* rearranged: gliding there */
+        ccr_script *s = &ed->scripts[i];
+        if (s->glide_t >= 1.0f)
+            continue;
+        s->glide_t = dt > 0.0f ? fminf(1.0f, s->glide_t + dt / ARRANGE_TIME) : 1.0f;
+        const float e = ease_out_cubic(s->glide_t);
+        s->pos = (ccr_vec2){ s->glide_from.x + (s->glide_to.x - s->glide_from.x) * e,
+                             s->glide_from.y + (s->glide_to.y - s->glide_from.y) * e };
+    }
     if (ed->drag != CCR_DRAG_SETTLING)
         return;
     ed->settle_t += dt > 0.0f ? dt : SETTLE_TIME;
@@ -2127,15 +2140,29 @@ void ccr_editor_tick(ccr_editor *ed, float dt)
 
 void ccr_editor_settle(ccr_editor *ed)
 {
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        if (ed->scripts[i].glide_t < 1.0f) {
+            ed->scripts[i].pos = ed->scripts[i].glide_to;
+            ed->scripts[i].glide_t = 1.0f;
+        }
     if (ed->drag == CCR_DRAG_SETTLING) {
         ed->scripts[ed->dragged].pos = ed->settle_to;
         finish_drop(ed);
     }
 }
 
+static void find_guides(ccr_editor *ed, float zoom);
+static void make_room(ccr_editor *ed, uint32_t si);
+
 void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
 {
     ccr_editor_tick(ed, in->dt);
+    if (in->pressed)
+        for (uint32_t i = 0; i < ed->script_count; ++i)
+            if (ed->scripts[i].glide_t < 1.0f) {   /* grabbed on its way: there now */
+                ed->scripts[i].pos = ed->scripts[i].glide_to;
+                ed->scripts[i].glide_t = 1.0f;
+            }
     if (ed->drag == CCR_DRAG_SETTLING) {
         if (!in->pressed)
             return;              /* busy gliding */
@@ -2207,6 +2234,9 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
         find_snap(ed);
         if (in->over_trash)
             ed->snap_ok = false;
+        ed->guide_x = ed->guide_y = NAN;
+        if (!ed->snap_ok && !in->over_trash)   /* lying free: lines up with its neighbours */
+            find_guides(ed, in->zoom > 0.0f ? in->zoom : 1.0f);
         /* a carried copy lands on a click; a dragged block when let go */
         if (ed->carrying ? in->pressed : (!in->down || in->released)) {
             const ccr_node_id root = ed->scripts[ed->dragged].root;
@@ -2229,13 +2259,22 @@ void ccr_editor_update(ccr_editor *ed, const ccr_editor_input *in)
                 remove_script(ed, ed->dragged);
             } else if (ed->snap_ok) {
                 drop_into_snap(ed);
-            } else if (N(ed, root)->flags & CCR_FLAG_TOPLEVEL) {
-                place_in_file(ed, ed->dragged);
+            } else {
+                if (N(ed, root)->flags & CCR_FLAG_TOPLEVEL)
+                    place_in_file(ed, ed->dragged);
+                if (ed->dragged < ed->script_count && !in->over_trash)
+                    make_room(ed, ed->dragged);   /* put down on others: they move down out of its way */
             }
             ed->snap_ok = false;
+            ed->guide_x = ed->guide_y = NAN;
             ed->dragged = UINT32_MAX;
             ed->drag = CCR_DRAG_IDLE;
             commit_change(ed);
+            for (uint32_t i = 0; i < ed->script_count; ++i)   /* made room: now they glide there */
+                if (ed->scripts[i].glide_t > 1.5f) {
+                    ed->scripts[i].glide_t = 0.0f;
+                    ed->scripts[i].pos = ed->scripts[i].glide_from;
+                }
         }
         break;
 
@@ -2629,6 +2668,17 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
         }
     }
 
+    /* lined up with a neighbour: the guide, dashed, from one to the other */
+    if (ed->drag == CCR_DRAG_MOVING) {
+        const ccr_color gc = alpha_of(ccr_th(CCR_C_GLOW), 0xD0u);
+        if (!isnan(ed->guide_x))
+            dashed_line(ccr_canvas_to_screen(cv, (ccr_vec2){ ed->guide_x, ed->guide_y0 }),
+                        ccr_canvas_to_screen(cv, (ccr_vec2){ ed->guide_x, ed->guide_y1 }), 1.5f, gc);
+        if (!isnan(ed->guide_y))
+            dashed_line(ccr_canvas_to_screen(cv, (ccr_vec2){ ed->guide_x0, ed->guide_y }),
+                        ccr_canvas_to_screen(cv, (ccr_vec2){ ed->guide_x1, ed->guide_y }), 1.5f, gc);
+    }
+
     /* bits of deleted blocks */
     for (uint32_t i = 0; i < ed->particle_count; ++i) {
         const ccr_particle *p = &ed->particles[i];
@@ -2638,4 +2688,505 @@ void ccr_editor_draw(const ccr_editor *ed, const ccr_canvas *cv, ccr_rect viewpo
         ccr_gui_rect_rounded((ccr_rect){ c.x - s * 0.5f, c.y - s * 0.5f, s, s }, 0.4f,
                              alpha_of(p->color, (uint32_t)(255.0f * k)));
     }
+}
+
+/* -------------------------------------------------------- arranging */
+
+/* A script's box in the world. */
+static ccr_rect box_of(const ccr_script *s)
+{
+    return (ccr_rect){ s->pos.x + s->blocks.bounds.x, s->pos.y + s->blocks.bounds.y, s->blocks.bounds.w,
+                       s->blocks.bounds.h };
+}
+
+/* The dragged stack lines up with the others: its left edge with theirs,
+ * its top with theirs, or just under one it is over (a column). */
+static void find_guides(ccr_editor *ed, float zoom)
+{
+    ccr_script *s = &ed->scripts[ed->dragged];
+    const ccr_rect me = box_of(s);
+    const float grip = GUIDE_GRIP / zoom;
+    float best_dx = grip, best_dy = grip, dx = 0.0f, dy = 0.0f;
+    int ox = -1, oy = -1;
+    for (uint32_t i = 0; i < ed->script_count; ++i) {
+        if (i == ed->dragged || ed->scripts[i].blocks.bounds.w <= 0.0f)
+            continue;
+        const ccr_rect o = box_of(&ed->scripts[i]);
+        const float xs[2] = { o.x - me.x, (o.x + o.w) - (me.x + me.w) };   /* left with left, right with right */
+        for (int k = 0; k < 2; ++k)
+            if (fabsf(xs[k]) < best_dx) {
+                best_dx = fabsf(xs[k]);
+                dx = xs[k];
+                ox = (int)i;
+            }
+        const bool over = me.x < o.x + o.w && o.x < me.x + me.w;   /* side by side with it, or over it */
+        const float ys[2] = { o.y - me.y, (o.y + o.h + SCRIPT_GAP) - me.y };
+        for (int k = 0; k < (over ? 2 : 1); ++k)
+            if (fabsf(ys[k]) < best_dy) {
+                best_dy = fabsf(ys[k]);
+                dy = ys[k];
+                oy = (int)i;
+            }
+    }
+    s->pos.x += dx;
+    s->pos.y += dy;
+    const ccr_rect m2 = box_of(s);
+    if (ox >= 0) {
+        const ccr_rect o = box_of(&ed->scripts[ox]);
+        ed->guide_x = fabsf(o.x - m2.x) < 0.5f ? m2.x : m2.x + m2.w;
+        ed->guide_y0 = fminf(o.y, m2.y) - 12.0f;
+        ed->guide_y1 = fmaxf(o.y + o.h, m2.y + m2.h) + 12.0f;
+    }
+    if (oy >= 0) {
+        const ccr_rect o = box_of(&ed->scripts[oy]);
+        ed->guide_y = m2.y;
+        ed->guide_x0 = fminf(o.x, m2.x) - 12.0f;
+        ed->guide_x1 = fmaxf(o.x + o.w, m2.x + m2.w) + 12.0f;
+    }
+}
+
+/* Script `si` was put down where others are. Over the top of one: it goes
+ * under that one. The ones it covers further down move down out of its
+ * way, and so on down the column (gliding there). Nothing ends up on top
+ * of anything. */
+static void make_room(ccr_editor *ed, uint32_t si)
+{
+    bool *moved = calloc(ed->script_count, sizeof *moved);
+    ccr_vec2 *was = malloc(ed->script_count * sizeof *was);
+    if (!moved || !was) {
+        free(moved);
+        free(was);
+        return;
+    }
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        was[i] = ed->scripts[i].glide_t < 1.0f ? ed->scripts[i].glide_to : ed->scripts[i].pos;
+    /* put down a little below the top of another: under that one instead */
+    for (int again = 0, guard = 0; again == 0 && guard < 64; ++guard) {
+        again = 1;
+        const ccr_rect me = box_of(&ed->scripts[si]);
+        for (uint32_t i = 0; i < ed->script_count; ++i) {
+            if (i == si || ed->scripts[i].blocks.bounds.w <= 0.0f)
+                continue;
+            const ccr_rect ob = box_of(&ed->scripts[i]);
+            if (me.x < ob.x + ob.w && ob.x < me.x + me.w && me.y < ob.y + ob.h && ob.y < me.y + me.h && ob.y < me.y) {
+                ed->scripts[si].pos.y += ob.y + ob.h + SCRIPT_GAP - me.y;
+                again = 0;
+                break;
+            }
+        }
+    }
+    uint32_t *todo = malloc(ed->script_count * sizeof *todo), nt = 0;
+    if (todo)
+        todo[nt++] = si;
+    for (uint32_t step = 0; todo && step < nt && step < 4 * ed->script_count; ++step) {
+        const ccr_rect me = box_of(&ed->scripts[todo[step]]);
+        for (uint32_t i = 0; i < ed->script_count; ++i) {
+            if (i == si || i == todo[step] || ed->scripts[i].blocks.bounds.w <= 0.0f)
+                continue;
+            ccr_script *o = &ed->scripts[i];
+            const ccr_rect ob = box_of(o);
+            const bool overlap = me.x < ob.x + ob.w && ob.x < me.x + me.w && me.y < ob.y + ob.h && ob.y < me.y + me.h;
+            if (!overlap || ob.y < me.y)
+                continue;
+            o->pos.y += me.y + me.h + SCRIPT_GAP - ob.y;
+            if (!moved[i] && nt < ed->script_count) {
+                moved[i] = true;
+                todo[nt++] = i;
+            } else if (nt < ed->script_count) {
+                todo[nt++] = i;   /* moved again: what is under it, again */
+            }
+        }
+    }
+    if (ed->animate)   /* glides once the step is recorded (start_glides) */
+        for (uint32_t i = 0; i < ed->script_count; ++i)
+            if (moved[i]) {
+                ccr_script *o = &ed->scripts[i];
+                o->glide_from = was[i];
+                o->glide_to = o->pos;
+                o->glide_t = 2.0f;
+            }
+    free(todo);
+    free(moved);
+    free(was);
+}
+
+/* The scripts in the file's order (loose stacks last). */
+static uint32_t file_order(const ccr_editor *ed, uint32_t *out)
+{
+    uint32_t n = 0;
+    if (ed->ast.node_count && N(ed, 0)->kind == CCR_NODE_TRANSLATION_UNIT)
+        for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling) {
+            const uint32_t si = script_index_of_root(ed, c);
+            if (si != UINT32_MAX)
+                out[n++] = si;
+        }
+    for (uint32_t i = 0; i < ed->script_count; ++i) {
+        bool seen = false;
+        for (uint32_t k = 0; k < n && !seen; ++k)
+            seen = out[k] == i;
+        if (!seen)
+            out[n++] = i;
+    }
+    return n;
+}
+
+/* Puts script `i`'s box's top left corner at (x, y). */
+static void place_at(ccr_vec2 *to, const ccr_script *s, float x, float y)
+{
+    *to = (ccr_vec2){ x - s->blocks.bounds.x, y - s->blocks.bounds.y };
+}
+
+static void arrange_columns(const ccr_editor *ed, const uint32_t *order, uint32_t n, ccr_vec2 *to)
+{
+    float y1 = 0.0f, y2 = 0.0f, y3 = 0.0f, w1 = 0.0f, w2 = 0.0f;
+    for (int pass = 0; pass < 3; ++pass)
+        for (uint32_t k = 0; k < n; ++k) {
+            const ccr_script *s = &ed->scripts[order[k]];
+            const ccr_rect b = s->blocks.bounds;
+            const bool loose = is_loose_root(ed, s->root);
+            const int col = loose ? 2 : goes_right(ed, s->root) ? 1 : 0;
+            if (col != pass)
+                continue;
+            if (col == 0) {
+                place_at(&to[order[k]], s, 0.0f, y1);
+                y1 += b.h + SCRIPT_GAP * 0.5f;
+                w1 = fmaxf(w1, b.w);
+            } else if (col == 1) {
+                const float x2 = w1 > 0.0f ? w1 + COLUMN_GAP : 0.0f;
+                place_at(&to[order[k]], s, x2, y2);
+                y2 += b.h + SCRIPT_GAP;
+                w2 = fmaxf(w2, x2 + b.w);
+            } else {
+                place_at(&to[order[k]], s, (w2 > w1 ? w2 : w1) + COLUMN_GAP, y3);
+                y3 += b.h + SCRIPT_GAP;
+            }
+        }
+}
+
+/* A newspaper: in the file's order, down a column, then on in the next,
+ * each column as wide as its widest; the columns as tall as makes the
+ * whole about as wide as the screen for its height. */
+static float flow(const ccr_editor *ed, const uint32_t *order, uint32_t n, float tall, ccr_vec2 *to, float *height)
+{
+    float x = 0.0f, y = 0.0f, colw = 0.0f, maxh = 0.0f;
+    for (uint32_t k = 0; k < n; ++k) {
+        const ccr_script *s = &ed->scripts[order[k]];
+        const ccr_rect b = s->blocks.bounds;
+        if (y > 0.0f && y + b.h > tall) {   /* full: the next column */
+            x += colw + COLUMN_GAP;
+            y = 0.0f;
+            colw = 0.0f;
+        }
+        if (to)
+            place_at(&to[order[k]], s, x, y);
+        y += b.h + SCRIPT_GAP;
+        colw = fmaxf(colw, b.w);
+        maxh = fmaxf(maxh, y - SCRIPT_GAP);
+    }
+    *height = maxh;
+    return x + colw;
+}
+
+static void arrange_tiles(const ccr_editor *ed, const uint32_t *order, uint32_t n, ccr_vec2 *to, float aspect)
+{
+    if (!n)
+        return;
+    float lo = 0.0f, total = 0.0f;
+    for (uint32_t k = 0; k < n; ++k) {
+        lo = fmaxf(lo, ed->scripts[order[k]].blocks.bounds.h);
+        total += ed->scripts[order[k]].blocks.bounds.h + SCRIPT_GAP;
+    }
+    const float want = aspect > 0.1f ? aspect : 1.6f;
+    float best = 1e30f, best_t = total;
+    for (int i = 0; i <= 48; ++i) {   /* from the tallest stack to all of them in one column */
+        const float t = lo * powf(fmaxf(total / lo, 1.0f), (float)i / 48.0f);
+        float hgt;
+        const float w = flow(ed, order, n, t, NULL, &hgt);
+        const float score = fabsf(logf((w / fmaxf(hgt, 1.0f)) / want));
+        if (score < best - 1e-4f) {
+            best = score;
+            best_t = t;
+        }
+    }
+    float hgt;
+    flow(ed, order, n, best_t, to, &hgt);
+}
+
+/* The name a call calls (CCR_NONE: not a plain call). */
+static const char *call_name(const ccr_editor *ed, ccr_node_id id)
+{
+    const ccr_node *n = N(ed, id);
+    if (n->kind != CCR_NODE_CALL || !n->name)
+        return NULL;
+    return ccr_ast_str(&ed->ast, n->name);
+}
+
+/* Does anything under `id` call `name`? */
+static bool calls(const ccr_editor *ed, ccr_node_id id, const char *name)
+{
+    for (ccr_node_id c = N(ed, id)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling) {
+        if (N(ed, c)->flags & CCR_FLAG_DEAD)
+            continue;
+        const char *cn = call_name(ed, c);
+        if ((cn && strcmp(cn, name) == 0) || calls(ed, c, name))
+            return true;
+    }
+    return false;
+}
+
+/* Who calls whom: types and the like in the first column; then the
+ * functions nobody here calls (main), then what they call, then what
+ * that calls... each next to the first one that called it. */
+static void arrange_calls(const ccr_editor *ed, const uint32_t *order, uint32_t n, ccr_vec2 *to)
+{
+    int *depth = malloc(n * sizeof *depth), *parent = malloc(n * sizeof *parent);
+    bool *fn = malloc(n * sizeof *fn);
+    uint32_t *queue = malloc(n * sizeof *queue);
+    if (!depth || !parent || !fn || !queue) {
+        free(depth);
+        free(parent);
+        free(fn);
+        free(queue);
+        arrange_columns(ed, order, n, to);
+        return;
+    }
+    for (uint32_t k = 0; k < n; ++k) {
+        const ccr_node *r = N(ed, ed->scripts[order[k]].root);
+        fn[k] = r->kind == CCR_NODE_FUNCTION && (r->flags & CCR_FLAG_DEFINITION) && r->name &&
+                !is_loose_root(ed, ed->scripts[order[k]].root);
+        depth[k] = -1;
+        parent[k] = -1;
+    }
+    /* called by another function of the file? */
+    uint32_t qn = 0;
+    for (uint32_t k = 0; k < n; ++k) {
+        if (!fn[k])
+            continue;
+        const char *name = ccr_ast_str(&ed->ast, N(ed, ed->scripts[order[k]].root)->name);
+        bool called = false;
+        for (uint32_t j = 0; j < n && !called; ++j)
+            called = fn[j] && j != k && calls(ed, ed->scripts[order[j]].root, name);
+        if (!called || strcmp(name, "main") == 0) {
+            depth[k] = 0;
+            queue[qn++] = k;
+        }
+    }
+    for (uint32_t qi = 0;; ++qi) {
+        if (qi == qn) {   /* only called in a circle: the first one left starts one */
+            uint32_t k = 0;
+            while (k < n && !(fn[k] && depth[k] < 0))
+                ++k;
+            if (k == n)
+                break;
+            depth[k] = 0;
+            queue[qn++] = k;
+        }
+        const uint32_t k = queue[qi];
+        for (uint32_t j = 0; j < n; ++j) {
+            if (!fn[j] || depth[j] >= 0)
+                continue;
+            const char *name = ccr_ast_str(&ed->ast, N(ed, ed->scripts[order[j]].root)->name);
+            if (calls(ed, ed->scripts[order[k]].root, name)) {
+                depth[j] = depth[k] + 1;
+                parent[j] = (int)k;
+                queue[qn++] = j;
+            }
+        }
+    }
+    /* columns: the rest (includes, types, globals, loose) first, then by depth */
+    int maxd = 0;
+    for (uint32_t k = 0; k < n; ++k)
+        if (depth[k] > maxd)
+            maxd = depth[k];
+    float x = 0.0f, ycol = 0.0f, w = 0.0f;
+    for (uint32_t k = 0; k < n; ++k) {
+        if (fn[k])
+            continue;
+        const ccr_script *s = &ed->scripts[order[k]];
+        place_at(&to[order[k]], s, 0.0f, ycol);
+        ycol += s->blocks.bounds.h + SCRIPT_GAP * 0.5f;
+        w = fmaxf(w, s->blocks.bounds.w);
+    }
+    x = w > 0.0f ? w + COLUMN_GAP : 0.0f;
+    float *top = calloc(n, sizeof *top);   /* where each placed function's top is */
+    for (int d = 0; d <= maxd && top; ++d) {
+        float y = 0.0f, cw = 0.0f;
+        for (uint32_t qi = 0; qi < qn; ++qi) {   /* in the order they were reached */
+            const uint32_t k = queue[qi];
+            if (depth[k] != d)
+                continue;
+            const ccr_script *s = &ed->scripts[order[k]];
+            if (parent[k] >= 0)   /* beside the one that called it, if there is room */
+                y = fmaxf(y, top[parent[k]]);
+            place_at(&to[order[k]], s, x, y);
+            top[k] = y;
+            y += s->blocks.bounds.h + SCRIPT_GAP;
+            cw = fmaxf(cw, s->blocks.bounds.w);
+        }
+        x += cw + COLUMN_GAP;
+    }
+    free(top);
+    free(depth);
+    free(parent);
+    free(fn);
+    free(queue);
+}
+
+bool ccr_editor_arrange(ccr_editor *ed, ccr_arrange how, float aspect)
+{
+    ccr_editor_settle(ed);
+    if (ed->drag != CCR_DRAG_IDLE || !ed->script_count)
+        return false;
+    uint32_t *order = malloc(ed->script_count * sizeof *order);
+    ccr_vec2 *to = malloc(ed->script_count * sizeof *to);
+    if (!order || !to) {
+        free(order);
+        free(to);
+        return false;
+    }
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        to[i] = ed->scripts[i].pos;
+    const uint32_t n = file_order(ed, order);
+    if (how == CCR_ARRANGE_TILES)
+        arrange_tiles(ed, order, n, to, aspect);
+    else if (how == CCR_ARRANGE_CALLS)
+        arrange_calls(ed, order, n, to);
+    else
+        arrange_columns(ed, order, n, to);
+    /* one undo step: recorded at the end, then glided to */
+    begin_change(ed);
+    ccr_vec2 *from = malloc(ed->script_count * sizeof *from);
+    bool moved = false;
+    for (uint32_t i = 0; i < ed->script_count; ++i) {
+        if (from)
+            from[i] = ed->scripts[i].pos;
+        moved = moved || to[i].x != ed->scripts[i].pos.x || to[i].y != ed->scripts[i].pos.y;
+        ed->scripts[i].pos = to[i];
+    }
+    commit_change(ed);
+    if (ed->animate && from)
+        for (uint32_t i = 0; i < ed->script_count; ++i) {
+            ccr_script *s = &ed->scripts[i];
+            s->glide_from = from[i];
+            s->glide_to = to[i];
+            s->glide_t = 0.0f;
+            s->pos = from[i];
+        }
+    free(from);
+    free(order);
+    free(to);
+    return moved;
+}
+
+/* ------------------------------------------------- the layout, kept */
+
+/* A top-level script's name in the layout text: kind, name, the how
+ * many'th of that kind and name it is. */
+static void layout_key(const ccr_editor *ed, ccr_node_id root, int *kind, char *name, size_t cap, int *nth)
+{
+    const ccr_node *r = N(ed, root);
+    *kind = (int)r->kind;
+    snprintf(name, cap, "%s", r->name ? ccr_ast_str(&ed->ast, r->name) : "-");
+    for (char *c = name; *c; ++c)
+        if (*c == '\t' || *c == '\n' || *c == ' ')
+            *c = '_';
+    if (!name[0])
+        snprintf(name, cap, "-");
+    *nth = 0;
+    for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE && c != root; c = N(ed, c)->next_sibling) {
+        const ccr_node *k = N(ed, c);
+        if ((int)k->kind != *kind)
+            continue;
+        const char *kn = k->name ? ccr_ast_str(&ed->ast, k->name) : "-";
+        char tmp[160];
+        snprintf(tmp, sizeof tmp, "%s", kn[0] ? kn : "-");
+        for (char *q = tmp; *q; ++q)
+            if (*q == '\t' || *q == '\n' || *q == ' ')
+                *q = '_';
+        *nth += strcmp(tmp, name) == 0;
+    }
+}
+
+static bool kept_script(const ccr_editor *ed, uint32_t i)
+{
+    const ccr_node_id r = ed->scripts[i].root;
+    return ed->ast.node_count && N(ed, 0)->kind == CCR_NODE_TRANSLATION_UNIT && N(ed, r)->parent == 0 &&
+           !(N(ed, r)->flags & CCR_FLAG_DEAD);
+}
+
+char *ccr_editor_layout_text(const ccr_editor *ed)
+{
+    size_t cap = 64 + (size_t)ed->script_count * 220, n = 0;
+    char *out = malloc(cap);
+    if (!out)
+        return NULL;
+    out[0] = '\0';
+    n += (size_t)snprintf(out, cap, "# ccratch layout 1\n");
+    for (uint32_t i = 0; i < ed->script_count; ++i) {
+        if (!kept_script(ed, i))
+            continue;
+        int kind, nth;
+        char name[160];
+        layout_key(ed, ed->scripts[i].root, &kind, name, sizeof name, &nth);
+        const ccr_vec2 p = ed->scripts[i].glide_t < 1.0f ? ed->scripts[i].glide_to : ed->scripts[i].pos;
+        n += (size_t)snprintf(out + n, cap - n, "%d\t%s\t%d\t%.1f\t%.1f\n", kind, name, nth, (double)p.x, (double)p.y);
+        if (n >= cap)
+            break;
+    }
+    return out;
+}
+
+int ccr_editor_layout_apply(ccr_editor *ed, const char *text)
+{
+    if (!text || strncmp(text, "# ccratch layout 1\n", 19) != 0 || !ed->script_count)
+        return 0;
+    bool *placed = calloc(ed->script_count, sizeof *placed);
+    if (!placed)
+        return 0;
+    int count = 0;
+    for (const char *line = text + 19; *line;) {
+        const char *e = strchr(line, '\n');
+        const size_t ll = e ? (size_t)(e - line) : strlen(line);
+        char buf[300];
+        snprintf(buf, sizeof buf, "%.*s", (int)(ll < sizeof buf ? ll : sizeof buf - 1), line);
+        line = e ? e + 1 : line + ll;
+        int kind, nth;
+        char name[160];
+        float x, y;
+        if (sscanf(buf, "%d\t%159[^\t]\t%d\t%f\t%f", &kind, name, &nth, &x, &y) != 5)
+            continue;
+        for (uint32_t i = 0; i < ed->script_count; ++i) {
+            if (placed[i] || !kept_script(ed, i))
+                continue;
+            int k2, n2;
+            char nm[160];
+            layout_key(ed, ed->scripts[i].root, &k2, nm, sizeof nm, &n2);
+            if (k2 == kind && n2 == nth && strcmp(nm, name) == 0) {
+                ed->scripts[i].pos = (ccr_vec2){ x, y };
+                placed[i] = true;
+                ++count;
+                break;
+            }
+        }
+    }
+    /* the ones it does not know: under whatever is above them now */
+    for (uint32_t i = 0; count && i < ed->script_count; ++i) {
+        if (placed[i])
+            continue;
+        ccr_script *s = &ed->scripts[i];
+        const ccr_rect me = box_of(s);
+        float bottom = -1e30f;
+        for (uint32_t k = 0; k < ed->script_count; ++k) {
+            if (!placed[k])
+                continue;
+            const ccr_rect o = box_of(&ed->scripts[k]);
+            if (me.x < o.x + o.w && o.x < me.x + me.w)
+                bottom = fmaxf(bottom, o.y + o.h);
+        }
+        if (bottom > -1e29f)
+            s->pos.y += bottom + SCRIPT_GAP - me.y;
+        placed[i] = true;
+    }
+    free(placed);
+    return count;
 }

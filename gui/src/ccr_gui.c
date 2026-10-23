@@ -463,6 +463,7 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_G:      return IsKeyPressed(KEY_G);
     case CCR_KEY_COMMA:  return IsKeyPressed(KEY_COMMA);
     case CCR_KEY_K:      return IsKeyPressed(KEY_K);
+    case CCR_KEY_H:      return IsKeyPressed(KEY_H);
     }
     return false;
 }

@@ -23,6 +23,7 @@
 #include "ccr_palette.h"
 #include "ccr_paste.h"
 #include "ccr_project.h"
+#include "ccr_search.h"
 #include "ccr_rename.h"
 #include "ccr_pie.h"
 #include "ccr_theme.h"
@@ -733,6 +734,28 @@ static int clang_args_for(const char *path, const ccr_options *opt, const char *
     return nargs;
 }
 
+/* A whole small file (malloc'd), or NULL. */
+static char *read_file(const char *path, size_t *len)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    const long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *s = n >= 0 && n < (1L << 24) ? malloc((size_t)n + 1) : NULL;
+    if (s && fread(s, 1, (size_t)n, f) != (size_t)n) {
+        free(s);
+        s = NULL;
+    }
+    fclose(f);
+    if (s) {
+        s[n] = '\0';
+        *len = (size_t)n;
+    }
+    return s;
+}
+
 static bool document_open(ccr_document *doc, const char *path, const ccr_options *opt)
 {
     /* static: big (4 KB path), and only one is ever being opened */
@@ -774,6 +797,14 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     next.loaded = true;
     next.ed.animate = g_animate;
     next.has_errors = errors > 0;
+    {   /* the blocks where they were left last time */
+        char lp[1200];
+        size_t ll = 0;
+        char *lt = ccr_config_layout_path(path, lp, sizeof lp, false) ? read_file(lp, &ll) : NULL;
+        if (lt)
+            ccr_editor_layout_apply(&next.ed, lt);
+        free(lt);
+    }
     if (errors)
         ccr_trnf(next.status, sizeof next.status, CCR_T_LOADED_ERRORS, errors,
                  base_name(path), errors);
@@ -1100,6 +1131,13 @@ static bool document_save(ccr_document *doc, const ccr_options *opt)
     ccr_editor_mark_saved(&doc->ed);
     remember_places(doc);
     g_proj_dirty = true;   /* a function may have come or gone */
+    {   /* where its blocks are, beside it (not in the project) */
+        char lp[1200];
+        char *lt = ccr_editor_layout_text(&doc->ed);
+        if (lt && ccr_config_layout_path(doc->path, lp, sizeof lp, true))
+            write_file(lp, lt, strlen(lt));
+        free(lt);
+    }
 
     /* read it back: did the move make code clang no longer accepts? */
     uint32_t errors = 0;
@@ -4639,6 +4677,9 @@ static bool git_section(ccr_rect r, ccr_text title, int count, char all_icon, bo
                            ccr_tr(all_icon == '+' ? CCR_T_TIP_STAGE : CCR_T_TIP_UNSTAGE));
 }
 
+static bool g_search_tab_on(void);
+static void search_tab_set(bool on);
+
 /* The Git button, Ctrl+G: the right panel on its Git tab, or away. */
 static void git_toggle(const ccr_document *doc)
 {
@@ -4649,18 +4690,20 @@ static void git_toggle(const ccr_document *doc)
     if (!g_files_open)
         files_toggle(doc);
     g_git.tab = true;
+    search_tab_set(false);
     if (g_lay.files_w < 340.0f)   /* room for the buttons */
         g_lay.files_w = 340.0f;
     git_refresh(doc);
 }
 
-/* The tab strip on top of the right panel: Files | Git. */
+/* The tab strip on top of the right panel: Files | Git | Search. */
 static void panel_tabs(ccr_rect area, const ccr_document *doc, bool input)
 {
     ccr_gui_rect((ccr_rect){ area.x, area.y, area.w, GIT_TABS_H }, ccr_th(CCR_C_PALETTE));
-    const ccr_text names[2] = { CCR_T_FILES_TITLE, CCR_T_GIT_TITLE };
+    const ccr_text names[3] = { CCR_T_FILES_TITLE, CCR_T_GIT_TITLE, CCR_T_SRCH_TITLE };
     float x = area.x + 8.0f;
-    for (int i = 0; i < 2; ++i) {
+    const int current = g_git.tab ? 1 : g_search_tab_on() ? 2 : 0;
+    for (int i = 0; i < 3; ++i) {
         char label[64];
         snprintf(label, sizeof label, "%s", ccr_tr(names[i]));
         const int changes = g_git.have ? g_git.st.count : 0;
@@ -4668,14 +4711,19 @@ static void panel_tabs(ccr_rect area, const ccr_document *doc, bool input)
             snprintf(label + strlen(label), sizeof label - strlen(label), "  %d", changes);
         const float tw = ccr_gui_text_width(label, 15.0f) + 20.0f;
         const ccr_rect t = { x, area.y + 4.0f, tw, GIT_TABS_H - 4.0f };
-        const bool on = (i == 1) == g_git.tab;
+        const bool on = i == current;
         if (on)
             ccr_gui_rect_corners(t, 6.0f, 3u, ccr_th(CCR_C_PANEL) | 0xFFu);
         ccr_gui_text(label, t.x + 10.0f, t.y + 5.0f, 15.0f, on ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PALETTE_TEXT));
-        if (input && point_in(ccr_gui_mouse(), t) && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
-            g_git.tab = i == 1;
-            if (g_git.tab)
-                git_refresh(doc);
+        if (input && point_in(ccr_gui_mouse(), t)) {
+            if (i == 2)
+                tip(t, ccr_tr(CCR_T_SRCH_TAB_TIP));
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+                g_git.tab = i == 1;
+                search_tab_set(i == 2);
+                if (g_git.tab)
+                    git_refresh(doc);
+            }
         }
         x += tw + 4.0f;
     }
@@ -6152,6 +6200,972 @@ static ccr_rect palette_area(int height);
 
 /* The palette's search field, above it: typing shows only the blocks
  * that say it. */
+/* ------------------------------------------------------------ search
+ *
+ * The right panel's Search tab, as VS Code's: what to find and what to put
+ * in its place, every match in every file of the project under its file,
+ * each with its line; a click goes there. Replace one, a file's, or all of
+ * them (one Ctrl+Z puts every file back).
+ *
+ * Two ways to look:
+ *   - Text: wherever a file says it, in the code, the strings or the
+ *     comments (or all three), any case or this case, whole words or not;
+ *     "keep the case" makes Hello -> Hi, HELLO -> HI. A quote put into a
+ *     string is escaped, so the string still ends where it did.
+ *   - Names: everything the project calls that, as clang sees it: the
+ *     function add, the field add of struct box, a local add of twice()...
+ *     each on its own, each renamed on its own (or all of them at once).
+ *
+ * Open files are searched as they are on screen, saved or not; replacing
+ * saves them first (it works on the files, like renaming).
+ */
+#define SRCH_MAX_HITS 5000
+
+static ccr_color mix_color(ccr_color a, ccr_color b, float k);
+
+typedef struct srch_file {
+    char path[1024];
+    int  first, count;      /* in g_srch.hits */
+    bool folded;
+} srch_file;
+
+typedef struct srch_hit {
+    int            file;
+    ccr_search_hit h;
+    char           line[200];
+    int            at;      /* where the match is in line (-1: not in it) */
+    bool           gone;    /* left out (x) */
+} srch_hit;
+
+static struct {
+    bool            tab;            /* the right panel shows it */
+    char            query[128], with[128];
+    bool            find_focus, with_focus;
+    bool            replace_open;
+    bool            names;          /* by name (clang), not text */
+    bool            this_file;      /* only the file on screen */
+    ccr_search_opts o;
+    bool            keep_case;
+    /* text */
+    srch_file      *files;
+    int             nfiles;
+    srch_hit       *hits;
+    int             nhits, total;
+    /* names */
+    ccr_symbols     syms;
+    bool           *sym_folded;
+    char          (*plines)[200];   /* each place's line */
+    int            *pat;
+    char            names_for[128]; /* what the names are of */
+    char            note[400];
+    bool            note_bad;
+    bool            dirty;          /* look again, soon */
+    double          changed_at;
+    uint32_t        sig;            /* the open files as last searched */
+    float           scroll;
+} g_srch = { .o = { false, false, CCR_IN_ALL } };
+
+static void srch_forget_names(void)
+{
+    ccr_symbols_free(&g_srch.syms);
+    free(g_srch.sym_folded);
+    free(g_srch.plines);
+    free(g_srch.pat);
+    g_srch.sym_folded = NULL;
+    g_srch.plines = NULL;
+    g_srch.pat = NULL;
+    g_srch.names_for[0] = '\0';
+}
+
+static char *srch_read(const char *path, size_t *len)
+{
+    return read_file(path, len);
+}
+
+/* The open document for `path`, or NULL. */
+static ccr_document *srch_open_doc(ccr_document *doc, const char *path)
+{
+    if (doc->loaded && same_file(doc->path, path))
+        return doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        if (g_stash[i].doc->loaded && same_file(g_stash[i].doc->path, path))
+            return g_stash[i].doc;
+    return NULL;
+}
+
+/* What `path` says now: an open file as it would be saved, else the disk. */
+static char *srch_text_of(ccr_document *doc, const char *path, size_t *len)
+{
+    ccr_document *d = srch_open_doc(doc, path);
+    if (d && d->ed.ast.lang == CCR_LANG_C) {
+        char *text = NULL, err[200];
+        if (ccr_codegen(&d->ed.ast, &text, len, err, sizeof err))
+            return text;
+    }
+    return srch_read(path, len);
+}
+
+/* The open files and how far each has been edited: when it changes, the
+ * results are looked for again. */
+static uint32_t srch_signature(const ccr_document *doc)
+{
+    uint32_t h = 2166136261u;
+    const ccr_document *all[MAX_OPEN + 1];
+    int n = 0;
+    if (doc->loaded)
+        all[n++] = doc;
+    for (int i = 0; i < g_stash_n; ++i)
+        all[n++] = g_stash[i].doc;
+    for (int i = 0; i < n; ++i) {
+        for (const unsigned char *p = (const unsigned char *)all[i]->path; *p; ++p)
+            h = (h ^ *p) * 16777619u;
+        h = (h ^ all[i]->ed.history_len) * 16777619u;
+    }
+    return h;
+}
+
+/* The files looked through: the project's, or the one on screen. */
+static int srch_scope(ccr_document *doc, char (**files)[1024])
+{
+    *files = malloc(400 * sizeof **files);
+    if (!*files)
+        return 0;
+    if (g_srch.this_file) {
+        if (!doc->loaded)
+            return 0;
+        snprintf((*files)[0], sizeof (*files)[0], "%.1023s", doc->path);
+        return 1;
+    }
+    char root[CCR_FILES_PATH];
+    git_dir(doc, root, sizeof root);
+    return ccr_project_files(root, *files, 400);
+}
+
+static void srch_run_text(ccr_document *doc)
+{
+    free(g_srch.files);
+    free(g_srch.hits);
+    g_srch.files = NULL;
+    g_srch.hits = NULL;
+    g_srch.nfiles = g_srch.nhits = g_srch.total = 0;
+    g_srch.note[0] = '\0';
+    if (!g_srch.query[0])
+        return;
+    char (*files)[1024];
+    const int nf = srch_scope(doc, &files);
+    g_srch.files = calloc((size_t)(nf ? nf : 1), sizeof *g_srch.files);
+    g_srch.hits = malloc(SRCH_MAX_HITS * sizeof *g_srch.hits);
+    ccr_search_hit *h = malloc(SRCH_MAX_HITS * sizeof *h);
+    for (int i = 0; files && g_srch.files && g_srch.hits && h && i < nf; ++i) {
+        size_t len = 0;
+        char *text = srch_text_of(doc, files[i], &len);
+        if (!text)
+            continue;
+        const int room = SRCH_MAX_HITS - g_srch.nhits;
+        const int n = ccr_search_text(text, len, g_srch.query, &g_srch.o, h, room);
+        if (n > 0) {
+            srch_file *f = &g_srch.files[g_srch.nfiles++];
+            snprintf(f->path, sizeof f->path, "%s", files[i]);
+            f->first = g_srch.nhits;
+            f->count = n < room ? n : room;
+            for (int k = 0; k < f->count; ++k) {
+                srch_hit *s = &g_srch.hits[g_srch.nhits++];
+                memset(s, 0, sizeof *s);
+                s->file = g_srch.nfiles - 1;
+                s->h = h[k];
+                ccr_search_line(text, len, h[k].offset, s->line, sizeof s->line, &s->at);
+            }
+            g_srch.total += n;
+        }
+        free(text);
+    }
+    free(h);
+    free(files);
+}
+
+static void srch_run_names(ccr_document *doc, const ccr_options *opt)
+{
+    srch_forget_names();
+    g_srch.note[0] = '\0';
+    if (!g_srch.query[0])
+        return;
+    if (!save_all(doc, opt))   /* clang reads the files */
+        return;
+    char root[CCR_FILES_PATH], err[300];
+    git_dir(doc, root, sizeof root);
+    const char *args[CLANG_ARGS_MAX];
+    const int nargs = doc->loaded ? clang_args_for(doc->path, opt, args) : 0;
+    snprintf(g_srch.names_for, sizeof g_srch.names_for, "%s", g_srch.query);
+    if (!ccr_symbols_named(root, g_srch.query, args, nargs, &g_srch.syms, err, (int)sizeof err)) {
+        snprintf(g_srch.note, sizeof g_srch.note, "%s", err);
+        g_srch.note_bad = true;
+        return;
+    }
+    const int np = g_srch.syms.place_count;
+    g_srch.sym_folded = calloc((size_t)(g_srch.syms.sym_count ? g_srch.syms.sym_count : 1), sizeof *g_srch.sym_folded);
+    g_srch.plines = calloc((size_t)(np ? np : 1), sizeof *g_srch.plines);
+    g_srch.pat = calloc((size_t)(np ? np : 1), sizeof *g_srch.pat);
+    for (int f = 0; g_srch.plines && g_srch.pat && f < g_srch.syms.file_count; ++f) {
+        size_t len = 0;
+        char *text = srch_read(g_srch.syms.files[f], &len);
+        for (int k = 0; text && k < np; ++k)
+            if (g_srch.syms.places[k].file == f)
+                ccr_search_line(text, len, g_srch.syms.places[k].offset, g_srch.plines[k], sizeof g_srch.plines[0],
+                                &g_srch.pat[k]);
+        free(text);
+    }
+}
+
+/* The block a byte of the file on screen belongs to: the smallest that
+ * holds it, else the first one after it (a comment between statements). */
+static ccr_node_id srch_node_at(ccr_document *doc, uint32_t offset)
+{
+    const ccr_ast *a = &doc->ed.ast;
+    ccr_out_range *map = malloc((a->node_count ? a->node_count : 1) * sizeof *map);
+    char *text = NULL, err[200];
+    size_t len = 0;
+    if (!map || !ccr_codegen_mapped(a, &text, &len, map, err, sizeof err)) {
+        free(map);
+        return CCR_NONE;
+    }
+    free(text);
+    ccr_node_id best = CCR_NONE, after = CCR_NONE;
+    uint32_t best_size = UINT32_MAX, after_b = UINT32_MAX;
+    for (uint32_t i = 1; i < a->node_count; ++i) {
+        const ccr_out_range r = map[i];
+        const ccr_node_kind k = a->nodes[i].kind;
+        if (r.b == UINT32_MAX || r.e <= r.b || k == CCR_NODE_BLOCK || k == CCR_NODE_TRANSLATION_UNIT ||
+            (a->nodes[i].flags & CCR_FLAG_DEAD))
+            continue;
+        if (r.b <= offset && offset < r.e && r.e - r.b < best_size) {
+            best = i;
+            best_size = r.e - r.b;
+        } else if (r.b > offset && r.b < after_b) {
+            after = i;
+            after_b = r.b;
+        }
+    }
+    free(map);
+    return best != CCR_NONE ? best : after;
+}
+
+/* To a match: its file opens, the view glides to its block. */
+static void srch_go(ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt, const char *path,
+                    uint32_t offset)
+{
+    char p[PATH_MAX_LEN];
+    snprintf(p, sizeof p, "%s", path);
+    g_nav.nfwd = 0;
+    nav_push(g_nav.back, &g_nav.nback, doc, cv);
+    if (!switch_to(doc, cv, viewport, p, opt) || !doc->loaded)
+        return;
+    const ccr_node_id at = srch_node_at(doc, offset);
+    if (at == CCR_NONE)
+        return;
+    glide_to_node(cv, doc, visible_view(viewport, ccr_gui_width(), ccr_gui_height()), at);
+    ccr_editor_flash(&doc->ed, at, GLIDE_TIME);
+}
+
+/* Files written: one undo for all of them, the open ones read again. */
+static void srch_done(ccr_document *doc, const ccr_options *opt, char (*files)[1024], char **before, char **after,
+                      int n, int replaced, const char *from, const char *to, bool renamed)
+{
+    ccr_rename_undo_free(&g_ren.undo);
+    g_ren.undo.files = files;
+    g_ren.undo.before = before;
+    g_ren.undo.after = after;
+    g_ren.undo.count = n;
+    snprintf(g_ren.undo_from, sizeof g_ren.undo_from, "%s", from);
+    snprintf(g_ren.undo_to, sizeof g_ren.undo_to, "%s", to);
+    rename_reload(doc, files, n, opt);
+    if (renamed)
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_DONE, from, to, replaced, n);
+    else
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_SRCH_REPLACED, replaced, n);
+    doc->has_errors = false;
+    g_srch.dirty = true;
+    g_srch.changed_at = 0.0;
+}
+
+/* Text: replaces hit `only` (or every hit of file `file`, or with -1 for
+ * both, every one), not the ones left out. */
+static void srch_replace(ccr_document *doc, const ccr_options *opt, int file, int only)
+{
+    if (!g_srch.nhits || !save_all(doc, opt))
+        return;
+    char (*files)[1024] = malloc((size_t)g_srch.nfiles * sizeof *files);
+    char **before = calloc((size_t)g_srch.nfiles, sizeof *before), **after = calloc((size_t)g_srch.nfiles, sizeof *after);
+    ccr_search_hit *now = malloc(SRCH_MAX_HITS * sizeof *now), *use = malloc(SRCH_MAX_HITS * sizeof *use);
+    int n = 0, replaced = 0;
+    bool ok = files && before && after && now && use;
+    for (int f = 0; ok && f < g_srch.nfiles; ++f) {
+        if (file >= 0 && f != file)
+            continue;
+        size_t len = 0;
+        char *text = srch_read(g_srch.files[f].path, &len);
+        if (!text)
+            continue;
+        /* what the file says now, and of that, what the list still has */
+        const int nn = ccr_search_text(text, len, g_srch.query, &g_srch.o, now, SRCH_MAX_HITS);
+        int nu = 0;
+        for (int k = 0; k < nn && k < SRCH_MAX_HITS; ++k)
+            for (int j = g_srch.files[f].first; j < g_srch.files[f].first + g_srch.files[f].count; ++j)
+                if (g_srch.hits[j].h.offset == now[k].offset && !g_srch.hits[j].gone && (only < 0 || only == j)) {
+                    use[nu++] = now[k];
+                    break;
+                }
+        if (!nu) {
+            free(text);
+            continue;
+        }
+        size_t out_len = 0;
+        char *out = ccr_search_replace(text, len, use, nu, g_srch.with, g_srch.keep_case, &out_len);
+        FILE *w = out ? fopen(g_srch.files[f].path, "wb") : NULL;
+        const bool wrote = w && fwrite(out, 1, out_len, w) == out_len;
+        if (w)
+            fclose(w);
+        if (!wrote) {
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_SRCH_CANNOT, g_srch.files[f].path);
+            doc->has_errors = true;
+            free(out);
+            free(text);
+            continue;
+        }
+        snprintf(files[n], sizeof files[n], "%s", g_srch.files[f].path);
+        before[n] = text;
+        after[n] = out;
+        ++n;
+        replaced += nu;
+    }
+    free(now);
+    free(use);
+    if (!n) {
+        free(files);
+        free(before);
+        free(after);
+        return;
+    }
+    srch_done(doc, opt, files, before, after, n, replaced, g_srch.query, g_srch.with, false);
+}
+
+/* Names: renames thing `sym` (or, with -1, every one of the project's),
+ * all in one go: their places are in the same files. */
+static void srch_rename(ccr_document *doc, const ccr_options *opt, int sym)
+{
+    if (!ccr_rename_valid(g_srch.with)) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_BAD);
+        doc->has_errors = true;
+        return;
+    }
+    if (!save_all(doc, opt))
+        return;
+    ccr_rename r;
+    if (!ccr_symbols_rename(&g_srch.syms, sym, &r))
+        return;
+    ccr_rename_undo u;
+    char err[300];
+    if (!ccr_rename_apply(&r, g_srch.with, &u, err, (int)sizeof err)) {
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_REN_CANNOT, err);
+        doc->has_errors = true;
+        ccr_rename_free(&r);
+        return;
+    }
+    char from[128];
+    snprintf(from, sizeof from, "%s", g_srch.names_for);
+    srch_done(doc, opt, u.files, u.before, u.after, u.count, r.place_count, from, g_srch.with, true);
+    ccr_rename_free(&r);
+    /* the results: now of the new name */
+    snprintf(g_srch.query, sizeof g_srch.query, "%s", g_srch.with);
+    g_srch.with[0] = '\0';
+    srch_run_names(doc, opt);
+}
+
+/* Ctrl+Shift+F, Ctrl+Shift+H: the panel on the tab, the field ready. */
+static void srch_open(const ccr_document *doc, bool replace)
+{
+    if (!g_files_open)
+        files_toggle(doc);
+    g_git.tab = false;
+    g_srch.tab = true;
+    if (g_lay.files_w < 340.0f)
+        g_lay.files_w = 340.0f;
+    g_srch.find_focus = true;
+    g_srch.with_focus = false;
+    if (replace)
+        g_srch.replace_open = true;
+    ccr_gui_textbox_reset();
+    ccr_gui_textbox_select_all();
+    g_srch.dirty = true;
+}
+
+/* A little switch with a word in it (Aa, ab, AB...). */
+static bool srch_toggle(ccr_rect r, const char *label, bool on, bool input, const char *tipText)
+{
+    const ccr_vec2 m = ccr_gui_mouse();
+    const bool over = input && point_in(m, r);
+    if (on)
+        ccr_gui_rect_rounded(r, 0.3f, ccr_th(CCR_C_ACCENT));
+    else if (over)
+        ccr_gui_rect_rounded(r, 0.3f, (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0xA0u);
+    const float fs = 13.0f, tw = ccr_gui_text_width(label, fs);
+    ccr_gui_text(label, r.x + (r.w - tw) * 0.5f, r.y + (r.h - fs) * 0.45f, fs,
+                 on ? 0xFFFFFFFFu : ccr_th(CCR_C_PANEL_TEXT));
+    if (over) {
+        tip(r, tipText);
+        g_hand = true;
+    }
+    return over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT);
+}
+
+/* A row's small icon button: true when clicked. */
+static bool srch_icon(ccr_rect r, int icon, bool input, const char *tipText)
+{
+    const ccr_vec2 m = ccr_gui_mouse();
+    const bool over = input && point_in(m, r);
+    if (over)
+        ccr_gui_rect_rounded(r, 0.3f, (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0xE0u);
+    const ccr_color c = over ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PANEL_HINT);
+    const float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+    if (icon == 0) {   /* x: leave it out */
+        ccr_gui_line((ccr_vec2){ cx - 4, cy - 4 }, (ccr_vec2){ cx + 4, cy + 4 }, 1.6f, c);
+        ccr_gui_line((ccr_vec2){ cx - 4, cy + 4 }, (ccr_vec2){ cx + 4, cy - 4 }, 1.6f, c);
+    } else {           /* a -> b: replace */
+        ccr_gui_text("a", cx - 9.0f, cy - 8.0f, 12.0f, c);
+        ccr_gui_line((ccr_vec2){ cx - 2, cy + 1 }, (ccr_vec2){ cx + 3, cy + 1 }, 1.4f, c);
+        ccr_gui_line((ccr_vec2){ cx + 3, cy + 1 }, (ccr_vec2){ cx + 1, cy - 1 }, 1.4f, c);
+        ccr_gui_line((ccr_vec2){ cx + 3, cy + 1 }, (ccr_vec2){ cx + 1, cy + 3 }, 1.4f, c);
+        ccr_gui_text("b", cx + 4.0f, cy - 8.0f, 12.0f, c);
+    }
+    if (over) {
+        tip(r, tipText);
+        g_hand = true;
+    }
+    return over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT);
+}
+
+/* A line of a file with its match lit up; with a replacement on its way,
+ * the match struck out and the new text after it, as VS Code shows it. */
+static void srch_line(float x, float y, float right, const char *line, int at, int mlen, const char *with,
+                      unsigned where)
+{
+    const float fs = 13.5f;
+    ccr_gui_clip_begin((ccr_rect){ x, y - 2.0f, right - x, fs + 6.0f });
+    if (at < 0) {
+        ccr_gui_text(line, x, y, fs, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_clip_end();
+        return;
+    }
+    char pre[200], mid[200], rep[300];
+    snprintf(pre, sizeof pre, "%.*s", at, line);
+    snprintf(mid, sizeof mid, "%.*s", mlen, line + at);
+    const char *post = line + at + ((int)strlen(line) - at < mlen ? (int)strlen(line) - at : mlen);
+    float cx = x;
+    /* a long start: cut, so the match shows */
+    const float pw = ccr_gui_text_width(pre, fs);
+    if (pw > (right - x) * 0.45f)
+        cx -= pw - (right - x) * 0.45f;
+    ccr_gui_text(pre, cx, y, fs, ccr_th(CCR_C_PANEL_TEXT));
+    cx += pw;
+    const float mw = ccr_gui_text_width(mid, fs);
+    const bool replacing = with != NULL;
+    ccr_gui_rect_rounded((ccr_rect){ cx - 1.0f, y - 1.0f, mw + 2.0f, fs + 4.0f }, 0.2f,
+                         replacing ? 0xE5534B40u : (ccr_th(CCR_C_GLOW) & 0xFFFFFF00u) | 0x70u);
+    ccr_gui_text(mid, cx, y, fs, ccr_th(CCR_C_PANEL_TEXT));
+    if (replacing) {
+        ccr_gui_line((ccr_vec2){ cx, y + fs * 0.55f }, (ccr_vec2){ cx + mw, y + fs * 0.55f }, 1.3f, 0xC0392BFFu);
+        cx += mw + 2.0f;
+        ccr_search_hit h = { 0, (uint32_t)mlen, 0, where };
+        ccr_search_replacement(line + at, &h, with, g_srch.keep_case, rep, sizeof rep);
+        const float rw = ccr_gui_text_width(rep, fs);
+        ccr_gui_rect_rounded((ccr_rect){ cx - 1.0f, y - 1.0f, rw + 2.0f, fs + 4.0f }, 0.2f, 0x3FB95050u);
+        ccr_gui_text(rep, cx, y, fs, ccr_th(CCR_C_PANEL_TEXT));
+        cx += rw;
+    } else {
+        cx += mw;
+    }
+    ccr_gui_text(post, cx, y, fs, ccr_th(CCR_C_PANEL_TEXT));
+    ccr_gui_clip_end();
+}
+
+static const char *srch_kind_text(const ccr_symbol *y, char *out, size_t cap)
+{
+    switch (y->kind) {
+    case CCR_SYM_FUNCTION:   ccr_trf(out, cap, CCR_T_SRCH_SYM_FUNCTION); break;
+    case CCR_SYM_METHOD:     ccr_trf(out, cap, CCR_T_SRCH_SYM_METHOD, y->owner); break;
+    case CCR_SYM_GLOBAL:     ccr_trf(out, cap, CCR_T_SRCH_SYM_GLOBAL); break;
+    case CCR_SYM_LOCAL:      ccr_trf(out, cap, CCR_T_SRCH_SYM_LOCAL, y->owner); break;
+    case CCR_SYM_PARAMETER:  ccr_trf(out, cap, CCR_T_SRCH_SYM_PARAM, y->owner); break;
+    case CCR_SYM_FIELD:      ccr_trf(out, cap, CCR_T_SRCH_SYM_FIELD, y->owner); break;
+    case CCR_SYM_TYPE:       ccr_trf(out, cap, CCR_T_SRCH_SYM_TYPE); break;
+    case CCR_SYM_ENUM_VALUE: ccr_trf(out, cap, CCR_T_SRCH_SYM_ENUM); break;
+    case CCR_SYM_MACRO:      ccr_trf(out, cap, CCR_T_SRCH_SYM_MACRO); break;
+    case CCR_SYM_NAMESPACE:  ccr_trf(out, cap, CCR_T_SRCH_SYM_NAMESPACE); break;
+    default:                 ccr_trf(out, cap, CCR_T_SRCH_SYM_OTHER); break;
+    }
+    return out;
+}
+
+/* The colour of a thing, as its blocks are. */
+static ccr_color srch_kind_color(ccr_sym_kind k)
+{
+    switch (k) {
+    case CCR_SYM_FUNCTION:
+    case CCR_SYM_METHOD:     return ccr_th_cat(CCR_CAT_CALL, CCR_FILL);
+    case CCR_SYM_GLOBAL:
+    case CCR_SYM_LOCAL:
+    case CCR_SYM_PARAMETER:  return ccr_th_cat(CCR_CAT_VARIABLE, CCR_FILL);
+    case CCR_SYM_FIELD:
+    case CCR_SYM_TYPE:
+    case CCR_SYM_ENUM_VALUE: return ccr_th_cat(CCR_CAT_TYPE, CCR_FILL);
+    case CCR_SYM_MACRO:
+    case CCR_SYM_NAMESPACE:  return ccr_th_cat(CCR_CAT_PREPROC, CCR_FILL);
+    default:                 return ccr_th_cat(CCR_CAT_DRAGON, CCR_FILL);
+    }
+}
+
+/* A text field of the panel: drawn, focused by a click, typed into.
+ * True on Enter. */
+static bool srch_field(ccr_rect r, char *buf, int cap, bool *focus, bool *other, const char *hint, bool input)
+{
+    const ccr_vec2 m = ccr_gui_mouse();
+    if (input && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+        const bool in = point_in(m, r);
+        if (in && !*focus) {
+            *focus = true;
+            *other = false;
+            g_git.msg_focus = g_git.new_focus = g_git.co_focus = false;
+            ccr_gui_textbox_reset();
+        } else if (!in && *focus) {
+            *focus = false;
+        }
+    }
+    if (*focus) {
+        ccr_gui_textbox_colors(ccr_th(CCR_C_FIELD_EDGE), ccr_th(CCR_C_FIELD), ccr_th(CCR_C_FIELD_TEXT));
+        const bool enter = ccr_gui_textbox(r, buf, cap, 15.0f);
+        if (ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+            *focus = false;
+        return enter;
+    }
+    ccr_gui_rect_rounded(r, 0.2f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded((ccr_rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 0.2f, ccr_th(CCR_C_FIELD));
+    ccr_gui_clip_begin(r);
+    ccr_gui_text(buf[0] ? buf : hint, r.x + 8.0f, r.y + 6.0f, 15.0f,
+                 buf[0] ? ccr_th(CCR_C_FIELD_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+    ccr_gui_clip_end();
+    return false;
+}
+
+static void srch_panel(ccr_rect a, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, const ccr_options *opt,
+                       bool input)
+{
+    ccr_gui_rect(a, ccr_th(CCR_C_PANEL) | 0xFFu);
+    const ccr_vec2 m = ccr_gui_mouse();
+    const ccr_button_style plain = *button_style(false);
+    float y = a.y + 10.0f;
+    const float left = a.x + 10.0f, right = a.x + a.w - 10.0f;
+    char was_query[128], was_with[128];
+    snprintf(was_query, sizeof was_query, "%s", g_srch.query);
+    snprintf(was_with, sizeof was_with, "%s", g_srch.with);
+    const ccr_search_opts was_o = g_srch.o;
+    const bool was_names = g_srch.names, was_scope = g_srch.this_file;
+
+    /* Text | Names, and where: the project or this file */
+    {
+        const ccr_text modes[2] = { CCR_T_SRCH_TEXT, CCR_T_SRCH_NAMES };
+        float x = left;
+        for (int k = 0; k < 2; ++k) {
+            const char *l = ccr_tr(modes[k]);
+            const float w = ccr_gui_text_width(l, 14.0f) + 22.0f;
+            const ccr_rect r = { x, y, w, 26.0f };
+            const bool on = g_srch.names == (k == 1);
+            ccr_gui_rect_corners(r, 6.0f, k == 0 ? 9u : 6u, on ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_BUTTON));
+            ccr_gui_text(l, r.x + 11.0f, r.y + 5.0f, 14.0f, on ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT));
+            if (input && point_in(m, r)) {
+                tip(r, ccr_tr(k ? CCR_T_SRCH_NAMES_TIP : CCR_T_SRCH_TEXT_TIP));
+                if (!on) {
+                    g_hand = true;
+                    if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                        g_srch.names = k == 1;
+                }
+            }
+            x += w;
+        }
+        if (!g_srch.names) {
+            const char *sl = ccr_tr(g_srch.this_file ? CCR_T_SRCH_THIS_FILE : CCR_T_SRCH_PROJECT);
+            const float sw = ccr_gui_text_width(sl, 13.0f) + 18.0f;
+            const ccr_rect sr = { right - sw, y + 2.0f, sw, 22.0f };
+            if (ccr_gui_button(sr, sl, &plain) && input)
+                g_srch.this_file = !g_srch.this_file;
+            if (input)
+                tip(sr, ccr_tr(CCR_T_SRCH_SCOPE_TIP));
+        }
+        y += 34.0f;
+    }
+
+    /* what to find: > opens the replace field (Ctrl+Shift+H) */
+    {
+        const ccr_rect tr = { left, y, 18.0f, 30.0f };
+        const bool over = input && point_in(m, tr);
+        ccr_gui_text(g_srch.replace_open ? "v" : ">", tr.x + 4.0f, tr.y + 6.0f, 15.0f,
+                     over ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+        if (over) {
+            tip(tr, ccr_tr(CCR_T_SRCH_REPLACE_TIP));
+            g_hand = true;
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                g_srch.replace_open = !g_srch.replace_open;
+        }
+        char hint[200];
+        ccr_trf(hint, sizeof hint, g_srch.names ? CCR_T_SRCH_FIND_NAME : CCR_T_SRCH_FIND);
+        const float tw = g_srch.names ? 0.0f : 64.0f;   /* Aa, ab: text only */
+        const ccr_rect fr = { left + 20.0f, y, right - left - 20.0f - tw, 30.0f };
+        if (srch_field(fr, g_srch.query, (int)sizeof g_srch.query, &g_srch.find_focus, &g_srch.with_focus, hint,
+                       input)) {
+            if (g_srch.names)
+                srch_run_names(doc, opt);
+            else if (g_srch.nhits) {   /* Enter: to the next match after the one last gone to */
+                static int next;
+                next = next % g_srch.nhits;
+                srch_go(doc, cv, viewport, opt, g_srch.files[g_srch.hits[next].file].path, g_srch.hits[next].h.offset);
+                ++next;
+            }
+        }
+        if (!g_srch.names) {
+            if (srch_toggle((ccr_rect){ right - 60.0f, y + 3.0f, 28.0f, 24.0f }, "Aa", g_srch.o.match_case, input,
+                            ccr_tr(CCR_T_SRCH_CASE_TIP)))
+                g_srch.o.match_case = !g_srch.o.match_case;
+            if (srch_toggle((ccr_rect){ right - 28.0f, y + 3.0f, 28.0f, 24.0f }, "ab", g_srch.o.whole_word, input,
+                            ccr_tr(CCR_T_SRCH_WORD_TIP)))
+                g_srch.o.whole_word = !g_srch.o.whole_word;
+            /* underline "ab": whole words */
+            ccr_gui_rect((ccr_rect){ right - 21.0f, y + 23.0f, 14.0f, 1.2f },
+                         g_srch.o.whole_word ? 0xFFFFFFFFu : ccr_th(CCR_C_PANEL_HINT));
+        }
+        y += 36.0f;
+    }
+    /* what to put there */
+    if (g_srch.replace_open) {
+        const float tw = g_srch.names ? 0.0f : 32.0f;
+        const ccr_rect wr = { left + 20.0f, y, right - left - 20.0f - tw, 30.0f };
+        char hint[200];
+        ccr_trf(hint, sizeof hint, g_srch.names ? CCR_T_SRCH_WITH_NAME : CCR_T_SRCH_WITH);
+        srch_field(wr, g_srch.with, (int)sizeof g_srch.with, &g_srch.with_focus, &g_srch.find_focus, hint, input);
+        if (!g_srch.names && srch_toggle((ccr_rect){ right - 28.0f, y + 3.0f, 28.0f, 24.0f }, "AB", g_srch.keep_case,
+                                         input, ccr_tr(CCR_T_SRCH_KEEP_TIP)))
+            g_srch.keep_case = !g_srch.keep_case;
+        y += 36.0f;
+    }
+    /* text: where in the files */
+    if (!g_srch.names) {
+        static const unsigned wh[4] = { CCR_IN_ALL, CCR_IN_CODE, CCR_IN_STRING, CCR_IN_COMMENT };
+        static const ccr_text wt[4] = { CCR_T_SRCH_IN_ALL, CCR_T_SRCH_IN_CODE, CCR_T_SRCH_IN_STRINGS,
+                                        CCR_T_SRCH_IN_COMMENTS };
+        float x = left + 20.0f;
+        for (int k = 0; k < 4; ++k) {
+            const char *l = ccr_tr(wt[k]);
+            const float w = ccr_gui_text_width(l, 12.5f) + 14.0f;
+            if (x + w > right && k)
+                break;
+            const ccr_rect r = { x, y, w, 20.0f };
+            const bool on = (g_srch.o.where ? g_srch.o.where : CCR_IN_ALL) == wh[k];
+            ccr_gui_rect_rounded(r, 0.5f, on ? (ccr_th(CCR_C_ACCENT) & 0xFFFFFF00u) | 0xD0u
+                                             : (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0x90u);
+            ccr_gui_text(l, r.x + 7.0f, r.y + 3.0f, 12.5f, on ? 0xFFFFFFFFu : ccr_th(CCR_C_PANEL_TEXT));
+            if (input && point_in(m, r) && !on) {
+                g_hand = true;
+                if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                    g_srch.o.where = wh[k];
+            }
+            x += w + 5.0f;
+        }
+        y += 28.0f;
+    }
+
+    /* look again: a change in what is asked (a moment after typing), or in the files */
+    const bool asked = strcmp(was_query, g_srch.query) != 0 || memcmp(&was_o, &g_srch.o, sizeof was_o) != 0 ||
+                       was_names != g_srch.names || was_scope != g_srch.this_file;
+    if (asked) {
+        g_srch.dirty = true;
+        g_srch.changed_at = ccr_gui_time();
+        g_srch.scroll = 0.0f;
+    }
+    const uint32_t sig = srch_signature(doc);
+    if (sig != g_srch.sig && !g_srch.names) {
+        g_srch.sig = sig;
+        g_srch.dirty = true;
+    }
+    if (g_srch.dirty && !g_srch.names && ccr_gui_time() - g_srch.changed_at > 0.2) {
+        g_srch.dirty = false;
+        srch_run_text(doc);
+    }
+    if (g_srch.names && asked)
+        g_srch.dirty = false;   /* names: on Enter (clang reads every file) */
+    (void)was_with;
+
+    /* how many; Replace all */
+    const bool replacing = g_srch.replace_open &&
+                           (g_srch.names ? g_srch.with[0] && strcmp(g_srch.with, g_srch.names_for) != 0 : true);
+    {
+        char said[420] = "";
+        int all = 0;
+        if (g_srch.names) {
+            int own = 0;
+            for (int i = 0; i < g_srch.syms.sym_count; ++i)
+                own += g_srch.syms.syms[i].own;
+            all = own;
+            if (g_srch.note[0])
+                snprintf(said, sizeof said, "%s", g_srch.note);
+            else if (g_srch.syms.sym_count)
+                ccr_trf(said, sizeof said, CCR_T_SRCH_NAMES_COUNT, g_srch.syms.sym_count, g_srch.syms.place_count,
+                        g_srch.syms.file_count);
+            else if (g_srch.query[0])
+                ccr_trf(said, sizeof said, CCR_T_SRCH_NAMES_HINT, g_srch.query);
+        } else if (g_srch.query[0]) {
+            for (int i = 0; i < g_srch.nhits; ++i)
+                all += !g_srch.hits[i].gone;
+            if (g_srch.total)
+                ccr_trf(said, sizeof said, CCR_T_SRCH_COUNT, g_srch.total, g_srch.nfiles);
+            else
+                ccr_trf(said, sizeof said, CCR_T_SRCH_NONE);
+            if (g_srch.total > SRCH_MAX_HITS) {
+                const size_t l = strlen(said);
+                if (l + 2 < sizeof said) {
+                    said[l] = ' ';
+                    ccr_trf(said + l + 1, sizeof said - l - 1, CCR_T_SRCH_MANY, SRCH_MAX_HITS);
+                }
+            }
+        }
+        float rw = 0.0f;
+        if (replacing && all) {
+            char rl[96];
+            ccr_trf(rl, sizeof rl, g_srch.names ? CCR_T_SRCH_RENAME_ALL : CCR_T_SRCH_REPLACE_ALL, all);
+            rw = ccr_gui_text_width(rl, 13.0f) + 18.0f;
+            const ccr_rect rb = { right - rw, y, rw, 24.0f };
+            if (ccr_gui_button(rb, rl, button_style(true)) && input) {
+                if (g_srch.names)
+                    srch_rename(doc, opt, -1);
+                else
+                    srch_replace(doc, opt, -1, -1);
+                return;
+            }
+        }
+        ccr_gui_clip_begin((ccr_rect){ left, y, right - left - rw - 6.0f, 24.0f });
+        ccr_gui_text(said, left, y + 4.0f, 13.0f,
+                     g_srch.names && g_srch.note_bad && g_srch.note[0] ? ccr_th(CCR_C_ERROR) : ccr_th(CCR_C_PANEL_HINT));
+        ccr_gui_clip_end();
+        y += 30.0f;
+    }
+    ccr_gui_rect((ccr_rect){ a.x, y - 3.0f, a.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+
+    /* the results */
+    const ccr_rect list = { a.x, y, a.w, a.y + a.h - y };
+    const float head_h = 26.0f, row_h = 24.0f;
+    float content = 0.0f;
+    if (g_srch.names) {
+        for (int i = 0; i < g_srch.syms.sym_count; ++i)
+            content += head_h + (g_srch.sym_folded && g_srch.sym_folded[i] ? 0.0f : (float)g_srch.syms.syms[i].count * row_h);
+    } else {
+        for (int f = 0; f < g_srch.nfiles; ++f) {
+            content += head_h;
+            if (!g_srch.files[f].folded)
+                for (int k = g_srch.files[f].first; k < g_srch.files[f].first + g_srch.files[f].count; ++k)
+                    content += g_srch.hits[k].gone ? 0.0f : row_h;
+        }
+    }
+    const float max_scroll = content > list.h ? content - list.h : 0.0f;
+    if (input && point_in(m, list))
+        g_srch.scroll -= ccr_gui_wheel() * 60.0f;
+    g_srch.scroll = g_srch.scroll < 0.0f ? 0.0f : g_srch.scroll > max_scroll ? max_scroll : g_srch.scroll;
+    const bool lin = input && point_in(m, list);
+    ccr_gui_clip_begin(list);
+    float ry = list.y - g_srch.scroll;
+    int act_go = -1, act_rep = -1, act_file = -1, act_sym = -1, act_place = -1;
+    if (g_srch.names) {
+        for (int i = 0; i < g_srch.syms.sym_count; ++i) {
+            const ccr_symbol *s = &g_srch.syms.syms[i];
+            const ccr_rect hr = { a.x + 4.0f, ry, a.w - 8.0f, head_h };
+            const bool hover = lin && point_in(m, hr);
+            if (hover)
+                ccr_gui_rect_rounded(hr, 0.2f, (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0x70u);
+            const bool folded = g_srch.sym_folded && g_srch.sym_folded[i];
+            ccr_gui_text(folded ? ">" : "v", hr.x + 6.0f, ry + 5.0f, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+            char kind[160];
+            srch_kind_text(s, kind, sizeof kind);
+            const float kw = ccr_gui_text_width(kind, 12.0f) + 12.0f;
+            const ccr_color kc = srch_kind_color(s->kind);
+            ccr_gui_rect_rounded((ccr_rect){ hr.x + 20.0f, ry + 4.0f, kw, 18.0f }, 0.5f,
+                                 s->own ? kc : mix_color(kc, ccr_th(CCR_C_PANEL) | 0xFFu, 0.55f));
+            ccr_gui_text(kind, hr.x + 26.0f, ry + 6.0f, 12.0f, 0xFFFFFFFFu);
+            char cnt[16];
+            snprintf(cnt, sizeof cnt, "%d", s->count);
+            const float cw = ccr_gui_text_width(cnt, 12.0f) + 12.0f;
+            ccr_gui_rect_rounded((ccr_rect){ hr.x + hr.w - cw - 4.0f, ry + 5.0f, cw, 16.0f }, 0.5f,
+                                 ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_text(cnt, hr.x + hr.w - cw + 2.0f, ry + 6.0f, 12.0f, ccr_th(CCR_C_PANEL_TEXT));
+            if (!s->own) {
+                ccr_gui_clip_begin((ccr_rect){ hr.x + 26.0f + kw, ry, hr.w - kw - cw - 40.0f, head_h });
+                ccr_gui_text(ccr_tr(CCR_T_SRCH_NOT_OURS), hr.x + 28.0f + kw, ry + 6.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+                ccr_gui_clip_end();
+                if (hover)
+                    tip(hr, ccr_tr(CCR_T_SRCH_NOT_OURS_TIP));
+            } else if (hover && replacing &&
+                       srch_icon((ccr_rect){ hr.x + hr.w - cw - 32.0f, ry + 3.0f, 24.0f, 20.0f }, 1, lin,
+                                 ccr_tr(CCR_T_SRCH_RENAME_TIP))) {
+                act_sym = i;
+            }
+            if (hover && act_sym < 0 && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && m.x < hr.x + hr.w - cw - 34.0f &&
+                g_srch.sym_folded)
+                g_srch.sym_folded[i] = !g_srch.sym_folded[i];
+            ry += head_h;
+            if (folded)
+                continue;
+            for (int k = s->first; k < s->first + s->count; ++k) {
+                if (ry + row_h < list.y || ry > list.y + list.h) {
+                    ry += row_h;
+                    continue;
+                }
+                const ccr_rename_place *p = &g_srch.syms.places[k];
+                const ccr_rect r = { a.x + 4.0f, ry, a.w - 8.0f, row_h };
+                const bool over = lin && point_in(m, r);
+                if (over)
+                    ccr_gui_rect_rounded(r, 0.2f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x40u);
+                const ccr_color dot = p->kind == CCR_PLACE_DEFINITION ? 0x3FB950FFu
+                                    : p->kind == CCR_PLACE_DECLARATION ? 0xA371F7FFu : 0x4C9BE8FFu;
+                ccr_gui_circle((ccr_vec2){ r.x + 24.0f, ry + row_h * 0.5f }, 3.5f, dot);
+                char where[200];
+                snprintf(where, sizeof where, "%s:%d", base_name(g_srch.syms.files[p->file]), p->line);
+                const float ww = fminf(ccr_gui_text_width(where, 12.0f), 110.0f);
+                ccr_gui_clip_begin((ccr_rect){ r.x + 32.0f, ry, ww + 2.0f, row_h });
+                ccr_gui_text(where, r.x + 32.0f, ry + 5.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+                ccr_gui_clip_end();
+                if (g_srch.plines)
+                    srch_line(r.x + 40.0f + ww, ry + 4.0f, r.x + r.w - 4.0f, g_srch.plines[k],
+                              g_srch.pat ? g_srch.pat[k] : -1, (int)strlen(s->name),
+                              replacing && s->own ? g_srch.with : NULL, CCR_IN_CODE);
+                if (over) {
+                    tip(r, ccr_tr(p->kind == CCR_PLACE_DEFINITION ? CCR_T_NAV_KIND_DEF
+                                  : p->kind == CCR_PLACE_DECLARATION ? CCR_T_NAV_KIND_DECL : CCR_T_NAV_KIND_USE));
+                    g_hand = true;
+                    if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                        act_place = k;
+                }
+                ry += row_h;
+            }
+        }
+    } else {
+        for (int f = 0; f < g_srch.nfiles; ++f) {
+            srch_file *sf = &g_srch.files[f];
+            int left_in = 0;
+            for (int k = sf->first; k < sf->first + sf->count; ++k)
+                left_in += !g_srch.hits[k].gone;
+            if (!left_in)
+                continue;
+            const ccr_rect hr = { a.x + 4.0f, ry, a.w - 8.0f, head_h };
+            const bool hover = lin && point_in(m, hr);
+            if (hover)
+                ccr_gui_rect_rounded(hr, 0.2f, (ccr_th(CCR_C_PANEL_EDGE) & 0xFFFFFF00u) | 0x70u);
+            ccr_gui_text(sf->folded ? ">" : "v", hr.x + 6.0f, ry + 5.0f, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+            const char *bn = base_name(sf->path);
+            ccr_gui_text(bn, hr.x + 20.0f, ry + 4.0f, 14.5f, ccr_th(CCR_C_PANEL_TEXT));
+            char cnt[16];
+            snprintf(cnt, sizeof cnt, "%d", left_in);
+            const float cw = ccr_gui_text_width(cnt, 12.0f) + 12.0f;
+            ccr_gui_rect_rounded((ccr_rect){ hr.x + hr.w - cw - 4.0f, ry + 5.0f, cw, 16.0f }, 0.5f,
+                                 ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_text(cnt, hr.x + hr.w - cw + 2.0f, ry + 6.0f, 12.0f, ccr_th(CCR_C_PANEL_TEXT));
+            /* the folder, after the name, faint */
+            {
+                char dir[1024];
+                snprintf(dir, sizeof dir, "%s", sf->path);
+                char *sl = strrchr(dir, '/');
+                if (sl)
+                    *sl = '\0';
+                const char *dn = base_name(dir);
+                const float bx = hr.x + 26.0f + ccr_gui_text_width(bn, 14.5f);
+                ccr_gui_clip_begin((ccr_rect){ bx, ry, hr.x + hr.w - cw - 60.0f - bx, head_h });
+                ccr_gui_text(dn, bx, ry + 6.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+                ccr_gui_clip_end();
+            }
+            bool on_icon = false;
+            if (hover && g_srch.replace_open) {
+                const ccr_rect ib = { hr.x + hr.w - cw - 32.0f, ry + 3.0f, 24.0f, 20.0f };
+                on_icon = point_in(m, ib);
+                if (srch_icon(ib, 1, lin, ccr_tr(CCR_T_SRCH_REPLACE_FILE_TIP)))
+                    act_file = f;
+            }
+            if (hover && !on_icon && act_file < 0 && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                sf->folded = !sf->folded;
+            ry += head_h;
+            if (sf->folded)
+                continue;
+            for (int k = sf->first; k < sf->first + sf->count; ++k) {
+                srch_hit *s = &g_srch.hits[k];
+                if (s->gone)
+                    continue;
+                if (ry + row_h < list.y || ry > list.y + list.h) {
+                    ry += row_h;
+                    continue;
+                }
+                const ccr_rect r = { a.x + 4.0f, ry, a.w - 8.0f, row_h };
+                const bool over = lin && point_in(m, r);
+                if (over)
+                    ccr_gui_rect_rounded(r, 0.2f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x40u);
+                char ln[16];
+                snprintf(ln, sizeof ln, "%d", s->h.line);
+                ccr_gui_text(ln, r.x + 44.0f - ccr_gui_text_width(ln, 12.0f), ry + 5.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT));
+                /* where it is: a dot for strings and comments */
+                if (s->h.where != CCR_IN_CODE)
+                    ccr_gui_circle((ccr_vec2){ r.x + 12.0f, ry + row_h * 0.5f }, 2.5f,
+                                   s->h.where == CCR_IN_STRING ? ccr_th_cat(CCR_CAT_LITERAL, CCR_EDGE)
+                                                               : ccr_th(CCR_C_PANEL_HINT));
+                const float rr = over ? r.x + r.w - (g_srch.replace_open ? 54.0f : 28.0f) : r.x + r.w - 4.0f;
+                srch_line(r.x + 52.0f, ry + 4.0f, rr, s->line, s->at, (int)s->h.len,
+                          g_srch.replace_open ? g_srch.with : NULL, s->h.where);
+                bool on_btn = false;
+                if (over) {
+                    const ccr_rect xb = { r.x + r.w - 26.0f, ry + 2.0f, 22.0f, 20.0f };
+                    const ccr_rect rb = { r.x + r.w - 52.0f, ry + 2.0f, 24.0f, 20.0f };
+                    on_btn = point_in(m, xb) || (g_srch.replace_open && point_in(m, rb));
+                    if (srch_icon(xb, 0, lin, ccr_tr(CCR_T_SRCH_DISMISS_TIP)))
+                        s->gone = true;
+                    if (g_srch.replace_open && srch_icon(rb, 1, lin, ccr_tr(CCR_T_SRCH_REPLACE_ONE_TIP)))
+                        act_rep = k;
+                    if (!on_btn) {
+                        g_hand = true;
+                        if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                            act_go = k;
+                    }
+                }
+                ry += row_h;
+            }
+        }
+        if (!g_srch.query[0]) {   /* nothing asked yet: what this is */
+            wrap_text(ccr_tr(CCR_T_SRCH_EMPTY), left, list.y + 8.0f, right - left, 13.5f, ccr_th(CCR_C_PANEL_HINT), true);
+        }
+    }
+    ccr_gui_clip_end();
+    if (act_go >= 0)
+        srch_go(doc, cv, viewport, opt, g_srch.files[g_srch.hits[act_go].file].path, g_srch.hits[act_go].h.offset);
+    else if (act_place >= 0)
+        srch_go(doc, cv, viewport, opt, g_srch.syms.files[g_srch.syms.places[act_place].file],
+                g_srch.syms.places[act_place].offset);
+    else if (act_rep >= 0)
+        srch_replace(doc, opt, g_srch.hits[act_rep].file, act_rep);
+    else if (act_file >= 0)
+        srch_replace(doc, opt, act_file, -1);
+    else if (act_sym >= 0)
+        srch_rename(doc, opt, act_sym);
+}
+
+static bool g_search_tab_on(void) { return g_srch.tab && !g_git.tab; }
+static void search_tab_set(bool on)
+{
+    g_srch.tab = on;
+    if (on)
+        g_srch.dirty = true;
+    else
+        g_srch.find_focus = g_srch.with_focus = false;
+}
+
 /* ------------------------------------------------ the language tabs
  *
  * Above the palette, as the dividers of a card catalogue: a tab for C and
@@ -6432,6 +7446,7 @@ static bool help_frame(int w, int h)
         { "F8, F9, F10, F11", 0, CCR_T_HELP_DEBUG },
         { "Ctrl+G", 0, CCR_T_HELP_GIT },
         { "F2", 0, CCR_T_HELP_RENAME },
+        { "Ctrl+Shift+F", 0, CCR_T_HELP_SEARCH },
         { "F12, Shift+F12, Alt+<-", 0, CCR_T_HELP_NAV },
         { "F5", 0, CCR_T_HELP_RELOAD },
         { "Ctrl+,", 0, CCR_T_HELP_SETTINGS },
@@ -7031,6 +8046,121 @@ static void autosave_button(float right, int h, bool input)
                  g_auto.on ? st.text : ccr_th(CCR_C_BUTTON_TEXT));
     if (input)
         tip(r, ccr_tr(CCR_T_TIP_AUTOSAVE));
+}
+
+/* ------------------------------------------------- arranging the blocks
+ *
+ * A button left of autosave: the whole file arranged at once (as columns,
+ * in tiles as wide as the screen, or by who calls whom), every stack
+ * gliding to its new place; one Ctrl+Z puts them back. Dragged by hand, a
+ * block stays where it is put, lined up with its neighbours, and is there
+ * again next time the file opens.
+ */
+#define ARRANGE_W 34.0f
+
+static struct {
+    bool open;
+    bool just;   /* opened this frame: that click is not one outside it */
+} g_arr;
+
+/* A little picture of an arrangement, in the theme's block colours. */
+static void arrange_icon(ccr_rect r, int how, float k)
+{
+    const ccr_color c1 = ccr_th_cat(CCR_CAT_PREPROC, CCR_FILL), c2 = ccr_th_cat(CCR_CAT_TYPE, CCR_FILL),
+                    c3 = ccr_th_cat(CCR_CAT_EVENT, CCR_FILL), c4 = ccr_th_cat(CCR_CAT_CALL, CCR_FILL);
+    const float u = k;   /* a unit */
+    if (how == CCR_ARRANGE_COLUMNS) {
+        ccr_gui_rect_rounded((ccr_rect){ r.x, r.y, 9 * u, 3 * u }, 0.4f, c1);
+        ccr_gui_rect_rounded((ccr_rect){ r.x, r.y + 4 * u, 9 * u, 3 * u }, 0.4f, c1);
+        ccr_gui_rect_rounded((ccr_rect){ r.x, r.y + 8 * u, 9 * u, 5 * u }, 0.3f, c2);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 12 * u, r.y, 11 * u, 7 * u }, 0.3f, c3);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 12 * u, r.y + 8 * u, 11 * u, 8 * u }, 0.3f, c3);
+    } else if (how == CCR_ARRANGE_TILES) {
+        ccr_gui_rect_rounded((ccr_rect){ r.x, r.y, 7 * u, 5 * u }, 0.3f, c1);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 8 * u, r.y, 7 * u, 8 * u }, 0.3f, c3);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 16 * u, r.y, 7 * u, 4 * u }, 0.3f, c2);
+        ccr_gui_rect_rounded((ccr_rect){ r.x, r.y + 6 * u, 7 * u, 9 * u }, 0.3f, c3);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 8 * u, r.y + 9 * u, 7 * u, 6 * u }, 0.3f, c4);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 16 * u, r.y + 5 * u, 7 * u, 10 * u }, 0.3f, c3);
+    } else {
+        const ccr_color line = ccr_th(CCR_C_PANEL_HINT);
+        ccr_gui_line((ccr_vec2){ r.x + 6 * u, r.y + 3 * u }, (ccr_vec2){ r.x + 10 * u, r.y + 3 * u }, 1.2f, line);
+        ccr_gui_line((ccr_vec2){ r.x + 6 * u, r.y + 3 * u }, (ccr_vec2){ r.x + 10 * u, r.y + 11 * u }, 1.2f, line);
+        ccr_gui_line((ccr_vec2){ r.x + 16 * u, r.y + 3 * u }, (ccr_vec2){ r.x + 19 * u, r.y + 3 * u }, 1.2f, line);
+        ccr_gui_rect_rounded((ccr_rect){ r.x, r.y, 6 * u, 7 * u }, 0.3f, c3);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 10 * u, r.y, 6 * u, 6 * u }, 0.3f, c3);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 10 * u, r.y + 8 * u, 6 * u, 6 * u }, 0.3f, c3);
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 19 * u, r.y, 5 * u, 5 * u }, 0.3f, c3);
+    }
+}
+
+static void arrange_button(float right, int h, bool input)
+{
+    const ccr_rect r = { right - 10.0f - (ARRANGE_W - 10.0f), (float)h - STATUSBAR_H + 3.0f, ARRANGE_W - 10.0f,
+                         STATUSBAR_H - 6.0f };
+    const ccr_button_style st = *button_style(g_arr.open);
+    if (ccr_gui_button(r, "", &st) && input) {
+        g_arr.open = !g_arr.open;
+        g_arr.just = g_arr.open;
+    }
+    arrange_icon((ccr_rect){ r.x + 3.0f, r.y + (r.h - 15.0f * 0.75f) * 0.5f, 0, 0 }, CCR_ARRANGE_TILES, 0.75f);
+    if (input && !g_arr.open)
+        tip(r, ccr_tr(CCR_T_ARR_TIP));
+}
+
+/* The menu, over the canvas, above the button. */
+static void arrange_menu(int w, int h, ccr_document *doc, ccr_canvas *cv, ccr_rect viewport, float right)
+{
+    if (!g_arr.open)
+        return;
+    const ccr_vec2 m = ccr_gui_mouse();
+    static const ccr_text names[CCR_ARRANGE_COUNT] = { CCR_T_ARR_COLUMNS, CCR_T_ARR_TILES, CCR_T_ARR_CALLS };
+    static const ccr_text hints[CCR_ARRANGE_COUNT] = { CCR_T_ARR_COLUMNS_HINT, CCR_T_ARR_TILES_HINT,
+                                                      CCR_T_ARR_CALLS_HINT };
+    float mw = 360.0f;
+    const float row = 54.0f;
+    for (int i = 0; i < CCR_ARRANGE_COUNT; ++i)   /* as wide as its longest line */
+        mw = fmaxf(mw, ccr_gui_text_width(ccr_tr(hints[i]), 12.5f) + 72.0f);
+    mw = fminf(mw, (float)w - 16.0f);
+    const float foot = wrap_text(ccr_tr(CCR_T_ARR_FREE), 0, 0, mw - 28.0f, 12.5f, 0, false);
+    const float mh = 40.0f + row * CCR_ARRANGE_COUNT + foot + 18.0f;
+    ccr_rect r = { right - mw, (float)h - STATUSBAR_H - mh - 6.0f, mw, mh };
+    if (r.x < 8.0f)
+        r.x = 8.0f;
+    ccr_gui_rect_rounded((ccr_rect){ r.x + 3, r.y + 4, r.w, r.h }, 0.06f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ r.x - 1, r.y - 1, r.w + 2, r.h + 2 }, 0.06f, ccr_th(CCR_C_PANEL_EDGE));
+    ccr_gui_rect_rounded(r, 0.06f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    ccr_gui_text(ccr_tr(CCR_T_ARR_TITLE), r.x + 14.0f, r.y + 12.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
+    int pick = -1;
+    for (int i = 0; i < CCR_ARRANGE_COUNT; ++i) {
+        const ccr_rect it = { r.x + 6.0f, r.y + 38.0f + row * (float)i, r.w - 12.0f, row - 4.0f };
+        const bool over = point_in(m, it) && doc->loaded;
+        if (over) {
+            ccr_gui_rect_rounded(it, 0.15f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x50u);
+            g_hand = true;
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT))
+                pick = i;
+        }
+        arrange_icon((ccr_rect){ it.x + 10.0f, it.y + (it.h - 16.0f * 1.1f) * 0.5f, 0, 0 }, i, 1.1f);
+        ccr_gui_text(ccr_tr(names[i]), it.x + 48.0f, it.y + 6.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_clip_begin((ccr_rect){ it.x + 48.0f, it.y, it.w - 52.0f, it.h });
+        ccr_gui_text(ccr_tr(hints[i]), it.x + 48.0f, it.y + 26.0f, 12.5f, ccr_th(CCR_C_PANEL_HINT));
+        ccr_gui_clip_end();
+    }
+    wrap_text(ccr_tr(CCR_T_ARR_FREE), r.x + 14.0f, r.y + 42.0f + row * CCR_ARRANGE_COUNT, mw - 28.0f, 12.5f,
+              ccr_th(CCR_C_PANEL_HINT), true);
+    if (pick >= 0) {
+        const ccr_rect vis = visible_view(viewport, ccr_gui_width(), ccr_gui_height());
+        if (ccr_editor_arrange(&doc->ed, (ccr_arrange)pick, vis.w / fmaxf(vis.h, 1.0f)))
+            fit_view_smooth(cv, doc, viewport);
+        ccr_trf(doc->status, sizeof doc->status, CCR_T_ARR_DONE, ccr_tr(names[pick]));
+        doc->has_errors = false;
+        g_arr.open = false;
+        return;
+    }
+    if ((ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(m, r) && !g_arr.just) || ccr_gui_key_pressed(CCR_KEY_ESCAPE))
+        g_arr.open = false;
+    g_arr.just = false;
 }
 
 /* --------------------------------------------------------------- minimap */
@@ -8000,12 +9130,15 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
         tip(gb, ccr_tr(CCR_T_TIP_GIT));
     const float fw = ccr_gui_text_width(ccr_tr(CCR_T_FILES_TITLE), 16.0f) + 24.0f;
     x -= gap + fw;
-    if (ccr_gui_button((ccr_rect){ x, y, fw, bh }, ccr_tr(CCR_T_FILES_TITLE), g_files_open && !g_git.tab ? &main_ : bs) &&
+    if (ccr_gui_button((ccr_rect){ x, y, fw, bh }, ccr_tr(CCR_T_FILES_TITLE),
+                       g_files_open && !g_git.tab && !g_search_tab_on() ? &main_ : bs) &&
         !modal) {
-        if (g_files_open && g_git.tab)
+        if (g_files_open && (g_git.tab || g_search_tab_on())) {
             g_git.tab = false;
-        else
+            search_tab_set(false);
+        } else {
             files_toggle(doc);
+        }
     }
     const float lw = ccr_gui_text_width(ccr_tr(CCR_T_LIBS_TITLE), 16.0f) + 24.0f;
     x -= gap + lw;
@@ -8500,7 +9633,7 @@ int ccr_run(int argc, char **argv)
             g_drop.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
         const bool modal = eula.open || g_libs.open || g_quit.open || g_help || g_git.diff_open || g_pick.kind ||
-                           g_ren.open || g_set.open;   /* a dialog has the mouse */
+                           g_ren.open || g_set.open || g_arr.open;   /* a dialog has the mouse */
         if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open && !g_set.open)
             g_help = !g_help;
         if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_COMMA) && !eula.open && !g_quit.open) {
@@ -8563,17 +9696,24 @@ int ccr_run(int argc, char **argv)
         const bool over_palette = !on_split && m.x < PALETTE_W && m.y > TOPBAR_H;
         palette_follow(&doc);
         const bool git_typing = (g_files_open && g_git.tab && (g_git.msg_focus || g_git.new_focus || g_git.co_focus)) ||
+                                (g_files_open && g_search_tab_on() && (g_srch.find_focus || g_srch.with_focus)) ||
                                 (g_dbg.in_focus && g_dbg.view && g_bp.t > 0.0f);   /* or to the program */
         const bool can_act = doc.loaded && te.node == CCR_NONE && !modal &&
                              g_fpanel.naming == CCR_NAMING_NONE && !git_typing;   /* typing a new file's name */
 
         /* the files panel slides in from the right, over the canvas */
         if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_P) && !modal) {
-            if (g_files_open && g_git.tab)
-                g_git.tab = false;   /* from Git to the files */
-            else
+            if (g_files_open && (g_git.tab || g_search_tab_on())) {
+                g_git.tab = false;   /* from Git (or Search) to the files */
+                search_tab_set(false);
+            } else {
                 files_toggle(&doc);
+            }
         }
+        /* Ctrl+Shift+F: search the project; Ctrl+Shift+H: and replace */
+        if (ccr_gui_ctrl_down() && ccr_gui_shift_down() && !modal && te.node == CCR_NONE &&
+            (ccr_gui_key_pressed(CCR_KEY_F) || ccr_gui_key_pressed(CCR_KEY_H)))
+            srch_open(&doc, ccr_gui_key_pressed(CCR_KEY_H));
         if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_G) && !modal && te.node == CCR_NONE)
             git_toggle(&doc);
         if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_TAB) && !modal && te.node == CCR_NONE &&
@@ -8586,7 +9726,7 @@ int ccr_run(int argc, char **argv)
         }
         const ccr_rect files_r = files_area(w, h);
         const bool over_files = !on_split && g_files_t > 0.0f && point_in(m, files_r);
-        if (g_files_open && !g_git.tab && !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
+        if (g_files_open && !g_git.tab && !g_search_tab_on() && !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
             (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE)) {
             ccr_open_file of[MAX_OPEN + 1];
             const int nof = open_files(&doc, of);
@@ -8652,7 +9792,7 @@ int ccr_run(int argc, char **argv)
 
         /* a search box has the keyboard: keys type, they do not edit blocks */
         const bool typing = (g_find.open && g_find.focused) || g_psearch.focused || git_typing;
-        if (doc.loaded && !modal && !pie.open && te.node == CCR_NONE && ccr_gui_ctrl_down() &&
+        if (doc.loaded && !modal && !pie.open && te.node == CCR_NONE && ccr_gui_ctrl_down() && !ccr_gui_shift_down() &&
             ccr_gui_key_pressed(CCR_KEY_F)) {
             find_open();
             g_psearch.focused = false;
@@ -8933,6 +10073,9 @@ int ccr_run(int argc, char **argv)
             ccr_gui_rect_rounded((ccr_rect){ fa.x - 1.0f, fa.y, fa.w + 1.0f, fa.h }, 0.0f, ccr_th(CCR_C_PANEL_EDGE));
             if (g_git.tab) {
                 git_panel(panel_body(fa), &doc, &opt, panel_input && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE));
+            } else if (g_search_tab_on()) {
+                srch_panel(panel_body(fa), &doc, &canvas, viewport, &opt,
+                           panel_input && (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE));
             } else {
                 ccr_open_file of[MAX_OPEN + 1];
                 const int nof = open_files(&doc, of);
@@ -8978,10 +10121,13 @@ int ccr_run(int argc, char **argv)
             g_help = !g_help;
         if (top & TOP_SETTINGS)
             settings_toggle();
-        draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f - autosave_width() - pf_chip_width());
+        draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f - autosave_width() - ARRANGE_W - pf_chip_width());
         const float zx = zoom_widget(w, h, &canvas, &doc, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         autosave_button(zx, h, !modal && opt.smoke_frames == 0);
-        pf_chip(zx - autosave_width(), h, &doc, &canvas, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
+        arrange_button(zx - autosave_width(), h, (!modal || g_arr.open) && doc.loaded && !pie.open && !opm.open);
+        pf_chip(zx - autosave_width() - ARRANGE_W, h, &doc, &canvas, viewport,
+                !modal && !pie.open && !opm.open && te.node == CCR_NONE);
+        arrange_menu(w, h, &doc, &canvas, viewport, zx - autosave_width());
         ccr_pie_draw(&pie);
         if (doc.loaded)
             op_menu_draw(&opm, &doc.ed, m, w, h);

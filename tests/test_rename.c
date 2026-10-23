@@ -81,6 +81,59 @@ int main(void)
     char path[600], err[300];
     snprintf(path, sizeof path, "%s/main.c", g_root);
 
+    /* everything called add: the function, the field, a local of twice() */
+    {
+        ccr_symbols ss;
+        char e2[300];
+        CHECK(ccr_symbols_named(g_root, "add", NULL, 0, &ss, e2, (int)sizeof e2), "by name: %s", e2);
+        int fn = -1, field = -1, local = -1;
+        for (int i = 0; i < ss.sym_count; ++i) {
+            if (ss.syms[i].kind == CCR_SYM_FUNCTION)
+                fn = i;
+            if (ss.syms[i].kind == CCR_SYM_FIELD)
+                field = i;
+            if (ss.syms[i].kind == CCR_SYM_LOCAL)
+                local = i;
+        }
+        CHECK(ss.sym_count == 3 && fn == 0 && field >= 0 && local >= 0, "three things called add: %d (fn %d)",
+              ss.sym_count, fn);
+        CHECK(fn >= 0 && ss.syms[fn].count == 4 && ss.syms[fn].own, "the function: %d places", fn >= 0 ? ss.syms[fn].count : 0);
+        CHECK(field >= 0 && ss.syms[field].count == 2 && strcmp(ss.syms[field].owner, "box") == 0, "the field of box: %d, %s",
+              field >= 0 ? ss.syms[field].count : 0, field >= 0 ? ss.syms[field].owner : "");
+        CHECK(local >= 0 && ss.syms[local].count == 2 && strcmp(ss.syms[local].owner, "twice") == 0, "the local of twice");
+        /* the field alone, renamed: the function and the local stay */
+        ccr_rename fr;
+        ccr_rename_undo fu;
+        CHECK(field >= 0 && ccr_symbols_rename(&ss, field, &fr) && fr.place_count == 2 &&
+              ccr_rename_apply(&fr, "total", &fu, e2, (int)sizeof e2), "the field renamed: %s", e2);
+        CHECK(strstr(get("util.h"), "struct box { int total; };") && strstr(get("main.c"), "b.total") &&
+              strstr(get("main.c"), "add(1, 2)") && strstr(get("util.c"), "int add = v;"), "only the field");
+        CHECK(ccr_rename_undo_apply(&fu) == 2 && strstr(get("util.h"), "{ int add; }"), "and back");
+        ccr_rename_undo_free(&fu);
+        ccr_rename_free(&fr);
+        /* all three at once: one rename, no place missed */
+        CHECK(ccr_symbols_rename(&ss, -1, &fr) && fr.place_count == 8 && fr.file_count == 3 &&
+              ccr_rename_apply(&fr, "sum", &fu, e2, (int)sizeof e2), "all of them: %d places, %s", fr.place_count, e2);
+        CHECK(strstr(get("util.c"), "int sum = v; return sum * 2;") && strstr(get("util.h"), "{ int sum; }") &&
+              strstr(get("main.c"), "return sum(b.sum, -3)"), "every add is sum:\n%s", get("main.c"));
+        CHECK(ccr_rename_undo_apply(&fu) == 3, "and back");
+        ccr_rename_undo_free(&fu);
+        ccr_rename_free(&fr);
+        ccr_symbols_free(&ss);
+        /* a macro, and printf: not the project's own */
+        put("more.c", "#include <stdio.h>\n#define LIMIT 3\nint lim(void) { printf(\"%d\", LIMIT); return LIMIT; }\n");
+        CHECK(ccr_symbols_named(g_root, "LIMIT", NULL, 0, &ss, e2, (int)sizeof e2) && ss.sym_count == 1 &&
+              ss.syms[0].kind == CCR_SYM_MACRO && ss.syms[0].count == 3, "the macro: %s %d", e2, ss.sym_count ? ss.syms[0].count : 0);
+        ccr_symbols_free(&ss);
+        CHECK(ccr_symbols_named(g_root, "printf", NULL, 0, &ss, e2, (int)sizeof e2) && ss.sym_count == 1 &&
+              !ss.syms[0].own && ss.syms[0].kind == CCR_SYM_FUNCTION, "printf: found, not ours");
+        ccr_symbols_free(&ss);
+        CHECK(!ccr_symbols_named(g_root, "nothing_here", NULL, 0, &ss, e2, (int)sizeof e2) && e2[0], "nothing");
+        char rm[700];
+        snprintf(rm, sizeof rm, "%s/more.c", g_root);
+        remove(rm);
+    }
+
     /* add, from a call in main.c */
     ccr_rename r;
     CHECK(ccr_rename_find(g_root, path, at("main.c", "add(1", 0), NULL, 0, &r, err, (int)sizeof err),

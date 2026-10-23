@@ -11,6 +11,7 @@
 #include "ccr_gui.h"
 #include "ccr_parse.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -300,6 +301,114 @@ static void screenshot(ccr_editor *ed, const char *path)
     frame(ed, grip(near), false, false, true);
 }
 
+static ccr_node_id find_top(const ccr_editor *ed, ccr_node_kind kind, const char *name)
+{
+    for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+        if (N(ed, c)->kind == kind && strcmp(name_of(ed, c), name) == 0)
+            return c;
+    return CCR_NONE;
+}
+
+static bool overlap(ccr_rect a, ccr_rect b)
+{
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+static ccr_rect script_box(const ccr_editor *ed, uint32_t i)
+{
+    const ccr_script *s = &ed->scripts[i];
+    return (ccr_rect){ s->pos.x + s->blocks.bounds.x, s->pos.y + s->blocks.bounds.y, s->blocks.bounds.w, s->blocks.bounds.h };
+}
+
+static uint32_t script_of(const ccr_editor *ed, ccr_node_id root)
+{
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        if (ed->scripts[i].root == root)
+            return i;
+    return UINT32_MAX;
+}
+
+/* Arranging the canvas: by calls, as a newspaper, back in columns; undo;
+ * a stack put down on another makes room; the layout kept and read back. */
+static void test_arrange(ccr_editor *ed, const char *path)
+{
+    const ccr_node_id fmain = find_function(ed, "main"), fsum = find_function(ed, "sum"),
+                      fdesc = find_function(ed, "describe");
+    const ccr_vec2 sum_was = top_left(ed, fsum);
+
+    CHECK(ccr_editor_arrange(ed, CCR_ARRANGE_CALLS, 1.6f), "by calls: nothing moved");
+    const ccr_vec2 m = top_left(ed, fmain), su = top_left(ed, fsum), de = top_left(ed, fdesc);
+    CHECK(m.x < su.x && su.x == de.x && su.y != de.y, "main, then what it calls beside it: %.0f %.0f %.0f", m.x, su.x,
+          de.x);
+    for (uint32_t i = 0; i < ed->script_count; ++i)   /* #includes and types: left of every function */
+        if (N(ed, ed->scripts[i].root)->kind != CCR_NODE_FUNCTION && !(N(ed, ed->scripts[i].root)->flags & CCR_FLAG_LOOSE))
+            CHECK(script_box(ed, i).x + script_box(ed, i).w < m.x, "a declaration right of main");
+    CHECK(ccr_editor_undo(ed) && top_left(ed, fsum).x == sum_was.x && top_left(ed, fsum).y == sum_was.y,
+          "undo: back where it was");
+
+    CHECK(ccr_editor_arrange(ed, CCR_ARRANGE_TILES, 1.6f), "newspaper: nothing moved");
+    bool clash = false;
+    for (uint32_t i = 0; i < ed->script_count; ++i)
+        for (uint32_t k = i + 1; k < ed->script_count; ++k)
+            clash = clash || overlap(script_box(ed, i), script_box(ed, k));
+    CHECK(!clash, "newspaper: stacks on top of each other");
+    const ccr_rect all = ccr_editor_bounds(ed);
+    CHECK(all.w > all.h * 0.6f, "newspaper: still one tall column (%.0f x %.0f)", all.w, all.h);
+    /* in the file's order: down a column, then the next */
+    float lx = -1e9f, ly = -1e9f;
+    bool in_order = true;
+    for (ccr_node_id c = N(ed, 0)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling) {
+        const uint32_t si = script_of(ed, c);
+        if (si == UINT32_MAX)
+            continue;
+        const ccr_rect b = script_box(ed, si);
+        in_order = in_order && (b.x > lx + 1.0f || (fabsf(b.x - lx) < 1.0f && b.y > ly));
+        lx = b.x;
+        ly = b.y;
+    }
+    CHECK(in_order, "newspaper: not in the file's order");
+
+    /* columns again: as a freshly opened file */
+    ccr_ast ast;
+    ccr_ast_init(&ast);
+    ccr_editor fresh;
+    CHECK(ccr_parse_file(path, NULL, 0, &ast) && ccr_editor_init(&fresh, &ast), "reopen");
+    CHECK(ccr_editor_arrange(ed, CCR_ARRANGE_COLUMNS, 1.6f), "columns: nothing moved");
+    const ccr_vec2 a = top_left(ed, fsum), b = top_left(&fresh, find_function(&fresh, "sum"));
+    CHECK(a.x == b.x && a.y == b.y, "columns: not as opened (%.0f,%.0f vs %.0f,%.0f)", a.x, a.y, b.x, b.y);
+
+    /* put a struct down on describe(): describe makes room under it */
+    const ccr_node_id pt = find_top(ed, CCR_NODE_STRUCT, "point");
+    CHECK(pt != CCR_NONE, "no struct point");
+    if (pt != CCR_NONE) {
+        const ccr_vec2 at = top_left(ed, pt), d = top_left(ed, fdesc);
+        drag(ed, grip(at), grip((ccr_vec2){ d.x + 3.0f, d.y + 20.0f }));
+        const uint32_t sp = script_of(ed, pt), sd = script_of(ed, fdesc);
+        clash = false;
+        for (uint32_t i = 0; i < ed->script_count; ++i)
+            for (uint32_t k = i + 1; k < ed->script_count; ++k)
+                clash = clash || overlap(script_box(ed, i), script_box(ed, k));
+        CHECK(sp != UINT32_MAX && sd != UINT32_MAX && !clash, "put down on describe(): something is on top of something");
+        /* and put down on its very top: describe moves down under it */
+        const ccr_vec2 d2 = top_left(ed, fdesc);
+        drag(ed, grip(top_left(ed, pt)), grip((ccr_vec2){ d2.x, d2.y - 2.0f }));
+        const uint32_t sp2 = script_of(ed, pt), sd2 = script_of(ed, fdesc);
+        CHECK(sp2 != UINT32_MAX && sd2 != UINT32_MAX && script_box(ed, sd2).y > script_box(ed, sp2).y &&
+              !overlap(script_box(ed, sp2), script_box(ed, sd2)), "describe did not make room");
+        CHECK(top_left(ed, pt).x == top_left(ed, fdesc).x, "the struct did not line up with describe");
+    }
+
+    /* the layout, kept and read back into the fresh one */
+    char *text = ccr_editor_layout_text(ed);
+    CHECK(text && ccr_editor_layout_apply(&fresh, text) > 3, "layout text not read back");
+    free(text);
+    const ccr_node_id fpt = find_top(&fresh, CCR_NODE_STRUCT, "point");
+    CHECK(pt == CCR_NONE || (top_left(&fresh, fpt).x == top_left(ed, pt).x && top_left(&fresh, fpt).y == top_left(ed, pt).y),
+          "the struct is not where it was left");
+    CHECK(top_left(&fresh, find_function(&fresh, "describe")).y == top_left(ed, fdesc).y, "describe moved");
+    ccr_editor_free(&fresh);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -329,6 +438,7 @@ int main(int argc, char **argv)
     test_click_is_not_a_drag(&ed);
     test_move_whole_function(&ed);
     test_empty_mouth(&ed);
+    test_arrange(&ed, argv[1]);
     if (argc > 2)
         screenshot(&ed, argv[2]);
 

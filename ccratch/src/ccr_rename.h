@@ -67,4 +67,51 @@ bool ccr_rename_apply(const ccr_rename *r, const char *new_name, ccr_rename_undo
 int  ccr_rename_undo_apply(const ccr_rename_undo *u);
 void ccr_rename_undo_free(ccr_rename_undo *u);
 
+/* ------------------------------------------------- by name
+ *
+ * Everything the project calls `name`: a function, the field of a
+ * struct, a local of another function... each its own thing (clang tells
+ * them apart), with every place that names it.
+ */
+typedef enum ccr_sym_kind {
+    CCR_SYM_FUNCTION,
+    CCR_SYM_METHOD,
+    CCR_SYM_GLOBAL,         /* a variable outside functions */
+    CCR_SYM_LOCAL,          /* a variable of a function (`owner`) */
+    CCR_SYM_PARAMETER,      /* of `owner` */
+    CCR_SYM_FIELD,          /* of struct or class `owner` */
+    CCR_SYM_TYPE,           /* struct, union, enum, class, typedef */
+    CCR_SYM_ENUM_VALUE,
+    CCR_SYM_MACRO,
+    CCR_SYM_NAMESPACE,
+    CCR_SYM_OTHER
+} ccr_sym_kind;
+
+typedef struct ccr_symbol {
+    char         usr[512];
+    char         name[128];
+    ccr_sym_kind kind;
+    char         owner[128];   /* the function, struct... it belongs to; "" */
+    bool         own;          /* the project's (else printf, a library's: no renaming) */
+    int          first, count; /* its places: places[first .. first+count) */
+} ccr_symbol;
+
+typedef struct ccr_symbols {
+    ccr_symbol       *syms;
+    int               sym_count;
+    char            (*files)[1024];
+    int               file_count;
+    ccr_rename_place *places;     /* grouped by symbol, each by file and offset */
+    int               place_count;
+} ccr_symbols;
+
+/* Every thing named exactly `name` in the project in `root` (its own
+ * first, the most named first). False with why in `err` if there is none. */
+bool ccr_symbols_named(const char *root, const char *name, const char *const *clang_args, int nargs,
+                       ccr_symbols *out, char *err, int err_cap);
+void ccr_symbols_free(ccr_symbols *s);
+/* Symbol `i` (-1: every one that is the project's own) as one rename,
+ * to ccr_rename_apply (free it). */
+bool ccr_symbols_rename(const ccr_symbols *s, int i, ccr_rename *out);
+
 #endif /* CCR_RENAME_H */
