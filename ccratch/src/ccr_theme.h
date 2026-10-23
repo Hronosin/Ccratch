@@ -52,7 +52,10 @@
     X(FIELD_TEXT,   "field_text",    0x303440FFu)                           \
     X(SHADOW,       "shadow",        0x00000060u)  /* under a lifted block */\
     X(DIM,          "dim",           0x4A4F5AFFu)  /* commented-out blocks */\
-    X(DIM_TEXT,     "dim_text",      0xAEB4C0FFu)
+    X(DIM_TEXT,     "dim_text",      0xAEB4C0FFu)                           \
+    X(LANG_C,       "lang_c",        0xE05AADFFu)  /* the palette's C tab */\
+    X(LANG_CPP,     "lang_cpp",      0xC0368BFFu)  /* its C++ tab */        \
+    X(LANG_CMAKE,   "lang_cmake",    0x2D7DD2FFu)  /* a CMake file's tab */
 
 /* Block categories, in the order ccr_blocks uses. Each has three keys:
  * NAME (fill), NAME_edge and NAME_text. */

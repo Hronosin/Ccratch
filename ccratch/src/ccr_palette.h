@@ -56,6 +56,7 @@ typedef struct ccr_palette {
     float             zoom;                /* how big its blocks are drawn (0: CCR_PALETTE_ZOOM) */
     ccr_lang_kind     lang;                /* C's blocks, or CMake's */
     bool              cpp;                 /* C's: those for C, or for C++ */
+    float             lang_scroll[2];      /* where each of C and C++ was left: back there on return */
     bool              no_std;              /* without the standard library's sections */
     bool              ready;
 } ccr_palette;

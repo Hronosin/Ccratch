@@ -295,6 +295,10 @@
     X(CAT_CLASSES,      "palette.classes",       0, "Classes")                           \
     X(CAT_STD,          "palette.std",           0, "Standard library")                  \
     X(PAL_LANG_TIP,     "palette.lang_tip",      0, "Blocks for %s (a .cpp file picks C++ by itself)") \
+    X(PAL_LANG_OTHER,   "palette.lang_other",    0, "C++ blocks, and %s is C: the C compiler will not take them") \
+    X(PAL_DROP_OTHER,   "palette.drop_other",    0, "That is a C++ block, and %s is C: it will not compile there") \
+    X(PAL_STD_ON,       "palette.std_on",        0, "The standard library's blocks (printf, malloc, std::cout...): shown. A click hides them: only the language and your own functions") \
+    X(PAL_STD_OFF,      "palette.std_off",       0, "No standard library: only the language and your own functions. A click brings printf and the rest back") \
     X(SET_STD,          "set.std",               0, "Standard library blocks")           \
     X(SET_STD_HINT,     "set.std_hint",          0, "printf, malloc, std::cout... in a section of their own. Off: only the language itself and your own functions") \
     X(CAT_CM_PROJECT,   "palette.cm_project",    0, "Project")                           \

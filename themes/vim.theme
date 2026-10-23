@@ -39,6 +39,11 @@ shadow        = #00000090
 dim           = #303030
 dim_text      = #6C6C6C
 
+# the palette's language tabs
+lang_c        = #D7AF00
+lang_cpp      = #AF5FD7
+lang_cmake    = #5F87D7
+
 # blocks: the syntax groups
 control       = #D7AF00
 control_edge  = #AF8700

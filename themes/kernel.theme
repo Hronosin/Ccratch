@@ -40,6 +40,11 @@ shadow        = #000000A0
 dim           = #161616
 dim_text      = #555555
 
+# the palette's language tabs
+lang_c        = #55FF55
+lang_cpp      = #FF55FF
+lang_cmake    = #5555FF
+
 # blocks: VGA, as the console has them
 control       = #AA5500
 control_edge  = #773B00

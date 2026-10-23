@@ -34,6 +34,11 @@ shadow        = #00000030
 dim           = #E6E6E6
 dim_text      = #999999
 
+# the palette's language tabs
+lang_c        = #9A9A9A
+lang_cpp      = #4A4A4A
+lang_cmake    = #6A6A6A
+
 # blocks: the usual Scratch colours, on paper
 control       = #FFAB19
 control_edge  = #CF8B17

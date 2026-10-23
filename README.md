@@ -32,8 +32,9 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 21: copy and paste blocks between files (and any C as blocks), selection, minimap, autosave, panels you can size.
 - Step 22: Git as cards, block explanations, fourteen languages in human words, a settings window, Bug hunt builds.
 - Step 23: plugins, for real, and the first official one: Code Hater.
-- Step 24: C++ as blocks (namespaces, classes, methods, range-for, new/delete), C / C++ flags over the palette, the standard library in a section of its own.
+- Step 24: C++ as blocks (namespaces, classes, methods, range-for, new/delete), C / C++ over the palette, the standard library in a section of its own.
 - Step 25: commits made together: co-authors on the cards, the badges and the history, and picked when committing.
+- Step 26: C and C++ as the palette's catalogue tabs, in each theme's colours, with the standard library's switch beside them.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -99,7 +100,8 @@ the library they are; your own functions stay pink. Drop `printf` into a
 file and `#include <stdio.h>` comes along by itself (`strlen` brings
 `<string.h>`, `std::sort` `<algorithm>`...).
 
-**Settings > Editor > Standard library blocks** off: the section is gone,
+**std** beside the C / C++ tabs (or **Settings > Editor > Standard
+library blocks**) off, struck out: the section is gone,
 and what is left is C itself and your own functions. For writing a
 kernel, a bootloader, firmware, or just to see how much is the language
 and how much is libc.
@@ -194,9 +196,19 @@ unfolds what is in the way.
 
 ## C++
 
-Over the palette, two flags: **C** and **C++**. The one up says whose
-blocks the palette has; a click on the other switches. A `.cpp` (`.cc`,
-`.hpp`...) file puts C++ up by itself, a `.h` keeps what was picked.
+Over the palette, as the dividers of a card catalogue, two tabs: **C**
+and **C++**. The one in front is the section the palette shows, and runs
+on into it; a click on the one behind brings it forward (and each is
+left scrolled where it was). A `.cpp` (`.cc`, `.hpp`...) file brings C++
+forward by itself, a `.h` keeps what was picked. The open file's
+language has the file's name under its tab. C++ in front over a C file
+gets a red **!**: its blocks will not compile there, and one dropped in
+anyway says so in the status bar (C's blocks in a C++ file mostly do
+compile, so they say nothing). In a CMake file there is one tab, CMake.
+The colours are the theme's: `lang_c`, `lang_cpp`, `lang_cmake`.
+
+![the tabs in Shrine, Vim, Kernel Space, Scratch, Super Serious and Masochist (there with the standard library struck out)](docs/lang_tabs.png)
+
 C++'s palette has what C's has, plus:
 
 | Section | C++ blocks |

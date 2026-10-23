@@ -181,7 +181,7 @@ static bool load_font(void)
 #define TOPBAR_H     40.0f
 #define TABS_H       32.0f   /* the open files, over the canvas */
 #define PSEARCH_H    40.0f   /* the palette's search field */
-#define LANGBAR_H    52.0f   /* under it: the C / C++ flags */
+#define LANGBAR_H    50.0f   /* under it: the C / C++ tabs */
 /* Panel sizes: dragged at their edges, remembered (see layout_load) */
 static struct {
     float palette_w, files_w, build_h, palette_zoom;
@@ -6152,11 +6152,19 @@ static ccr_rect palette_area(int height);
 
 /* The palette's search field, above it: typing shows only the blocks
  * that say it. */
-/* ------------------------------------------------ the language flags
+/* ------------------------------------------------ the language tabs
  *
- * Above the palette, two flags, waving: C and C++. The one up says whose
- * blocks the palette has; a click on the other one switches. A .cpp file
- * puts C++ up by itself. In a CMake file, CMake's flag, alone.
+ * Above the palette, as the dividers of a card catalogue: a tab for C and
+ * one for C++, sticking up out of the drawer. The one in front is the
+ * section the palette shows, and it runs on into the palette; a click on
+ * the other one brings it to the front. A .cpp file brings C++ forward by
+ * itself. The colours are the theme's (lang_c, lang_cpp, lang_cmake).
+ *
+ * The tab of the open file's language says the file's name. C++ in front
+ * over a C file has a "!": its blocks will not compile there (C's, in a
+ * C++ file, mostly do).
+ * On the right, "std": the standard library's sections, on or off (as in
+ * Settings > Editor). In a CMake file, CMake's tab, alone.
  */
 /* `a` with `k` of `b` in it. */
 static ccr_color mix_color(ccr_color a, ccr_color b, float k)
@@ -6180,79 +6188,161 @@ static ccr_color shade(ccr_color c, float k)
     return out;
 }
 
-/* A flag: cloth in slices, each lifted by a wave that grows away from
- * where it hangs, lighter where it faces the light. */
-static void draw_flag(ccr_rect r, ccr_color cloth, const char *word, const char *plus, ccr_color plus_color,
-                      bool up, bool hot, float t)
+static void settings_remember(const char *key, const char *value);
+
+/* A tab: rounded on top, its foot below the bar (clipped). `front`: the
+ * palette's colour, with the language's along its top. */
+static void lang_tab(ccr_rect r, ccr_color lang, bool front, bool hot, const char *word, const char *plus,
+                     const char *under, bool warn)
 {
-    enum { SLICES = 28 };
-    const float amp = (up ? 3.6f : 2.0f) * (g_animate ? 1.0f : 0.5f);
-    float lift[SLICES + 1];
-    for (int i = 0; i <= SLICES; ++i) {
-        const float k = (float)i / SLICES;
-        lift[i] = sinf(t * 2.6f - k * 5.5f) * amp * (0.25f + 0.75f * k);
+    const ccr_color pal = ccr_th(CCR_C_PALETTE) | 0xFFu, edge = ccr_th(CCR_C_PANEL_EDGE);
+    const ccr_rect body = { r.x, r.y, r.w, r.h + 12.0f };
+    if (front) {
+        ccr_gui_rect_rounded((ccr_rect){ body.x - 1.0f, body.y - 1.0f, body.w + 2.0f, body.h + 2.0f }, 0.22f, edge);
+        ccr_gui_rect_rounded(body, 0.22f, lang);
+        ccr_gui_rect_rounded((ccr_rect){ body.x, body.y + 4.0f, body.w, body.h - 4.0f }, 0.18f, pal);
+        ccr_gui_rect((ccr_rect){ body.x, body.y + 10.0f, body.w, body.h - 10.0f }, pal);
+    } else {
+        ccr_gui_rect_rounded(body, 0.22f, mix_color(lang, pal, hot ? 0.55f : 0.72f));
     }
-    if (!up)   /* down: faded into the palette */
-        cloth = mix_color(cloth, ccr_th(CCR_C_PALETTE), hot ? 0.35f : 0.55f);
-    if (up)   /* up: a shadow under it */
-        for (int i = 0; i < SLICES; ++i) {
-            const float x0 = r.x + 3.0f + r.w * (float)i / SLICES, x1 = r.x + 3.0f + r.w * (float)(i + 1) / SLICES;
-            const ccr_vec2 a = { x0, r.y + 4.0f + lift[i] }, b = { x1, r.y + 4.0f + lift[i + 1] };
-            const ccr_vec2 c = { x1, r.y + r.h + 4.0f + lift[i + 1] }, d = { x0, r.y + r.h + 4.0f + lift[i] };
-            ccr_gui_triangle(a, b, c, 0x00000055u);
-            ccr_gui_triangle(a, c, d, 0x00000055u);
-        }
-    for (int i = 0; i < SLICES; ++i) {
-        const float x0 = r.x + r.w * (float)i / SLICES, x1 = r.x + r.w * (float)(i + 1) / SLICES;
-        const float face = cosf(t * 2.6f - ((float)i + 0.5f) / SLICES * 5.5f);
-        const ccr_color c = shade(cloth, 1.0f + 0.12f * face * (up ? 1.0f : 0.6f));
-        const ccr_vec2 a = { x0, r.y + lift[i] }, b = { x1, r.y + lift[i + 1] };
-        const ccr_vec2 cc = { x1, r.y + r.h + lift[i + 1] }, d = { x0, r.y + r.h + lift[i] };
-        ccr_gui_triangle(a, b, cc, c);
-        ccr_gui_triangle(a, cc, d, c);
-    }
-    /* the letters ride the middle of the wave, a little bold */
-    const float fs = r.h * 0.72f;
+    const float fs = 19.0f;
     const float ww = ccr_gui_text_width(word, fs), pw = plus ? ccr_gui_text_width(plus, fs) : 0.0f;
-    const float tx = r.x + (r.w - ww - pw) * 0.5f;
-    const float ty = r.y + (r.h - fs) * 0.42f + lift[SLICES / 2];
-    const ccr_color ink = up ? 0x151515FFu : mix_color(0x151515FFu, cloth, 0.5f);
-    const ccr_color pc = up ? plus_color : mix_color(plus_color, cloth, 0.5f);
-    for (int b = 0; b < 2; ++b) {
+    if (!front && under) {   /* behind: no room under the name, a dot beside it */
+        ccr_gui_circle((ccr_vec2){ r.x + (r.w + ww + pw) * 0.5f + 7.0f, r.y + (r.h - fs) * 0.5f + fs * 0.62f }, 2.5f,
+                       mix_color(lang, pal, 0.2f));
+        under = NULL;
+    }
+    const float tx = r.x + (r.w - ww - pw) * 0.5f, ty = r.y + (under ? 5.0f : (r.h - fs) * 0.5f);
+    const ccr_color ink = front ? lang : mix_color(ccr_th(CCR_C_PALETTE_TEXT), pal, hot ? 0.1f : 0.3f);
+    const ccr_color pink = front ? ccr_th(CCR_C_PALETTE_TEXT) : ink;
+    for (int b = 0; b < 2; ++b) {   /* a little bold */
         ccr_gui_text(word, tx + (float)b * 0.7f, ty, fs, ink);
         if (plus)
-            ccr_gui_text(plus, tx + ww + (float)b * 0.7f, ty, fs, pc);
+            ccr_gui_text(plus, tx + ww + (float)b * 0.7f, ty, fs, pink);
+    }
+    if (under) {   /* the open file: this is its language */
+        const float us = 11.0f;
+        char shown[96];
+        snprintf(shown, sizeof shown, "%s", under);
+        if (ccr_gui_text_width(shown, us) > r.w - 14.0f) {   /* too long: cut, with "..." */
+            char name[96];
+            snprintf(name, sizeof name, "%s", under);
+            for (size_t n = strlen(name); n > 1; --n) {
+                if (((unsigned char)name[n] & 0xC0u) == 0x80u)
+                    continue;   /* not inside a letter */
+                snprintf(shown, sizeof shown, "%.*s\xE2\x80\xA6", (int)n, name);
+                if (ccr_gui_text_width(shown, us) <= r.w - 14.0f)
+                    break;
+            }
+        }
+        const float uw = ccr_gui_text_width(shown, us);
+        ccr_gui_circle((ccr_vec2){ r.x + (r.w - uw) * 0.5f - 6.0f, ty + fs + 8.5f }, 2.5f, front ? lang : ink);
+        ccr_gui_text(shown, r.x + (r.w - uw) * 0.5f, ty + fs + 2.0f, us,
+                     front ? ccr_th(CCR_C_PALETTE_TEXT) : ink);
+    }
+    if (warn) {   /* in front, but not the file's language */
+        const ccr_vec2 c = { r.x + r.w - 12.0f, r.y + 14.0f };
+        ccr_gui_circle(c, 7.5f, ccr_th(CCR_C_ERROR));
+        ccr_gui_text("!", c.x - ccr_gui_text_width("!", 12.0f) * 0.5f, c.y - 7.0f, 12.0f, 0xFFFFFFFFu);
     }
 }
 
 static void langbar_frame(const ccr_document *doc, bool input)
 {
     const ccr_rect bar = { 0, TOPBAR_H + PSEARCH_H, PALETTE_W, LANGBAR_H };
-    ccr_gui_rect(bar, ccr_th(CCR_C_PALETTE));
-    ccr_gui_rect((ccr_rect){ bar.x, bar.y + bar.h - 1.0f, bar.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
-    const float t = (float)ccr_gui_time();
-    const float fh = LANGBAR_H - 20.0f, fw = fminf(108.0f, (PALETTE_W - 48.0f) * 0.5f);
+    const ccr_color pal = ccr_th(CCR_C_PALETTE) | 0xFFu;
+    ccr_gui_rect(bar, mix_color(pal, ccr_th(CCR_C_PANEL_EDGE), 0.28f));   /* the drawer */
+    const ccr_vec2 m = ccr_gui_mouse();
+    const float base = bar.y + bar.h, th = LANGBAR_H - 10.0f;
+    ccr_gui_clip_begin(bar);
     if (doc->loaded && doc->ed.ast.lang == CCR_LANG_CMAKE) {
-        draw_flag((ccr_rect){ bar.x + (bar.w - fw) * 0.5f, bar.y + 8.0f, fw, fh }, 0x2D7DD2FFu, "CMake", NULL, 0,
-                  true, false, t);
+        const float tw = fminf(150.0f, bar.w - 20.0f);
+        const ccr_rect r = { bar.x + 10.0f, base - th, tw, th };
+        ccr_gui_rect((ccr_rect){ bar.x, base - 1.0f, bar.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+        lang_tab(r, ccr_th(CCR_C_LANG_CMAKE), true, false, "CMake", NULL, base_name(doc->path), false);
+        ccr_gui_clip_end();
         return;
     }
-    const ccr_vec2 m = ccr_gui_mouse();
-    const float gap = 16.0f, x0 = bar.x + (bar.w - fw * 2.0f - gap) * 0.5f;
+    /* the std switch, on the right */
+    const float sw = 46.0f;
+    const ccr_rect sr = { bar.x + bar.w - sw - 10.0f, base - th + 7.0f, sw, 24.0f };
+    /* the tabs */
+    const float gap = 4.0f, tw = fminf(132.0f, (sr.x - bar.x - 18.0f - gap) * 0.5f);
+    const size_t pl = strlen(doc->path);
+    const bool header = pl > 2 && (strcmp(doc->path + pl - 2, ".h") == 0);
+    const int file_lang = doc->loaded && doc->ed.ast.lang != CCR_LANG_CMAKE ? (doc->ed.ast.cpp ? 1 : 0) : -1;
+    static float lift[2];
+    static double last;
+    const double now = ccr_gui_time();
+    const float step = fminf(1.0f, (float)(now - last) * 14.0f);
+    last = now;
+    ccr_rect tabs[2];
+    bool hot[2];
+    const int front = g_palette.cpp ? 1 : 0;
     for (int k = 0; k < 2; ++k) {
-        const ccr_rect r = { x0 + (fw + gap) * (float)k, bar.y + 8.0f, fw, fh };
-        const bool up = g_palette.cpp == (k == 1);
-        const bool hot = input && point_in(m, (ccr_rect){ r.x - 4, r.y - 4, r.w + 8, r.h + 10 });
-        draw_flag(r, k ? 0xAD2779FFu : 0xE05AADFFu, "C", k ? "++" : NULL, 0xCFCFCFFFu, up, hot, t + (float)k * 0.9f);
-        if (hot) {
-            char tipText[160];
-            ccr_trf(tipText, sizeof tipText, CCR_T_PAL_LANG_TIP, k ? "C++" : "C");
-            tip(r, tipText);
-            if (!up) {
-                g_hand = true;
-                if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !ccr_palette_set_cpp(&g_palette, k == 1))
-                    fprintf(stderr, "ccratch: out of memory laying out the palette\n");
+        const bool f = k == front;
+        tabs[k] = (ccr_rect){ bar.x + 10.0f + (tw + gap) * (float)k, base - th, tw, th };
+        hot[k] = input && !f && point_in(m, tabs[k]);
+        const float want = f ? 0.0f : hot[k] ? 3.0f : 6.0f;   /* behind: lower down */
+        lift[k] += (want - lift[k]) * (g_animate ? step : 1.0f);
+        tabs[k].y += lift[k];
+    }
+    /* behind first, then the bar's edge, then the one in front over it */
+    for (int pass = 0; pass < 2; ++pass)
+        for (int k = 0; k < 2; ++k) {
+            if ((k == front) != (pass == 1))
+                continue;
+            if (pass == 1) {   /* the edge, broken where the front tab runs on into the palette */
+                ccr_gui_rect((ccr_rect){ bar.x, base - 1.0f, tabs[k].x - bar.x, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+                const float after = tabs[k].x + tabs[k].w;
+                ccr_gui_rect((ccr_rect){ after, base - 1.0f, bar.x + bar.w - after, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
             }
+            const bool warn = k == 1 && k == front && file_lang == 0 && !header;
+            lang_tab(tabs[k], ccr_th(k ? CCR_C_LANG_CPP : CCR_C_LANG_C), k == front, hot[k], "C", k ? "++" : NULL,
+                     file_lang == k ? base_name(doc->path) : NULL, warn);
+        }
+    ccr_gui_clip_end();
+    for (int k = 0; k < 2; ++k) {
+        if (!input || !point_in(m, tabs[k]))
+            continue;
+        char tipText[400];
+        const bool warn = k == 1 && k == front && file_lang == 0 && !header;
+        if (warn)
+            ccr_trf(tipText, sizeof tipText, CCR_T_PAL_LANG_OTHER, base_name(doc->path));
+        else
+            ccr_trf(tipText, sizeof tipText, CCR_T_PAL_LANG_TIP, k ? "C++" : "C");
+        tip(tabs[k], tipText);
+        if (k != front) {
+            g_hand = true;
+            if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !ccr_palette_set_cpp(&g_palette, k == 1))
+                fprintf(stderr, "ccratch: out of memory laying out the palette\n");
+        }
+    }
+
+    /* std: a little switch in the library blocks' colour */
+    const bool on = g_palette_std, over = input && point_in(m, sr);
+    const ccr_color lib = ccr_th_cat(CCR_CAT_LIBRARY, CCR_FILL);
+    if (on) {
+        ccr_gui_rect_rounded(sr, 0.45f, over ? shade(lib, 1.12f) : lib);
+    } else {
+        ccr_gui_rect_rounded(sr, 0.45f, mix_color(lib, pal, 0.35f));
+        ccr_gui_rect_rounded((ccr_rect){ sr.x + 1.5f, sr.y + 1.5f, sr.w - 3.0f, sr.h - 3.0f }, 0.45f,
+                             over ? mix_color(pal, lib, 0.15f) : pal);
+    }
+    const float ss = 14.0f, swd = ccr_gui_text_width("std", ss);
+    const ccr_color sc = on ? ccr_th_cat(CCR_CAT_LIBRARY, CCR_TEXT) : mix_color(lib, pal, 0.2f);
+    for (int b = 0; b < 2; ++b)
+        ccr_gui_text("std", sr.x + (sr.w - swd) * 0.5f + (float)b * 0.6f, sr.y + 3.0f, ss, sc);
+    if (!on)   /* struck out: programming without it */
+        ccr_gui_line((ccr_vec2){ sr.x + 9.0f, sr.y + sr.h - 7.0f }, (ccr_vec2){ sr.x + sr.w - 9.0f, sr.y + 7.0f }, 1.6f, sc);
+    if (over) {
+        tip(sr, ccr_tr(on ? CCR_T_PAL_STD_ON : CCR_T_PAL_STD_OFF));
+        g_hand = true;
+        if (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) {
+            g_palette_std = !g_palette_std;
+            settings_remember("palette_std", g_palette_std ? "on" : "off");
+            if (!ccr_palette_set_std(&g_palette, g_palette_std))
+                fprintf(stderr, "ccratch: out of memory laying out the palette\n");
         }
     }
 }
@@ -8704,8 +8794,15 @@ int ccr_run(int argc, char **argv)
             ccr_vec2 grab;
             int spawn = (over_palette && lmb && !doc.ed.carrying)
                       ? ccr_palette_hit(&g_palette, palette_area(h), m, &grab) : -1;
-            if (spawn >= 0)
+            if (spawn >= 0) {
                 ccr_editor_spawn_held(&doc.ed, (ccr_template)spawn, world, grab);
+                /* C++ in a C file: there to try, but said (C in C++ mostly goes) */
+                const size_t pl = strlen(doc.path);
+                const bool header = pl > 2 && strcmp(doc.path + pl - 2, ".h") == 0;
+                if (doc.ed.ast.lang == CCR_LANG_C && !doc.ed.ast.cpp && !header &&
+                    ccr_template_langs((ccr_template)spawn) == CCR_TLANG_CPP)
+                    ccr_trf(doc.status, sizeof doc.status, CCR_T_PAL_DROP_OTHER, base_name(doc.path));
+            }
             /* a press on empty canvas: a selection rectangle; on a block:
              * the old selection goes */
             bool band_press = false;

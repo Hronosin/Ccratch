@@ -198,6 +198,7 @@ bool ccr_palette_init(ccr_palette *p)
     const float scroll = p->ready ? p->scroll : 0.0f;
     const ccr_lang_kind lang = p->lang;
     const bool cpp = p->cpp, no_std = p->no_std;
+    const float lang_scroll[2] = { p->lang_scroll[0], p->lang_scroll[1] };
     char filter[sizeof p->filter];
     memcpy(filter, p->filter, sizeof filter);
     const float zoom = p->zoom;
@@ -216,6 +217,8 @@ bool ccr_palette_init(ccr_palette *p)
     p->lang = lang;
     p->cpp = cpp;
     p->no_std = no_std;
+    p->lang_scroll[0] = lang_scroll[0];
+    p->lang_scroll[1] = lang_scroll[1];
     memcpy(p->filter, filter, sizeof filter);
     p->zoom = zoom;
     if (!ccr_ast_init(&p->ast))
@@ -338,8 +341,9 @@ bool ccr_palette_set_cpp(ccr_palette *p, bool cpp)
 {
     if (p->cpp == cpp)
         return true;
+    p->lang_scroll[p->cpp ? 1 : 0] = p->scroll_to;   /* each section: where it was left */
     p->cpp = cpp;
-    p->scroll = p->scroll_to = 0.0f;
+    p->scroll = p->scroll_to = p->lang_scroll[cpp ? 1 : 0];
     return !p->ready || ccr_palette_relayout(p);
 }
 

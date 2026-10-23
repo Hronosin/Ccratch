@@ -34,6 +34,11 @@ shadow        = #9B5C7A40
 dim           = #D8C7CF
 dim_text      = #9C8792
 
+# the palette's language tabs
+lang_c        = #DB6A98
+lang_cpp      = #A8467A
+lang_cmake    = #8C7AB8
+
 # blocks: pastels, dark ink
 control       = #FFD9A8
 control_edge  = #ECB46E

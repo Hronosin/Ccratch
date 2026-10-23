@@ -34,6 +34,11 @@ shadow        = #00000026
 dim           = #E9EEF2
 dim_text      = #A0A8BA
 
+# the palette's language tabs
+lang_c        = #4C97FF
+lang_cpp      = #9966FF
+lang_cmake    = #0FBD8C
+
 # blocks: Scratch 3's own. Pointers are Pen, dragons are Sound
 control       = #FFAB19
 control_edge  = #CF8B17

@@ -149,6 +149,11 @@ int main(void)
               ccr_template_label(p.items[i].t));
     CHECK(ccr_palette_set_cpp(&p, false) && p.item_count == expected_for(false, false, false), "C without std");
     CHECK(ccr_palette_set_std(&p, true) && p.item_count == expected(false), "C, all back");
+    /* each tab is left where it was: C scrolled down, C++ at the top, C again: down there */
+    p.scroll = p.scroll_to = 300.0f;
+    CHECK(ccr_palette_set_cpp(&p, true) && p.scroll_to == 0.0f, "C++ from its top: %g", (double)p.scroll_to);
+    CHECK(ccr_palette_set_cpp(&p, false) && p.scroll_to == 300.0f, "C where it was left: %g", (double)p.scroll_to);
+    p.scroll = p.scroll_to = 0.0f;
 
     /* the search: only blocks that say it, in any case; nothing; all back */
     CHECK(ccr_palette_set_filter(&p, "PrintF"), "filter failed");
