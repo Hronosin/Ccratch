@@ -30,6 +30,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 19: the Build button: CMake builds in the background, the program runs, errors land on their blocks.
 - Step 20: getting around: tabs, find (Ctrl+F), palette search, green flag, F1, recent files, no lost work on quit.
 - Step 21: copy and paste blocks between files (and any C as blocks), selection, minimap, autosave, panels you can size.
+- Step 22: Git as cards, block explanations, fourteen languages in human words, a settings window, Bug hunt builds.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -107,7 +108,7 @@ for.how  = Three slots: where the counter starts, until when, how it steps.
 
 `ccratch --check-explain lang/fi.explain` finds unknown blocks and broken
 lines (`--complete`: and the blocks it says nothing about yet).
-`explain = off` in `~/.config/ccratch/config` turns the cards off.
+**Settings > Editor > Block explanations** (or `explain = off` in `~/.config/ccratch/config`) turns the cards off.
 
 Blocks from **File** are the file's own: let one go anywhere on the canvas
 and it joins the file where C wants it, after the last one of its kind:
@@ -422,6 +423,29 @@ number from the compiler finds its block even after blocks were moved,
 until the next build. Code clang itself could not read stays text, not
 blocks, so its error lands on the block around it.
 
+### Debug, Release, Bug hunt
+
+**Settings > Building** picks how the Build button builds, each in its
+own folder so switching throws nothing away:
+
+| Mode | What | Folder |
+| --- | --- | --- |
+| **Debug** | `-g`, no optimisation: quick to build, easy to step through | `.ccratch/build` |
+| **Release** | `-O2`: a faster program, a slower build | `.ccratch/build-release` |
+| **Bug hunt** | Debug with AddressSanitizer and UBSan | `.ccratch/build-sanitize` |
+
+In **Bug hunt** the program is watched while it runs. A write past the
+end of an array, a use after `free`, a leak, a signed overflow: it stops,
+and the report lands on the block that did it, like a compiler error.
+The first frame of the stack inside the project is the place; UBSan's
+`main.c:5:7: runtime error:` is read like GCC's. Needs `libasan` and
+`libubsan` (`sudo dnf install libasan libubsan`).
+
+![Bug hunt: a for loop that goes one past the end of a malloc'd array, the a[i] = i block outlined in red, "AddressSanitizer: heap-buffer-overflow" under the mouse](docs/bug_hunt.png)
+
+The bug button always builds something it can debug: in Release it
+builds Debug for that run.
+
 ![a build that failed: the log at the bottom, an unused variable outlined in orange, the if with the misspelled name in red, the compiler's message under the mouse](docs/build.png)
 
 ## Debugging
@@ -613,7 +637,7 @@ Blocks are toys, so they move like toys:
 - Home glides the view back instead of teleporting
 
 None of it waits for you: saving, undoing or grabbing something else
-finishes whatever is still moving. `--no-animations`, or
+finishes whatever is still moving. **Settings > Look > Animations**, `--no-animations`, or
 `animations = off` in `~/.config/ccratch/config`, turns it all off.
 
 ## The pie menu
@@ -942,6 +966,40 @@ ccratch --list-blocks                    block packs found, and where
 `--dump-ast` exits with 0 if the file is clean, 1 if it has errors,
 2 if clang could not read it at all.
 
+## Settings
+
+The cog in the top bar (or **Ctrl+,**) opens every setting on one card,
+in four sections. Every change takes at once and is remembered:
+
+- **Look**: theme and language (click the name for the next one, or the
+  arrows), Human language, the interface size (auto, or 75% to 300%),
+  animations;
+- **Editor**: autosave and how long after a change it waits, the minimap,
+  the dots on the canvas, block explanations, Git authors beside blocks;
+- **Building**: Debug, Release or Bug hunt (above);
+- **Other**: panel sizes back to how they were, forget the recent files,
+  the agreement once more. Where the settings file is, at the bottom.
+
+![the settings card at the Editor section: switches for autosave, the minimap, the dots, explanations and Git authors, a choice for the autosave delay](docs/settings.png)
+
+All of it is plain `key = value` lines in `~/.config/ccratch/config`, if
+you would rather edit that:
+
+```
+theme = vim
+lang = ru
+lang_plain = yes
+ui_scale = auto
+animations = on
+autosave = on
+autosave_delay = 1.5
+minimap = on
+grid = on
+explain = on
+git_authors = off
+build_mode = sanitize
+```
+
 ## Interface size
 
 Ccratch was drawn on a 27" 2560x1440 screen. On any other it sizes itself:
@@ -972,6 +1030,7 @@ this sizes everything.
 - Ctrl+F: find blocks; Enter / F3: next, Shift: back; Esc: close
 - Ctrl+= / Ctrl+- / Ctrl+0: zoom in, out, back to 100%
 - F1: keys and mouse
+- Ctrl+,: settings
 - Ctrl+C / Ctrl+V: copy blocks as code, paste code as blocks
 - Drag on empty canvas: select; Ctrl+A: all; Del: delete them
 - Ctrl+M: minimap

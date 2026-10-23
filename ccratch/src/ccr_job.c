@@ -246,6 +246,67 @@ bool ccr_build_parse_line(const char *line, ccr_build_diag *out)
     return false;
 }
 
+bool ccr_san_parse_line(ccr_san_state *st, const char *line, const char *project, ccr_build_diag *out)
+{
+    memset(out, 0, sizeof *out);
+    out->log_line = -1;
+    out->kind = CCR_BD_ERROR;
+    /* UBSan: the place first, like a compiler */
+    const char *ub = strstr(line, ": runtime error: ");
+    if (ub) {
+        copy_trimmed(out->message, sizeof out->message, ub + 2);
+        split_place(line, (size_t)(ub - line), out);
+        return out->line > 0;
+    }
+    const char *asan = strstr(line, "ERROR: AddressSanitizer: ");
+    if (asan) {   /* "heap-buffer-overflow on address 0x... at pc ...": the first words */
+        const char *w = asan + strlen("ERROR: AddressSanitizer: ");
+        const char *on = strstr(w, " on ");
+        const size_t n = on ? (size_t)(on - w) : strcspn(w, "(");
+        snprintf(st->what, sizeof st->what, "AddressSanitizer: %.*s", (int)(n < 150 ? n : 150), w);
+        st->want_place = true;
+        return false;
+    }
+    if (strstr(line, "ERROR: LeakSanitizer: ")) {   /* each leak says itself below */
+        st->want_place = false;
+        return false;
+    }
+    if (strncmp(line, "Direct leak of ", 15) == 0) {
+        const char *from = strstr(line, " allocated from");
+        const size_t n = from ? (size_t)(from - line) : strlen(line);
+        snprintf(st->what, sizeof st->what, "LeakSanitizer: %.*s", (int)(n < 150 ? n : 150), line);
+        st->want_place = true;
+        return false;
+    }
+    if (strncmp(line, "Indirect leak of ", 17) == 0 || strncmp(line, "SUMMARY: ", 9) == 0) {
+        st->want_place = false;
+        return false;
+    }
+    /* a frame: "    #1 0x55d0c4 in main /home/me/game/main.c:8:14" */
+    const char *p = line + strspn(line, " \t");
+    if (!st->want_place || p[0] != '#' || !isdigit((unsigned char)p[1]))
+        return false;
+    const char *in = strstr(p, " in ");
+    if (!in)
+        return false;
+    const char *where = strchr(in + 4, ' ');   /* past the function's name */
+    if (!where)
+        return false;
+    ++where;
+    const size_t pn = project ? strlen(project) : 0;
+    if (pn == 0 || strncmp(where, project, pn) != 0 || where[pn] != '/')
+        return false;   /* libc, libasan: not the user's code */
+    size_t n = strlen(where);
+    while (n && isspace((unsigned char)where[n - 1]))
+        --n;
+    split_place(where, n, out);
+    if (!out->line)
+        return false;
+    snprintf(out->message, sizeof out->message, "%s", st->what);
+    st->want_place = false;
+    return true;
+}
+
 static ccr_log_kind kind_of(ccr_diag_kind k)
 {
     return k == CCR_BD_ERROR ? CCR_LOG_ERROR : k == CCR_BD_WARNING ? CCR_LOG_WARNING : CCR_LOG_NOTE;
@@ -269,11 +330,17 @@ static void absolute(const ccr_job *j, ccr_build_diag *d)
         memcpy(d->file, real, n + 1);
 }
 
+static void record_diag(ccr_job *j, ccr_build_diag *d, int at);
+
 static void on_line(void *ctx, const char *line)
 {
     ccr_job *j = ctx;
-    if (j->step == CCR_JOB_RUN) {   /* the program's own output: just text */
-        add_line(j, line, CCR_LOG_TEXT);
+    if (j->step == CCR_JOB_RUN) {   /* the program's own output: just text, but for a sanitizer */
+        ccr_build_diag sd;
+        const bool placed = ccr_san_parse_line(&j->san, line, j->project, &sd);
+        const int at = add_line(j, line, placed ? CCR_LOG_ERROR : CCR_LOG_TEXT);
+        if (placed && at >= 0)
+            record_diag(j, &sd, at);
         return;
     }
     /* the lines under "CMake Error at ...:" say what is wrong */
@@ -312,8 +379,14 @@ static void on_line(void *ctx, const char *line)
     }
     absolute(j, &d);
     const int at = add_line(j, line, kind_of(d.kind));
-    if (at < 0)
-        return;
+    if (at >= 0)
+        record_diag(j, &d, at);
+}
+
+/* `d`, said on log line `at`: kept, counted, and the line points at it. */
+static void record_diag(ccr_job *j, ccr_build_diag *d_in, int at)
+{
+    ccr_build_diag d = *d_in;
     if (j->diag_count == j->diag_cap) {
         const int cap = j->diag_cap ? j->diag_cap * 2 : 32;
         ccr_build_diag *v = realloc(j->diags, (size_t)cap * sizeof *v);
@@ -380,7 +453,7 @@ static void make_dirs(const char *dir)
 static bool start_configure(ccr_job *j)
 {
     make_dirs(j->build_dir);
-    const char *argv[12];
+    const char *argv[16];
     int n = 0;
     argv[n++] = "cmake";
     argv[n++] = "-S";
@@ -391,7 +464,16 @@ static bool start_configure(ccr_job *j)
         argv[n++] = "-G";
         argv[n++] = "Ninja";
     }
-    argv[n++] = "-DCMAKE_BUILD_TYPE=Debug";
+    if (j->mode == CCR_BUILD_RELEASE) {
+        argv[n++] = "-DCMAKE_BUILD_TYPE=Release";
+    } else {
+        argv[n++] = "-DCMAKE_BUILD_TYPE=Debug";
+        if (j->mode == CCR_BUILD_SANITIZE) {   /* MSVC would want /fsanitize=address; this is gcc and clang */
+            argv[n++] = "-DCMAKE_C_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer";
+            argv[n++] = "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer";
+            argv[n++] = "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined";
+        }
+    }
     argv[n++] = "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON";
     argv[n] = NULL;
     j->step = CCR_JOB_CONFIGURE;
@@ -423,7 +505,9 @@ bool ccr_job_build(ccr_job *j, const char *project, bool run_after)
     j->project[0] = '\0';   /* said in full once; after that, paths in it are short */
     say(j, CCR_LOG_QUIET, "project: %s", project);
     snprintf(j->project, sizeof j->project, "%s", project);
-    snprintf(j->build_dir, sizeof j->build_dir, "%s/.ccratch/build", project);
+    static const char *const dirs[CCR_BUILD_MODE_COUNT] = { "build", "build-release", "build-sanitize" };
+    snprintf(j->build_dir, sizeof j->build_dir, "%s/.ccratch/%s", project,
+             dirs[(unsigned)j->mode < CCR_BUILD_MODE_COUNT ? j->mode : 0]);
     j->exe[0] = '\0';
     j->run_after = run_after;
     j->ran = false;
@@ -456,6 +540,7 @@ bool ccr_job_run(ccr_job *j)
     j->result = CCR_JOB_RUNNING;
     j->step = CCR_JOB_RUN;
     j->ran = true;
+    j->san = (ccr_san_state){ 0 };
     const char *argv[] = { j->exe, NULL };
     if (!start(j, argv, j->project, false)) {   /* its own language: it is the user's program */
         done(j, CCR_JOB_FAILED);

@@ -2128,6 +2128,8 @@ static void marks_follow(ccr_document *doc)
 
 /* Saves what changed (every open file), makes a CMakeLists.txt if the
  * project has none, and starts the build. */
+static ccr_build_mode g_build_mode;   /* the build button builds so (Settings > Building) */
+
 static void build_start(ccr_document *doc, bool run, const ccr_options *opt)
 {
     if (ccr_job_busy(&g_job)) {
@@ -2178,6 +2180,8 @@ static void build_start(ccr_document *doc, bool run, const ccr_options *opt)
         ccr_files_scan(&g_files, project, cm);
     for (int i = 0; i < n; ++i)
         remember_places(all[i]);   /* the files as the compiler will see them */
+    /* the bug button wants something to debug: an optimised build would not do */
+    g_job.mode = g_dbg.pending && g_build_mode == CCR_BUILD_RELEASE ? CCR_BUILD_DEBUG : g_build_mode;
     ccr_job_build(&g_job, project, run);
     g_bp.last = CCR_JOB_RUNNING;
 }
@@ -5519,6 +5523,7 @@ static bool help_frame(int w, int h)
         { "F2", 0, CCR_T_HELP_RENAME },
         { "F12, Shift+F12, Alt+<-", 0, CCR_T_HELP_NAV },
         { "F5", 0, CCR_T_HELP_RELOAD },
+        { "Ctrl+,", 0, CCR_T_HELP_SETTINGS },
         { "F1", 0, CCR_T_HELP_HELP },
     };
     const int n = (int)(sizeof rows / sizeof rows[0]);
@@ -6077,6 +6082,8 @@ static struct {
     double   changed_at;
     const void *ed;
 } g_auto;
+static float g_auto_delay = 1.5f;   /* seconds after the last change */
+static bool  g_grid = true;         /* the dots on the canvas */
 
 static void autosave_tick(ccr_document *doc, const ccr_options *opt, bool idle)
 {
@@ -6087,7 +6094,7 @@ static void autosave_tick(ccr_document *doc, const ccr_options *opt, bool idle)
         g_auto.hist = doc->ed.history_len;
         g_auto.changed_at = ccr_gui_time();
     }
-    if (g_auto.on && idle && ccr_editor_modified(&doc->ed) && ccr_gui_time() - g_auto.changed_at > 1.5 &&
+    if (g_auto.on && idle && ccr_editor_modified(&doc->ed) && ccr_gui_time() - g_auto.changed_at > g_auto_delay &&
         doc->ed.drag == CCR_DRAG_IDLE)
         document_save(doc, opt);
 }
@@ -6110,7 +6117,7 @@ static void autosave_button(float right, int h, bool input)
             fprintf(stderr, "ccratch: could not remember that in ~/.config/ccratch\n");
     }
     ccr_gui_text(l, r.x + (r.w - ccr_gui_text_width(l, 13.0f)) * 0.5f, r.y + (r.h - 13.0f) * 0.5f, 13.0f,
-                 g_auto.on ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT));
+                 g_auto.on ? st.text : ccr_th(CCR_C_BUTTON_TEXT));
     if (input)
         tip(r, ccr_tr(CCR_T_TIP_AUTOSAVE));
 }
@@ -6448,6 +6455,447 @@ static void tip_draw(int w, int h)
     ccr_gui_text(g_tip.text, b.x + 8.0f, b.y + 5.0f, fs, ccr_th(CCR_C_PANEL) | 0xFFu);
 }
 
+/* ------------------------------------------------------ Ctrl+,: settings
+ *
+ * Everything that is otherwise a key, a button somewhere or a line in
+ * ~/.config/ccratch/config, on one card: four sections down the left,
+ * a setting a row, its name and what it does on the left and its switch
+ * (or its choice, or its button) on the right. Every change takes at once
+ * and is remembered.
+ */
+static const char *const g_build_mode_key[CCR_BUILD_MODE_COUNT] = { "debug", "release", "sanitize" };
+
+enum { SET_LOOK, SET_EDITOR, SET_BUILD, SET_OTHER, SET_SECTIONS };
+
+static struct {
+    bool           open;
+    int            section;
+    float          t;            /* 0..1, opening */
+    float          scroll;
+    ccr_theme_info themes[32];
+    int            n_themes;
+    ccr_lang_info  langs[64];
+    int            n_langs;
+} g_set;
+
+static const float g_delays[] = { 0.5f, 1.0f, 1.5f, 3.0f, 5.0f, 10.0f };
+static const float g_ui_steps[] = { 0.0f, 0.75f, 0.875f, 1.0f, 1.125f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f };
+
+/* What the config says, at the start (not for tests: they want defaults). */
+static void settings_load(void)
+{
+    char v[32];
+    if (ccr_config_get("build_mode", v, sizeof v))
+        for (int i = 0; i < CCR_BUILD_MODE_COUNT; ++i)
+            if (strcmp(v, g_build_mode_key[i]) == 0)
+                g_build_mode = (ccr_build_mode)i;
+    if (ccr_config_get("autosave_delay", v, sizeof v)) {
+        const float d = (float)atof(v);
+        if (d >= 0.2f && d <= 60.0f)
+            g_auto_delay = d;
+    }
+    g_grid = !(ccr_config_get("grid", v, sizeof v) && strcmp(v, "off") == 0);
+    g_git.blame_on = ccr_config_get("git_authors", v, sizeof v) && strcmp(v, "on") == 0;
+}
+
+static void settings_remember(const char *key, const char *value)
+{
+    if (!ccr_config_set(key, value))
+        fprintf(stderr, "ccratch: could not remember %s in ~/.config/ccratch\n", key);
+}
+
+static void settings_toggle(void)
+{
+    g_set.open = !g_set.open;
+    if (!g_set.open)
+        return;
+    g_set.t = 0.0f;
+    g_set.scroll = 0.0f;
+    g_set.n_themes = ccr_theme_scan(g_set.themes, 32);
+    g_set.n_langs = ccr_lang_scan(g_set.langs, 64);
+}
+
+/* A switch, drawn: on is the accent with the knob on the right. */
+static void draw_switch(ccr_rect r, bool on, bool hot)
+{
+    ccr_gui_rect_rounded(r, 1.0f, on ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_FIELD_EDGE));
+    if (!on)
+        ccr_gui_rect_rounded((ccr_rect){ r.x + 2, r.y + 2, r.w - 4, r.h - 4 }, 1.0f, ccr_th(CCR_C_FIELD));
+    const float k = r.h - 8.0f;
+    const ccr_vec2 c = { on ? r.x + r.w - 4.0f - k * 0.5f : r.x + 4.0f + k * 0.5f, r.y + r.h * 0.5f };
+    ccr_gui_circle(c, k * 0.5f + (hot ? 1.0f : 0.0f), on ? button_style(true)->text : ccr_th(CCR_C_FIELD_EDGE));
+}
+
+typedef enum { ROW_SWITCH, ROW_CHOICE, ROW_BUTTON } set_row_kind;
+
+/*
+ * One setting at *y in `area`: its name and hint on the left, its control
+ * on the right; *y moves under it. For a switch or a button, 1 when
+ * clicked; for a choice, -1 or 1 (the arrows; the value itself is 1).
+ */
+static int set_row(ccr_rect area, float *y, const char *name, const char *hint, set_row_kind kind,
+                   const char *value, bool on, bool input)
+{
+    const float cw = kind == ROW_SWITCH ? 46.0f
+                   : kind == ROW_CHOICE ? 230.0f
+                                        : ccr_gui_text_width(value, 15.0f) + 32.0f;
+    const float tw = area.w - cw - 40.0f;
+    const float hh = hint && hint[0] ? wrap_text(hint, 0, 0, tw, 13.0f, 0, false) : 0.0f;
+    const float rh = fmaxf(48.0f, 14.0f + 20.0f + hh + 12.0f);
+    const ccr_rect row = { area.x, *y, area.w, rh };
+    *y += rh + 4.0f;
+    if (row.y > area.y + area.h || row.y + row.h < area.y)
+        return 0;   /* scrolled away */
+    const ccr_vec2 m = ccr_gui_mouse();
+    const bool over = input && point_in(m, row) && point_in(m, area);
+    if (over)
+        ccr_gui_rect_rounded(row, 0.12f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x1Cu);
+    ccr_gui_text(name, row.x + 14.0f, row.y + 12.0f, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+    if (hh > 0.0f)
+        wrap_text(hint, row.x + 14.0f, row.y + 34.0f, tw, 13.0f, ccr_th(CCR_C_PANEL_HINT), true);
+    const bool click = over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT);
+    const float cy = row.y + 12.0f;
+    if (kind == ROW_SWITCH) {
+        const ccr_rect sw = { row.x + row.w - 14.0f - cw, cy, cw, 24.0f };
+        draw_switch(sw, on, over);
+        return click ? 1 : 0;   /* anywhere on the row */
+    }
+    if (kind == ROW_BUTTON) {
+        const ccr_button_style st = *button_style(false);
+        return ccr_gui_button((ccr_rect){ row.x + row.w - 14.0f - cw, cy - 3.0f, cw, 30.0f }, value, &st) && input ? 1 : 0;
+    }
+    /* a choice: < value > */
+    const ccr_rect box = { row.x + row.w - 14.0f - cw, cy - 3.0f, cw, 30.0f };
+    const ccr_rect left = { box.x, box.y, 30.0f, box.h }, right = { box.x + box.w - 30.0f, box.y, 30.0f, box.h };
+    ccr_gui_rect_rounded(box, 0.3f, ccr_th(CCR_C_FIELD_EDGE));
+    ccr_gui_rect_rounded((ccr_rect){ box.x + 1, box.y + 1, box.w - 2, box.h - 2 }, 0.3f, ccr_th(CCR_C_FIELD));
+    const bool hl = input && point_in(m, left), hr = input && point_in(m, right);
+    const ccr_color ink = ccr_th(CCR_C_FIELD_TEXT), hot = ccr_th(CCR_C_ACCENT);
+    const float ay = box.y + box.h * 0.5f;
+    ccr_gui_triangle((ccr_vec2){ left.x + 11.0f, ay }, (ccr_vec2){ left.x + 18.0f, ay - 6.0f },
+                     (ccr_vec2){ left.x + 18.0f, ay + 6.0f }, hl ? hot : ink);
+    ccr_gui_triangle((ccr_vec2){ right.x + 19.0f, ay }, (ccr_vec2){ right.x + 12.0f, ay - 6.0f },
+                     (ccr_vec2){ right.x + 12.0f, ay + 6.0f }, hr ? hot : ink);
+    char shown[96];
+    snprintf(shown, sizeof shown, "%s", value);
+    const float room = box.w - 64.0f;
+    while (shown[0] && ccr_gui_text_width(shown, 15.0f) > room) {   /* a long theme name: cut, by letters */
+        size_t n = strlen(shown);
+        do
+            --n;
+        while (n > 0 && ((unsigned char)shown[n] & 0xC0u) == 0x80u);
+        shown[n] = '\0';
+    }
+    ccr_gui_text(shown, box.x + (box.w - ccr_gui_text_width(shown, 15.0f)) * 0.5f, box.y + 6.0f, 15.0f, ink);
+    if (!click)
+        return 0;
+    return hl ? -1 : 1;
+}
+
+static int wrap_index(int i, int n)
+{
+    return n > 0 ? ((i % n) + n) % n : 0;
+}
+
+/* The settings card, if open. True: open the agreement. */
+static bool settings_frame(int w, int h, ccr_document *doc, float dt)
+{
+    if (!g_set.open)
+        return false;
+    g_set.t = g_animate ? fminf(1.0f, g_set.t + dt * 8.0f) : 1.0f;
+    const float ease = 1.0f - (1.0f - g_set.t) * (1.0f - g_set.t);
+    ccr_gui_rect((ccr_rect){ 0, 0, (float)w, (float)h }, ccr_th(CCR_C_BACKDROP));
+    const float pw = fminf(820.0f, (float)w - 32.0f), ph = fminf(580.0f, (float)h - 24.0f);
+    const ccr_rect panel = { ((float)w - pw) * 0.5f, ((float)h - ph) * 0.5f + (1.0f - ease) * 24.0f, pw, ph };
+    ccr_gui_rect_rounded((ccr_rect){ panel.x + 4, panel.y + 6, panel.w, panel.h }, 0.03f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4 }, 0.03f, COL_ACCENT);
+    ccr_gui_rect_rounded(panel, 0.03f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    const ccr_vec2 m = ccr_gui_mouse();
+    const bool input = g_set.t > 0.5f;
+
+    /* the sections, down the left */
+    const float side = fminf(200.0f, pw * 0.28f);
+    ccr_gui_rect_rounded((ccr_rect){ panel.x, panel.y, side, panel.h }, 0.05f, ccr_th(CCR_C_BG));
+    ccr_gui_rect((ccr_rect){ panel.x + side - 8.0f, panel.y, 8.0f, panel.h }, ccr_th(CCR_C_BG));
+    ccr_gui_text(ccr_tr(CCR_T_SET_TITLE), panel.x + 20.0f, panel.y + 20.0f, 24.0f, ccr_th(CCR_C_PANEL_TEXT));
+    static const ccr_text names[SET_SECTIONS] = { CCR_T_SET_SEC_LOOK, CCR_T_SET_SEC_EDITOR, CCR_T_SET_SEC_BUILD,
+                                                  CCR_T_SET_SEC_OTHER };
+    for (int i = 0; i < SET_SECTIONS; ++i) {
+        const ccr_rect r = { panel.x + 10.0f, panel.y + 70.0f + 40.0f * (float)i, side - 20.0f, 34.0f };
+        const bool cur = g_set.section == i, over = input && point_in(m, r);
+        if (cur || over)
+            ccr_gui_rect_rounded(r, 0.25f, cur ? ccr_th(CCR_C_PANEL) | 0xFFu : (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x22u);
+        if (cur)
+            ccr_gui_rect_rounded((ccr_rect){ r.x, r.y + 7.0f, 4.0f, r.h - 14.0f }, 1.0f, COL_ACCENT);
+        ccr_gui_text(ccr_tr(names[i]), r.x + 16.0f, r.y + 8.0f, 16.0f, cur ? ccr_th(CCR_C_PANEL_TEXT) : ccr_th(CCR_C_PANEL_HINT));
+        if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !cur) {
+            g_set.section = i;
+            g_set.scroll = 0.0f;
+        }
+    }
+    if (input && ccr_gui_key_pressed(CCR_KEY_TAB)) {
+        g_set.section = (g_set.section + (ccr_gui_shift_down() ? SET_SECTIONS - 1 : 1)) % SET_SECTIONS;
+        g_set.scroll = 0.0f;
+    }
+    /* where the file is, at the bottom of the left */
+    char cfg[1100], said[1300];
+    if (ccr_config_file(cfg, sizeof cfg)) {
+        const char *home = getenv("HOME");
+        const size_t hl = home ? strlen(home) : 0;
+        char shortp[1100];
+        if (hl > 1 && strncmp(cfg, home, hl) == 0)
+            snprintf(shortp, sizeof shortp, "~%s", cfg + hl);
+        else
+            snprintf(shortp, sizeof shortp, "%s", cfg);
+        snprintf(said, sizeof said, "%s", ccr_tr(CCR_T_SET_CONFIG));
+        /* the path has no spaces to wrap at: it breaks after a slash */
+        char lines[8][256];
+        int nl = 0;
+        lines[0][0] = '\0';
+        for (const char *p = shortp; *p && nl < 8;) {
+            const char *e = strchr(p + 1, '/');
+            const size_t n = e ? (size_t)(e - p) : strlen(p);
+            char piece[256];
+            snprintf(piece, sizeof piece, "%.*s", (int)(n < 255 ? n : 255), p);
+            char joined[512];
+            snprintf(joined, sizeof joined, "%s%s", lines[nl], piece);
+            if (lines[nl][0] && ccr_gui_text_width(joined, 12.0f) > side - 36.0f) {
+                if (++nl == 8)
+                    break;
+                snprintf(lines[nl], sizeof lines[nl], "%s", piece);
+            } else {
+                snprintf(lines[nl], sizeof lines[nl], "%.255s", joined);
+            }
+            p += n;
+        }
+        if (nl < 8 && lines[nl][0])
+            ++nl;
+        const float sh = wrap_text(said, 0, 0, side - 36.0f, 12.0f, 0, false);
+        float py = panel.y + panel.h - 18.0f - sh - 16.0f * (float)nl;
+        py += wrap_text(said, panel.x + 18.0f, py, side - 36.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT), true);
+        ccr_gui_clip_begin((ccr_rect){ panel.x, panel.y, side - 10.0f, panel.h });
+        for (int i = 0; i < nl; ++i, py += 16.0f)
+            ccr_gui_text(lines[i], panel.x + 18.0f, py, 12.0f, ccr_th(CCR_C_PANEL_TEXT));
+        ccr_gui_clip_end();
+    }
+
+    /* the close cross, and how else */
+    const ccr_rect x_r = { panel.x + panel.w - 40.0f, panel.y + 14.0f, 28.0f, 28.0f };
+    const bool x_over = input && point_in(m, x_r);
+    if (x_over)
+        ccr_gui_rect_rounded(x_r, 0.3f, (ccr_th(CCR_C_HOT) & 0xFFFFFF00u) | 0x33u);
+    ccr_gui_text("x", x_r.x + 9.0f, x_r.y + 3.0f, 18.0f, ccr_th(CCR_C_PANEL_HINT));
+    const char *close = ccr_tr(CCR_T_SET_CLOSE);
+    ccr_gui_text(close, x_r.x - 10.0f - ccr_gui_text_width(close, 13.0f), panel.y + 22.0f, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+
+    /* the rows of the section */
+    const ccr_rect area = { panel.x + side + 14.0f, panel.y + 60.0f, panel.w - side - 28.0f, panel.h - 74.0f };
+    ccr_gui_text(ccr_tr(names[g_set.section]), area.x + 14.0f, panel.y + 24.0f, 20.0f, ccr_th(CCR_C_PANEL_TEXT));
+    if (input && point_in(m, area))
+        g_set.scroll -= ccr_gui_wheel() * 40.0f;
+    if (g_set.scroll < 0.0f)
+        g_set.scroll = 0.0f;
+    ccr_gui_clip_begin(area);
+    float y = area.y - g_set.scroll;
+    bool agreement = false;
+    char v[128];
+    switch (g_set.section) {
+    case SET_LOOK: {
+        int ti = 0;
+        for (int i = 0; i < g_set.n_themes; ++i)
+            if (strcmp(g_set.themes[i].code, ccr_theme_code()) == 0)
+                ti = i;
+        int d = set_row(area, &y, ccr_tr(CCR_T_THEME_BUTTON), ccr_tr(CCR_T_SET_THEME_HINT), ROW_CHOICE, ccr_theme_name(),
+                        false, input);
+        if (d && g_set.n_themes > 0)
+            use_theme(doc, g_set.themes[wrap_index(ti + d, g_set.n_themes)].code, true);
+        int li = 0;
+        for (int i = 0; i < g_set.n_langs; ++i)
+            if (strcmp(g_set.langs[i].code, ccr_lang_code()) == 0)
+                li = i;
+        d = set_row(area, &y, ccr_tr(CCR_T_PICK_LANGS), ccr_tr(CCR_T_SET_LANG_HINT), ROW_CHOICE,
+                    g_set.n_langs ? g_set.langs[li].name : ccr_lang_name(), false, input);
+        if (d && g_set.n_langs > 0) {
+            char code[16];
+            snprintf(code, sizeof code, "%s", g_set.langs[wrap_index(li + d, g_set.n_langs)].code);
+            use_language(doc, code);
+            g_set.n_themes = ccr_theme_scan(g_set.themes, 32);   /* their names, in it */
+        }
+        const bool plain = ccr_lang_in_plain_words();
+        if (set_row(area, &y, ccr_tr(CCR_T_PICK_PLAIN), ccr_tr(CCR_T_PICK_PLAIN_HINT), ROW_SWITCH, "", plain, input)) {
+            ccr_lang_set_plain(!plain);
+            if (!ccr_lang_save_plain(!plain))
+                fprintf(stderr, "ccratch: could not remember plain words in ~/.config/ccratch\n");
+            char code[16];
+            snprintf(code, sizeof code, "%s", ccr_lang_code());
+            use_language(doc, code);
+        }
+        const int n_ui = (int)(sizeof g_ui_steps / sizeof g_ui_steps[0]);
+        int ui = 0;
+        for (int i = 1; i < n_ui; ++i)
+            if (g_ui_choice > 0.0f && fabsf(g_ui_steps[i] - g_ui_choice) < fabsf(g_ui_steps[ui] - g_ui_choice))
+                ui = i;
+        if (g_ui_choice > 0.0f && ui == 0)
+            ui = 3;
+        if (ui == 0)
+            ccr_trf(v, sizeof v, CCR_T_SET_AUTO, (int)(ccr_gui_scale() * 100.0f + 0.5f));
+        else
+            snprintf(v, sizeof v, "%d%%", (int)(g_ui_steps[ui] * 100.0f + 0.5f));
+        d = set_row(area, &y, ccr_tr(CCR_T_SET_UI_SCALE), ccr_tr(CCR_T_SET_UI_SCALE_HINT), ROW_CHOICE, v, false, input);
+        if (d)
+            ui_scale_use(doc, g_ui_steps[wrap_index(ui + d, n_ui)], true);
+        if (set_row(area, &y, ccr_tr(CCR_T_SET_ANIMATIONS), ccr_tr(CCR_T_SET_ANIMATIONS_HINT), ROW_SWITCH, "", g_animate,
+                    input)) {
+            g_animate = !g_animate;
+            doc->ed.animate = g_animate;
+            settings_remember("animations", g_animate ? "on" : "off");
+        }
+        break;
+    }
+    case SET_EDITOR: {
+        if (set_row(area, &y, ccr_tr(CCR_T_SET_AUTOSAVE), ccr_tr(CCR_T_TIP_AUTOSAVE), ROW_SWITCH, "", g_auto.on, input)) {
+            g_auto.on = !g_auto.on;
+            settings_remember("autosave", g_auto.on ? "on" : "off");
+        }
+        const int n_d = (int)(sizeof g_delays / sizeof g_delays[0]);
+        int di = 0;
+        for (int i = 1; i < n_d; ++i)
+            if (fabsf(g_delays[i] - g_auto_delay) < fabsf(g_delays[di] - g_auto_delay))
+                di = i;
+        char num[16];
+        snprintf(num, sizeof num, "%g", (double)g_auto_delay);
+        ccr_trf(v, sizeof v, CCR_T_SET_SECONDS, num);
+        const int d = set_row(area, &y, ccr_tr(CCR_T_SET_AUTOSAVE_DELAY), ccr_tr(CCR_T_SET_AUTOSAVE_DELAY_HINT), ROW_CHOICE,
+                              v, false, input);
+        if (d) {
+            g_auto_delay = g_delays[wrap_index(di + d, n_d)];
+            snprintf(num, sizeof num, "%g", (double)g_auto_delay);
+            settings_remember("autosave_delay", num);
+        }
+        if (set_row(area, &y, ccr_tr(CCR_T_SET_MINIMAP), ccr_tr(CCR_T_SET_MINIMAP_HINT), ROW_SWITCH, "", g_minimap, input)) {
+            g_minimap = !g_minimap;
+            settings_remember("minimap", g_minimap ? "on" : "off");
+        }
+        if (set_row(area, &y, ccr_tr(CCR_T_SET_GRID), ccr_tr(CCR_T_SET_GRID_HINT), ROW_SWITCH, "", g_grid, input)) {
+            g_grid = !g_grid;
+            settings_remember("grid", g_grid ? "on" : "off");
+        }
+        if (set_row(area, &y, ccr_tr(CCR_T_SET_EXPLAIN), ccr_tr(CCR_T_SET_EXPLAIN_HINT), ROW_SWITCH, "", !g_explain.off,
+                    input)) {
+            g_explain.off = !g_explain.off;
+            settings_remember("explain", g_explain.off ? "off" : "on");
+        }
+        if (set_row(area, &y, ccr_tr(CCR_T_SET_AUTHORS), ccr_tr(CCR_T_SET_AUTHORS_HINT), ROW_SWITCH, "", g_git.blame_on,
+                    input)) {
+            g_git.blame_on = !g_git.blame_on;
+            g_git_marks_dirty = true;
+            settings_remember("git_authors", g_git.blame_on ? "on" : "off");
+        }
+        break;
+    }
+    case SET_BUILD: {
+        static const ccr_text mode_name[CCR_BUILD_MODE_COUNT] = { CCR_T_SET_MODE_DEBUG, CCR_T_SET_MODE_RELEASE,
+                                                                  CCR_T_SET_MODE_SANITIZE };
+        static const ccr_text mode_hint[CCR_BUILD_MODE_COUNT] = { CCR_T_SET_MODE_DEBUG_HINT, CCR_T_SET_MODE_RELEASE_HINT,
+                                                                  CCR_T_SET_MODE_SANITIZE_HINT };
+        const int d = set_row(area, &y, ccr_tr(CCR_T_SET_BUILD_MODE), "", ROW_CHOICE,
+                              ccr_tr(mode_name[g_build_mode]), false, input);
+        if (d) {
+            g_build_mode = (ccr_build_mode)wrap_index((int)g_build_mode + d, CCR_BUILD_MODE_COUNT);
+            settings_remember("build_mode", g_build_mode_key[g_build_mode]);
+        }
+        /* the three, side by side, the one in use lit */
+        y += 6.0f;
+        const float cw = (area.w - 28.0f - 16.0f) / 3.0f;
+        float ch = 0.0f;   /* as tall as the longest says */
+        for (int i = 0; i < CCR_BUILD_MODE_COUNT; ++i)
+            ch = fmaxf(ch, wrap_text(ccr_tr(mode_hint[i]), 0, 0, cw - 24.0f, 12.0f, 0, false));
+        ch += 48.0f;
+        for (int i = 0; i < CCR_BUILD_MODE_COUNT; ++i) {
+            const ccr_rect c = { area.x + 14.0f + (cw + 8.0f) * (float)i, y, cw, ch };
+            const bool cur = (int)g_build_mode == i, over = input && point_in(m, c) && point_in(m, area);
+            ccr_gui_rect_rounded(c, 0.1f, cur ? COL_ACCENT : over ? ccr_th(CCR_C_HOT) : ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_rect_rounded((ccr_rect){ c.x + 2, c.y + 2, c.w - 4, c.h - 4 }, 0.1f, ccr_th(CCR_C_BG));
+            ccr_gui_text(ccr_tr(mode_name[i]), c.x + 12.0f, c.y + 10.0f, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+            ccr_gui_clip_begin((ccr_rect){ c.x, c.y, c.w, c.h - 4.0f });
+            wrap_text(ccr_tr(mode_hint[i]), c.x + 12.0f, c.y + 34.0f, c.w - 24.0f, 12.0f, ccr_th(CCR_C_PANEL_HINT), true);
+            ccr_gui_clip_end();
+            ccr_gui_clip_begin(area);
+            if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !cur) {
+                g_build_mode = (ccr_build_mode)i;
+                settings_remember("build_mode", g_build_mode_key[g_build_mode]);
+            }
+        }
+        y += ch + 10.0f;
+        static const char *const dirs[CCR_BUILD_MODE_COUNT] = { ".ccratch/build", ".ccratch/build-release",
+                                                                ".ccratch/build-sanitize" };
+        ccr_gui_text(dirs[g_build_mode], area.x + 14.0f, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+        y += 24.0f;
+        break;
+    }
+    default: {
+        const char *do_it = ccr_tr(CCR_T_SET_DO);
+        if (set_row(area, &y, ccr_tr(CCR_T_SET_RESET_LAYOUT), ccr_tr(CCR_T_SET_RESET_LAYOUT_HINT), ROW_BUTTON, do_it, false,
+                    input)) {
+            g_lay.palette_w = CCR_PALETTE_W;
+            g_lay.files_w = 290.0f;
+            g_lay.build_h = 236.0f;
+            g_lay.palette_zoom = CCR_PALETTE_ZOOM;
+            layout_fit(ccr_gui_width(), ccr_gui_height());
+            ccr_palette_set_zoom(&g_palette, g_lay.palette_zoom);
+            layout_save();
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_SET_LAYOUT_DONE);
+            doc->has_errors = false;
+        }
+        if (set_row(area, &y, ccr_tr(CCR_T_SET_CLEAR_RECENT), ccr_tr(CCR_T_SET_CLEAR_RECENT_HINT), ROW_BUTTON, do_it, false,
+                    input)) {
+            for (int i = 1; i <= RECENT_MAX; ++i) {
+                char key[32];
+                snprintf(key, sizeof key, "recent.%d", i);
+                ccr_config_set(key, NULL);
+            }
+            ccr_trf(doc->status, sizeof doc->status, CCR_T_SET_RECENT_DONE);
+            doc->has_errors = false;
+        }
+        agreement = set_row(area, &y, ccr_tr(CCR_T_HELP_LICENSE), ccr_tr(CCR_T_SET_AGREEMENT_HINT), ROW_BUTTON,
+                            ccr_tr(CCR_T_SET_OPEN), false, input) != 0;
+        break;
+    }
+    }
+    ccr_gui_clip_end();
+    /* scrolled no further than the rows go */
+    const float content = y + g_set.scroll - area.y;
+    if (g_set.scroll > content - area.h)
+        g_set.scroll = fmaxf(0.0f, content - area.h);
+    if (content > area.h) {
+        const float bar_h = area.h * area.h / content, bar_y = area.y + (area.h - bar_h) * g_set.scroll / (content - area.h);
+        ccr_gui_rect_rounded((ccr_rect){ panel.x + panel.w - 8.0f, bar_y, 4.0f, bar_h }, 1.0f, ccr_th(CCR_C_PANEL_EDGE));
+    }
+
+    if (input && (ccr_gui_key_pressed(CCR_KEY_ESCAPE) || (x_over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT)) ||
+                  (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !point_in(m, panel)) || agreement))
+        g_set.open = false;
+    return agreement;
+}
+
+/* A cog: teeth round a wheel, a hole in it. */
+static void icon_gear(ccr_rect r, ccr_color c, ccr_color hole)
+{
+    const ccr_vec2 o = { r.x + r.w * 0.5f, r.y + r.h * 0.5f };
+    for (int k = 0; k < 8; ++k) {
+        const float a = (float)k * 0.78539816f, ca = cosf(a), sa = sinf(a);
+        const float t1 = 3.0f, rin = 5.0f, rout = 8.5f;   /* a tooth: a quad from the wheel out */
+        const ccr_vec2 p0 = { o.x + ca * rin - sa * t1 * 0.5f * 1.4f, o.y + sa * rin + ca * t1 * 0.5f * 1.4f };
+        const ccr_vec2 p1 = { o.x + ca * rin + sa * t1 * 0.5f * 1.4f, o.y + sa * rin - ca * t1 * 0.5f * 1.4f };
+        const ccr_vec2 p2 = { o.x + ca * rout + sa * t1 * 0.5f, o.y + sa * rout - ca * t1 * 0.5f };
+        const ccr_vec2 p3 = { o.x + ca * rout - sa * t1 * 0.5f, o.y + sa * rout + ca * t1 * 0.5f };
+        ccr_gui_triangle(p0, p1, p2, c);
+        ccr_gui_triangle(p0, p2, p3, c);
+    }
+    ccr_gui_circle(o, 6.5f, c);
+    ccr_gui_circle(o, 2.6f, hole);
+}
+
 /* Scratch's green flag: build and run. */
 static void icon_flag(ccr_rect r, ccr_color c)
 {
@@ -6476,7 +6924,7 @@ static void icon_stop(ccr_rect r, ccr_color c)
 
 /* What was clicked in the top bar that the caller does (it has what
  * opening a file and building take). */
-enum { TOP_CMAKE = 1, TOP_BUILD = 2, TOP_RUN = 4, TOP_STOP = 8, TOP_HELP = 16, TOP_DEBUG = 32, TOP_GIT = 64 };
+enum { TOP_CMAKE = 1, TOP_BUILD = 2, TOP_RUN = 4, TOP_STOP = 8, TOP_HELP = 16, TOP_DEBUG = 32, TOP_GIT = 64, TOP_SETTINGS = 128 };
 
 /* A bug, for the debugger. */
 static void icon_bug(ccr_rect r, ccr_color c)
@@ -6552,6 +7000,13 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     x -= 32.0f;
     if (ccr_gui_button((ccr_rect){ x, y, 32.0f, bh }, "?", bs) && !modal)
         clicked |= TOP_HELP;
+    x -= 4.0f + 34.0f;
+    const ccr_rect gear = { x, y, 34.0f, bh };
+    if (ccr_gui_button(gear, "", g_set.open ? &main_ : bs) && !modal)
+        clicked |= TOP_SETTINGS;
+    icon_gear(gear, g_set.open ? main_.text : ccr_th(CCR_C_BUTTON_TEXT), g_set.open ? main_.fill : bs->fill);
+    if (!modal)
+        tip(gear, ccr_tr(CCR_T_SET_TIP));
     char code[24];
     snprintf(code, sizeof code, "%s", ccr_lang_code());
     code[strcspn(code, "-_")] = '\0';   /* zh-CN: ZH */
@@ -7012,6 +7467,7 @@ int ccr_run(int argc, char **argv)
         g_auto.on = ccr_config_get("autosave", v, sizeof v) && strcmp(v, "on") == 0;
         g_minimap = !(ccr_config_get("minimap", v, sizeof v) && strcmp(v, "off") == 0);
         g_explain.off = ccr_config_get("explain", v, sizeof v) && strcmp(v, "off") == 0;
+        settings_load();
     }
     layout_fit(ccr_gui_width(), ccr_gui_height());
     char anim[16];
@@ -7092,9 +7548,14 @@ int ccr_run(int argc, char **argv)
             g_drop.node = CCR_NONE;
         const bool was_open = pie.open || opm.open;
         const bool modal = eula.open || g_libs.open || g_quit.open || g_help || g_git.diff_open || g_pick.kind ||
-                           g_ren.open;   /* a dialog has the mouse */
-        if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open)
+                           g_ren.open || g_set.open;   /* a dialog has the mouse */
+        if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open && !g_set.open)
             g_help = !g_help;
+        if (ccr_gui_ctrl_down() && ccr_gui_key_pressed(CCR_KEY_COMMA) && !eula.open && !g_quit.open) {
+            g_help = false;
+            g_pick.kind = 0;
+            settings_toggle();
+        }
         ui_scale_keys(&doc);
 
         if (ccr_gui_file_dropped(dropped, sizeof dropped) &&
@@ -7440,7 +7901,8 @@ int ccr_run(int argc, char **argv)
         }
 
         ccr_gui_begin_frame(COL_BG);
-        ccr_canvas_draw_grid(&canvas, viewport);
+        if (g_grid)
+            ccr_canvas_draw_grid(&canvas, viewport);
         if (doc.loaded) {
             ccr_editor_draw(&doc.ed, &canvas, viewport);
             blame_draw(&doc, &canvas);
@@ -7547,6 +8009,8 @@ int ccr_run(int argc, char **argv)
         }
         if (top & TOP_HELP)
             g_help = !g_help;
+        if (top & TOP_SETTINGS)
+            settings_toggle();
         draw_statusbar(w, h, &canvas, &doc, (float)w - 170.0f - autosave_width());
         const float zx = zoom_widget(w, h, &canvas, &doc, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         autosave_button(zx, h, !modal && opt.smoke_frames == 0);
@@ -7558,6 +8022,10 @@ int ccr_run(int argc, char **argv)
         eula_frame(&eula, w, h, &doc);
         if (help_frame(w, h)) {
             eula.open = true;   /* the agreement, from the help card */
+            eula.scroll = 0.0f;
+        }
+        if (settings_frame(w, h, &doc, dt)) {
+            eula.open = true;   /* and from the settings */
             eula.scroll = 0.0f;
         }
         quitting = quit_frame(w, h, &doc, &opt);

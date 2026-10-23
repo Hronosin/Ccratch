@@ -68,8 +68,24 @@ typedef enum ccr_job_result {
     CCR_JOB_NO_CMAKE        /* cmake is not installed */
 } ccr_job_result;
 
+/* How the program is built (Settings > Building). Each has its own build
+ * folder in .ccratch, so switching does not throw away the other. */
+typedef enum ccr_build_mode {
+    CCR_BUILD_DEBUG,      /* -g, no optimisation: .ccratch/build */
+    CCR_BUILD_RELEASE,    /* -O2: .ccratch/build-release */
+    CCR_BUILD_SANITIZE,   /* -g with AddressSanitizer and UBSan: .ccratch/build-sanitize */
+    CCR_BUILD_MODE_COUNT
+} ccr_build_mode;
+
+/* What a sanitizer is in the middle of saying (see ccr_san_parse_line). */
+typedef struct ccr_san_state {
+    char what[200];          /* "heap-buffer-overflow", "Direct leak of 16 byte(s)..." */
+    bool want_place;         /* the first frame in the project is where */
+} ccr_san_state;
+
 typedef struct ccr_job {
     ccr_job_step   step;
+    ccr_build_mode mode;             /* set before ccr_job_build */
     ccr_job_result result;
     ccr_proc       proc;
     bool           run_after;
@@ -88,6 +104,7 @@ typedef struct ccr_job {
     int            errors, warnings;
     int            cmake_open;       /* a CMake message still being read, or -1 */
     bool           cmake_said;       /* and its first paragraph is over */
+    ccr_san_state  san;              /* the program's output, under Bug hunt */
     uint32_t       generation;       /* bumps when diags change */
 } ccr_job;
 
@@ -109,6 +126,12 @@ bool ccr_job_busy(const ccr_job *j);
 /* One line of compiler / linker / CMake output: is it about a place in
  * the code? Pure, for the tests. */
 bool ccr_build_parse_line(const char *line, ccr_build_diag *out);
+
+/* One line of a program's own output, built with sanitizers: AddressSanitizer
+ * and LeakSanitizer say what, then a stack, whose first frame in `project`
+ * is the place; UBSan says "file:line:col: runtime error: ...". True when
+ * the line puts the report on a place: *out is it. Pure, for the tests. */
+bool ccr_san_parse_line(ccr_san_state *st, const char *line, const char *project, ccr_build_diag *out);
 
 /* The newest program (an ELF executable) under `build_dir`. */
 bool ccr_build_find_exe(const char *build_dir, char *out, int cap);

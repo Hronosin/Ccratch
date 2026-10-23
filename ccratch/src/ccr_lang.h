@@ -353,6 +353,50 @@
     X(JUMP_MISSING,     "jump.missing",          0, "no label %s: in this function")     \
     X(JUMP_ELSEWHERE,   "jump.elsewhere",        0,                                      \
       "label %s: is not in this function (loose on the canvas, or in another one)")      \
+    X(SET_TITLE,        "set.title", 0, "Settings") \
+    X(SET_TIP,          "set.tip", 0, "Settings (Ctrl+,)") \
+    X(SET_CLOSE,        "set.close", 0, "Ctrl+, or Esc to close") \
+    X(SET_SEC_LOOK,     "set.sec_look", 0, "Look") \
+    X(SET_SEC_EDITOR,   "set.sec_editor", 0, "Editor") \
+    X(SET_SEC_BUILD,    "set.sec_build", 0, "Building") \
+    X(SET_SEC_OTHER,    "set.sec_other", 0, "Other") \
+    X(SET_THEME_HINT,   "set.theme_hint", 0, "The colours of everything. Click the name for the next one") \
+    X(SET_LANG_HINT,    "set.lang_hint", 0, "What Ccratch speaks. Click the name for the next one") \
+    X(SET_UI_SCALE,     "set.ui_scale", 0, "Interface size") \
+    X(SET_UI_SCALE_HINT, "set.ui_scale_hint", 0, "Everything bigger or smaller; Ctrl+Alt+= and Ctrl+Alt+- do it too") \
+    X(SET_AUTO,         "set.auto", 0, "auto, %d%%") \
+    X(SET_ANIMATIONS,   "set.animations", 0, "Animations") \
+    X(SET_ANIMATIONS_HINT, "set.animations_hint", 0, "Blocks glide, menus unfold, cards slide out") \
+    X(SET_AUTOSAVE,     "set.autosave", 0, "Autosave") \
+    X(SET_AUTOSAVE_DELAY, "set.autosave_delay", 0, "Autosave after") \
+    X(SET_AUTOSAVE_DELAY_HINT, "set.autosave_delay_hint", 0, "How long after the last change the file saves itself") \
+    X(SET_SECONDS,      "set.seconds", 0, "%s s") \
+    X(SET_MINIMAP_HINT, "set.minimap_hint", 0, "A small map of the file in the corner, when it does not fit on screen (Ctrl+M)") \
+    X(SET_MINIMAP,      "set.minimap", 0, "Minimap") \
+    X(SET_GRID,         "set.grid", 0, "Dots on the canvas") \
+    X(SET_GRID_HINT,    "set.grid_hint", 0, "The grid behind the blocks") \
+    X(SET_EXPLAIN,      "set.explain", 0, "Block explanations") \
+    X(SET_EXPLAIN_HINT, "set.explain_hint", 0, "A card about a block when the mouse rests on it in the palette") \
+    X(SET_AUTHORS,      "set.authors", 0, "Git authors beside blocks") \
+    X(SET_AUTHORS_HINT, "set.authors_hint", 0, "Who last changed each piece, from git blame") \
+    X(SET_BUILD_MODE,   "set.build_mode", 0, "Build as") \
+    X(SET_MODE_DEBUG,   "set.mode_debug", 0, "Debug") \
+    X(SET_MODE_DEBUG_HINT, "set.mode_debug_hint", 0, "Quick to build, easy to debug. For every day") \
+    X(SET_MODE_RELEASE, "set.mode_release", 0, "Release") \
+    X(SET_MODE_RELEASE_HINT, "set.mode_release_hint", 0, "Optimised (-O2): a faster program, a slower build. The bug button still builds for debugging") \
+    X(SET_MODE_SANITIZE, "set.mode_sanitize", 0, "Bug hunt") \
+    X(SET_MODE_SANITIZE_HINT, "set.mode_sanitize_hint", 0, "AddressSanitizer and UBSan: a bad pointer, an overflow or a leak stops the program and says where. Needs libasan and libubsan") \
+    X(SET_RESET_LAYOUT, "set.reset_layout", 0, "Reset panel sizes") \
+    X(SET_RESET_LAYOUT_HINT, "set.reset_layout_hint", 0, "The palette, the file list and the build panel as they were at first") \
+    X(SET_CLEAR_RECENT, "set.clear_recent", 0, "Forget recent files") \
+    X(SET_CLEAR_RECENT_HINT, "set.clear_recent_hint", 0, "The list on the start screen") \
+    X(SET_AGREEMENT_HINT, "set.agreement_hint", 0, "Read it again. It is still not legally binding") \
+    X(SET_DO,           "set.do", 0, "Do it") \
+    X(SET_OPEN,         "set.open", 0, "Open") \
+    X(SET_CONFIG,       "set.config", 0, "The settings file:") \
+    X(SET_LAYOUT_DONE,  "set.layout_done", 0, "Panel sizes as they were at first") \
+    X(SET_RECENT_DONE,  "set.recent_done", 0, "Recent files forgotten") \
+    X(HELP_SETTINGS,    "help.settings", 0, "settings") \
     /* the agreement (a joke; LICENSE is the real thing) */ \
     X(EULA_TITLE, "eula.title", 0, \
       "IHATERUSTL") \

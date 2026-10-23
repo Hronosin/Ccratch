@@ -155,3 +155,12 @@ save.lost = %u 行目：変えたブロックがファイルのどこにも合�
 save.empty_slot = %u 行目：空いている欄があります。何か書くか、ブロックを入れてください
 jump.missing = この関数には飛び先の印 %s: がありません
 jump.elsewhere = 印 %s: はこの関数にありません（キャンバスに浮いているか、別の関数の中です）
+
+# settings (Ctrl+,)
+set.sec_build = プログラムの作り方
+set.build_mode = 作り方
+set.mode_debug = ふつう
+set.mode_debug_hint = すぐ作れて、「一歩ずつ」で中をのぞける。迷ったらこれ
+set.mode_release = 速い
+set.mode_release_hint = できたプログラムは速いが、作るのに時間がかかる。「一歩ずつ」は自分用にふつうのものを作る
+set.mode_sanitize_hint = 動いているプログラムを見張る：さわってはいけないメモリにさわったり、メモリを返し忘れたりすると止まり、そうしたブロックが赤くなる。libasan と libubsan が必要

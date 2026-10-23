@@ -155,3 +155,12 @@ save.lost = %u-satr: oʻzgartirilgan bloklar endi fayldagi hech narsaga mos kelm
 save.empty_slot = %u-satr: boʻsh joy; unga biror narsa yoz yoki blok tashla
 jump.missing = bu funksiyada sakraladigan %s: belgisi yoʻq
 jump.elsewhere = %s: belgisi bu funksiyada emas (tuvalda alohida yotibdi yoki boshqa funksiyada)
+
+# settings (Ctrl+,)
+set.sec_build = Dasturni qanday qilish
+set.build_mode = Shunday qilish
+set.mode_debug = Oddiy
+set.mode_debug_hint = Tez qilinadi, «Qadamma-qadam» ichiga qaray oladi. Bilmasang — shuni tanla
+set.mode_release = Tez
+set.mode_release_hint = Tayyor dastur tezroq ishlaydi, lekin uzoqroq qilinadi. «Qadamma-qadam» baribir oʻziga oddiysini qiladi
+set.mode_sanitize_hint = Dastur ishlayotganda kuzatiladi: begona xotiraga tegsa yoki oʻz xotirasini qaytarishni unutsa, toʻxtaydi va buni qilgan blok qizaradi. libasan va libubsan kerak

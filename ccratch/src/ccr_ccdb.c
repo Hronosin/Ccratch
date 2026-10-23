@@ -42,7 +42,8 @@ bool ccr_ccdb_find(const char *project, char *out, int cap)
     double t = -1.0;
     out[0] = '\0';
     char p[1400];
-    static const char *const direct[] = { "", "/build", "/.ccratch/build" };
+    static const char *const direct[] = { "", "/build", "/.ccratch/build", "/.ccratch/build-release",
+                                                   "/.ccratch/build-sanitize" };
     for (size_t i = 0; i < sizeof direct / sizeof direct[0]; ++i) {
         snprintf(p, sizeof p, "%s%s/compile_commands.json", project, direct[i]);
         consider(p, out, cap, &t);

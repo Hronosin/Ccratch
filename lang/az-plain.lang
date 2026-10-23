@@ -155,3 +155,12 @@ save.lost = sətir %u: dəyişdirilmiş bloklar artıq faylda heç nəyə uyğun
 save.empty_slot = sətir %u: boş yer; ora nəsə yaz və ya blok at
 jump.missing = bu funksiyada tullanılacaq %s: nişanı yoxdur
 jump.elsewhere = %s: nişanı bu funksiyada deyil (kətanda ayrıca durur və ya başqa funksiyadadır)
+
+# settings (Ctrl+,)
+set.sec_build = Proqramı necə etmək
+set.build_mode = Belə et
+set.mode_debug = Adi
+set.mode_debug_hint = Tez edilir və «Addım-addım» içinə baxa bilər. Bilmirsənsə — bunu seç
+set.mode_release = Sürətli
+set.mode_release_hint = Hazır proqram daha sürətli işləyir, amma daha uzun edilir. «Addım-addım» yenə də özü üçün adisini edir
+set.mode_sanitize_hint = Proqram işləyərkən izlənir: toxunmamalı olduğu yaddaşa toxunsa və ya yaddaşını qaytarmağı unutsa, dayanır və bunu edən blok qızarır. libasan və libubsan lazımdır

@@ -24,7 +24,11 @@ int  ccr_config_data_dirs(const char *sub, const char *env_var, char dirs[][1024
 /* The value of `key`, if the file has it. */
 bool ccr_config_get(const char *key, char *out, size_t cap);
 
-/* Sets `key` (one line, no newlines in the value), creating the file. */
+/* Sets `key` (one line, no newlines in the value), creating the file;
+ * a NULL value takes the key out. */
 bool ccr_config_set(const char *key, const char *value);
+
+/* Where the file is (whether or not it is there yet). */
+bool ccr_config_file(char *out, size_t cap);
 
 #endif /* CCR_CONFIG_H */

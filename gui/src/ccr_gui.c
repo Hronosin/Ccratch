@@ -461,6 +461,7 @@ bool ccr_gui_key_pressed(ccr_key key)
     case CCR_KEY_F10:    return IsKeyPressed(KEY_F10);
     case CCR_KEY_F11:    return IsKeyPressed(KEY_F11);
     case CCR_KEY_G:      return IsKeyPressed(KEY_G);
+    case CCR_KEY_COMMA:  return IsKeyPressed(KEY_COMMA);
     case CCR_KEY_K:      return IsKeyPressed(KEY_K);
     }
     return false;

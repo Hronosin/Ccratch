@@ -107,9 +107,14 @@ static bool mkdir_p(char *path)
     return mkdir(path, 0755) == 0 || errno == EEXIST;
 }
 
+bool ccr_config_file(char *out, size_t cap)
+{
+    return config_path(out, cap);
+}
+
 bool ccr_config_set(const char *key, const char *value)
 {
-    if (strpbrk(key, "=\n\r#") || strpbrk(value, "\n\r"))
+    if (strpbrk(key, "=\n\r#") || (value && strpbrk(value, "\n\r")))
         return false;
     char path[1024], tmp[1100], dir[1024];
     if (!config_path(path, sizeof path))
@@ -146,7 +151,8 @@ bool ccr_config_set(const char *key, const char *value)
             fprintf(w, "%s\n", line);
     }
     free(old);
-    fprintf(w, "%s = %s\n", key, value);
+    if (value)
+        fprintf(w, "%s = %s\n", key, value);
     bool ok = fclose(w) == 0;
     if (ok)
         ok = rename(tmp, path) == 0;

@@ -92,6 +92,54 @@ static void dump(const ccr_job *j)
         fprintf(stderr, "  | %s\n", j->lines[i].text);
 }
 
+/* Bug hunt: what AddressSanitizer, LeakSanitizer and UBSan say, onto a place. */
+static void test_sanitizers(void)
+{
+    ccr_san_state st = { 0 };
+    ccr_build_diag d;
+    static const char *const asan[] = {
+        "=================================================================",
+        "==2796==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x502000000020 at pc 0x55 bp 0x7f sp 0x7f",
+        "WRITE of size 4 at 0x502000000020 thread T0",
+        "    #0 0x5581b3c1a2d5 in main /home/me/game/main.c:8",
+        "    #1 0x7f3e1c62a1c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58",
+    };
+    int placed = -1;
+    for (int i = 0; i < 5; ++i)
+        if (ccr_san_parse_line(&st, asan[i], "/home/me/game", &d) && placed < 0)
+            placed = i;
+    CHECK(placed == 3, "asan: placed on line %d", placed);
+    st = (ccr_san_state){ 0 };
+    for (int i = 0; i < 4; ++i)
+        ccr_san_parse_line(&st, asan[i], "/home/me/game", &d);
+    CHECK(d.kind == CCR_BD_ERROR && d.line == 8 && strcmp(d.file, "/home/me/game/main.c") == 0 &&
+              strcmp(d.message, "AddressSanitizer: heap-buffer-overflow") == 0,
+          "asan: %s:%u [%s]", d.file, d.line, d.message);
+
+    /* a leak: frame #0 is malloc in libasan, #1 the user's */
+    st = (ccr_san_state){ 0 };
+    CHECK(!ccr_san_parse_line(&st, "==9==ERROR: LeakSanitizer: detected memory leaks", "/p", &d), "lsan head");
+    CHECK(!ccr_san_parse_line(&st, "Direct leak of 16 byte(s) in 1 object(s) allocated from:", "/p", &d), "leak");
+    CHECK(!ccr_san_parse_line(&st, "    #0 0x7f in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69", "/p",
+                              &d), "malloc frame is not the place");
+    CHECK(ccr_san_parse_line(&st, "    #1 0x55 in make_list /p/src/list.c:12:15", "/p", &d) && d.line == 12 && d.col == 15 &&
+              strcmp(d.file, "/p/src/list.c") == 0 &&
+              strcmp(d.message, "LeakSanitizer: Direct leak of 16 byte(s) in 1 object(s)") == 0,
+          "leak place: %s:%u:%u [%s]", d.file, d.line, d.col, d.message);
+    CHECK(!ccr_san_parse_line(&st, "    #2 0x55 in main /p/main.c:3", "/p", &d), "only the first frame");
+    /* not under the project: /pq is not /p */
+    st = (ccr_san_state){ 0 };
+    ccr_san_parse_line(&st, "==1==ERROR: AddressSanitizer: stack-use-after-return on address 0x1", "/p", &d);
+    CHECK(!ccr_san_parse_line(&st, "    #0 0x1 in f /pq/x.c:2", "/p", &d), "a sibling folder");
+
+    st = (ccr_san_state){ 0 };
+    CHECK(ccr_san_parse_line(&st, "/p/main.c:5:7: runtime error: signed integer overflow: 2147483647 + 1 cannot be "
+                                  "represented in type 'int'", "/p", &d) &&
+              d.line == 5 && d.col == 7 && strncmp(d.message, "runtime error: signed integer overflow", 38) == 0,
+          "ubsan: %u:%u [%s]", d.line, d.col, d.message);
+    CHECK(!ccr_san_parse_line(&st, "hello, world", "/p", &d), "plain output");
+}
+
 static void test_real_build(void)
 {
     char root[256], p[512];
@@ -185,6 +233,7 @@ static void test_real_build(void)
 
 int main(void)
 {
+    test_sanitizers();
     test_parse();
     test_real_build();
     if (g_failures)

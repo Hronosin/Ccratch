@@ -155,3 +155,12 @@ save.lost = line %u: the changed blocks don't match anything in the file any mor
 save.empty_slot = line %u: an empty slot; type something in or drop a block there
 jump.missing = there is no %s: mark to jump to in this function
 jump.elsewhere = the %s: mark is not in this function (it is loose on the canvas, or in another function)
+
+# settings (Ctrl+,)
+set.sec_build = Making the program
+set.build_mode = Make it as
+set.mode_debug = Everyday
+set.mode_debug_hint = Quick to make, and Step by step can look inside it. Pick this if unsure
+set.mode_release = Fast
+set.mode_release_hint = The finished program runs faster, but making it takes longer. Step by step still makes its own everyday copy
+set.mode_sanitize_hint = The program is watched while it runs: if it touches memory it should not, or forgets to give memory back, it stops and the block that did it turns red. Needs libasan and libubsan

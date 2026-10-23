@@ -64,7 +64,8 @@ typedef enum ccr_key {
     CCR_KEY_F10,
     CCR_KEY_F11,
     CCR_KEY_G,
-    CCR_KEY_K
+    CCR_KEY_K,
+    CCR_KEY_COMMA
 } ccr_key;
 
 /* Window and frame lifecycle */

@@ -155,3 +155,12 @@ save.lost = 第 %u 行：改过的积木跟文件里的内容对不上了
 save.empty_slot = 第 %u 行：有一个空位；写点东西或放一个积木进去
 jump.missing = 这个函数里没有可以跳去的记号 %s:
 jump.elsewhere = 记号 %s: 不在这个函数里（散在画布上，或在别的函数里）
+
+# settings (Ctrl+,)
+set.sec_build = 怎么做程序
+set.build_mode = 做成
+set.mode_debug = 普通
+set.mode_debug_hint = 做得快，“一步一步”也能看进去。不知道选哪个就选它
+set.mode_release = 快速
+set.mode_release_hint = 做好的程序跑得更快，但做得更慢。“一步一步”仍会给自己做一个普通的
+set.mode_sanitize_hint = 程序运行时有人盯着：碰了不该碰的内存，或忘了还内存，就会停下，做这件事的积木会变红。需要 libasan 和 libubsan

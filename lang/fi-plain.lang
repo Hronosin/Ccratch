@@ -155,3 +155,12 @@ save.lost = rivi %u: muutetut palikat eivät enää vastaa mitään tiedostossa
 save.empty_slot = rivi %u: tyhjä paikka; kirjoita jotain tai pudota palikka siihen
 jump.missing = tässä funktiossa ei ole merkkiä %s:, johon hypätä
 jump.elsewhere = merkki %s: ei ole tässä funktiossa (se on irrallaan kankaalla tai toisessa funktiossa)
+
+# settings (Ctrl+,)
+set.sec_build = Ohjelman tekeminen
+set.build_mode = Tee ohjelma
+set.mode_debug = Tavallinen
+set.mode_debug_hint = Valmistuu nopeasti, ja Askel kerrallaan voi katsoa sen sisään. Valitse tämä, jos et tiedä
+set.mode_release = Nopea
+set.mode_release_hint = Valmis ohjelma toimii nopeammin, mutta sen tekeminen kestää kauemmin. Askel kerrallaan tekee silti oman tavallisen
+set.mode_sanitize_hint = Ohjelmaa vahditaan sen ajon aikana: jos se koskee muistiin, johon ei saa, tai unohtaa palauttaa muistia, se pysähtyy ja syyllinen palikka muuttuu punaiseksi. Tarvitsee libasanin ja libubsanin
