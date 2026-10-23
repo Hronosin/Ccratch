@@ -342,6 +342,9 @@
     X(PICK_THEMES,      "pick.themes",           0, "Themes") \
     X(PICK_LANGS,       "pick.langs",            0, "Language")                          \
     X(PICK_BUILTIN,     "pick.builtin",          0, ", built in")                        \
+    X(UI_SCALE,         "ui.scale",              0, "Interface size: %d%% (Ctrl+Alt+0: as the screen wants)") \
+    X(UI_SCALE_AUTO,    "ui.scale_auto",         0, "Interface size: %d%%, as the screen wants") \
+    X(HELP_UI_SCALE,    "help.ui_scale",         0, "the interface bigger / smaller / as the screen wants") \
     X(PICK_PLAIN,       "pick.plain",            0, "Human language")                    \
     X(PICK_PLAIN_HINT,  "pick.plain_hint",       0, "Everything said in plain words, for people who don't program") \
     X(PICK_THEME_HINT,  "pick.theme_hint",       0, "Your own: a .theme file in ~/.local/share/ccratch/themes (ccratch --check-theme checks it)") \

@@ -196,6 +196,7 @@ typedef struct ccr_options {
     int         also_n;
     int         zoom_percent;   /* initial zoom, 0 = 100% */
     const char *lang;           /* --lang CODE, NULL: pick one */
+    const char *ui_scale;       /* --ui-scale 1.5 | 150% | auto, NULL: the saved one */
     bool        eula;           /* --eula: print the agreement, exit */
     const char *theme;          /* --theme NAME, NULL: the saved one */
     bool        no_animations;  /* --no-animations */
@@ -261,6 +262,8 @@ static void print_usage(const char *argv0)
            "                         byte for byte\n"
            "  -- ARGS...             pass ARGS to clang (e.g. -- -std=c99 -Iinclude)\n"
            "  --zoom PERCENT         start at this zoom (25..300)\n"
+           "  --ui-scale N           interface size: 1.5, 150%% or auto (the screen's);\n"
+           "                         Ctrl+Alt+= / - / 0 in the window, remembered\n"
            "  --lang CODE            interface language (en, ru...); remembered when\n"
            "                         picked with the button in the window\n"
            "  --list-langs           show the language packs found, and where\n"
@@ -453,6 +456,8 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
             opt->eula = true;
         } else if (strcmp(a, "--ranges") == 0) {
             opt->ranges = true;
+        } else if (strcmp(a, "--ui-scale") == 0 && i + 1 < argc) {
+            opt->ui_scale = argv[++i];
         } else if (strcmp(a, "--lang") == 0 && i + 1 < argc) {
             opt->lang = argv[++i];
         } else if (strcmp(a, "--list-langs") == 0) {
@@ -3396,6 +3401,24 @@ static bool blame_badge_at(const ccr_document *doc, const ccr_canvas *cv, int i,
     return true;
 }
 
+/* Is `m` (on screen) on a badge? A press there is the badge's, not the
+ * canvas's: no selection rectangle starts. */
+static bool blame_badge_under(const ccr_document *doc, const ccr_canvas *cv, ccr_vec2 m)
+{
+    if (!g_git.blame_on || !doc->loaded || cv->zoom < 0.35f)
+        return false;
+    for (int i = 0; i < g_blame.n; ++i) {
+        ccr_vec2 c;
+        float rad;
+        if (!g_blame.badge[i] || !blame_badge_at(doc, cv, i, &c, &rad))
+            continue;
+        const float dx = m.x - c.x, dy = m.y - c.y;
+        if (dx * dx + dy * dy <= (rad + 3.0f) * (rad + 3.0f))
+            return true;
+    }
+    return false;
+}
+
 static void blame_badge(ccr_vec2 c, float rad, const ccr_blame_commit *bc, bool hot)
 {
     if (bc->uncommitted) {
@@ -5334,6 +5357,7 @@ static bool help_frame(int w, int h)
         { "Ctrl+P, Ctrl+Tab", 0, CCR_T_HELP_FILES },
         { "Ctrl+B, Ctrl+R", 0, CCR_T_HELP_BUILD },
         { "Ctrl+M", 0, CCR_T_HELP_MINIMAP },
+        { "Ctrl+Alt+= / - / 0", 0, CCR_T_HELP_UI_SCALE },
         { "F8, F9, F10, F11", 0, CCR_T_HELP_DEBUG },
         { "Ctrl+G", 0, CCR_T_HELP_GIT },
         { "F2", 0, CCR_T_HELP_RENAME },
@@ -5344,7 +5368,16 @@ static bool help_frame(int w, int h)
     const int n = (int)(sizeof rows / sizeof rows[0]);
     ccr_gui_rect((ccr_rect){ 0, 0, (float)w, (float)h }, ccr_th(CCR_C_BACKDROP));
     const float row = 27.0f, pw = 760.0f > (float)w - 40.0f ? (float)w - 40.0f : 760.0f;
-    const float ph = 90.0f + row * (float)n + 56.0f;
+    /* all of it, or as much as the window holds, the rest under the wheel */
+    const float list_h = row * (float)n;
+    float ph = 90.0f + list_h + 56.0f;
+    if (ph > (float)h - 16.0f)
+        ph = (float)h - 16.0f;
+    const float shown = ph - 90.0f - 56.0f;
+    static float scroll;
+    scroll -= ccr_gui_wheel() * row * 2.0f;
+    if (scroll > list_h - shown) scroll = list_h - shown;
+    if (scroll < 0.0f) scroll = 0.0f;
     const ccr_rect panel = { ((float)w - pw) * 0.5f, ((float)h - ph) * 0.5f, pw, ph };
     ccr_gui_rect_rounded((ccr_rect){ panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4 }, 0.04f, COL_ACCENT);
     ccr_gui_rect_rounded(panel, 0.04f, ccr_th(CCR_C_PANEL) | 0xFFu);
@@ -5352,7 +5385,8 @@ static bool help_frame(int w, int h)
     ccr_gui_text(ccr_tr(CCR_T_HELP_CLOSE), panel.x + panel.w - 28.0f - ccr_gui_text_width(ccr_tr(CCR_T_HELP_CLOSE), 14.0f),
                  panel.y + 30.0f, 14.0f, ccr_th(CCR_C_PANEL_HINT));
     const float kx = panel.x + 28.0f, dx = panel.x + 270.0f;
-    float y = panel.y + 74.0f;
+    ccr_gui_clip_begin((ccr_rect){ panel.x, panel.y + 68.0f, panel.w, shown + 8.0f });
+    float y = panel.y + 74.0f - scroll;
     for (int i = 0; i < n; ++i, y += row) {
         const char *keys = rows[i].keys ? rows[i].keys : ccr_tr(rows[i].k);
         const float kw = ccr_gui_text_width(keys, 15.0f) + 16.0f;
@@ -5360,6 +5394,11 @@ static bool help_frame(int w, int h)
         ccr_gui_rect_rounded((ccr_rect){ kx, y + 19.0f, kw, 2.0f }, 1.0f, ccr_th(CCR_C_PANEL_EDGE));
         ccr_gui_text(keys, kx + 8.0f, y + 1.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
         ccr_gui_text(ccr_tr(rows[i].what), dx, y + 1.0f, 15.0f, ccr_th(CCR_C_PANEL_TEXT));
+    }
+    ccr_gui_clip_end();
+    if (shown < list_h) {   /* a scroll bar: there is more */
+        const float bar_h = shown * shown / list_h, bar_y = panel.y + 74.0f + (shown - bar_h) * scroll / (list_h - shown);
+        ccr_gui_rect_rounded((ccr_rect){ panel.x + panel.w - 10.0f, bar_y, 4.0f, bar_h }, 1.0f, ccr_th(CCR_C_PANEL_EDGE));
     }
     const char *ll = ccr_tr(CCR_T_HELP_LICENSE);
     const float lw = ccr_gui_text_width(ll, 15.0f) + 28.0f;
@@ -5417,11 +5456,12 @@ static float zoom_widget(int w, int h, ccr_canvas *cv, ccr_document *doc, ccr_re
     const bool minus = ccr_gui_button((ccr_rect){ x, y, 26.0f, bh }, "-", &plain);
     if (input) {
         const bool ctrl = ccr_gui_ctrl_down();
-        if (plus || (ctrl && ccr_gui_key_pressed(CCR_KEY_EQUAL)))
+        const bool keys = ctrl && !ccr_gui_alt_down();   /* Ctrl+Alt: the interface's size */
+        if (plus || (keys && ccr_gui_key_pressed(CCR_KEY_EQUAL)))
             zoom_to(cv, viewport, cv->zoom * 1.25f);
-        if (minus || (ctrl && ccr_gui_key_pressed(CCR_KEY_MINUS)))
+        if (minus || (keys && ccr_gui_key_pressed(CCR_KEY_MINUS)))
             zoom_to(cv, viewport, cv->zoom / 1.25f);
-        if (reset || (ctrl && ccr_gui_key_pressed(CCR_KEY_ZERO)))
+        if (reset || (keys && ccr_gui_key_pressed(CCR_KEY_ZERO)))
             zoom_to(cv, viewport, 1.0f);
         if (f)
             fit_view_smooth(cv, doc, viewport);
@@ -5556,6 +5596,78 @@ static void layout_fit(int w, int h)
     g_lay.files_w = clampf(g_lay.files_w, 200.0f, fmaxf(200.0f, (float)w * 0.45f));
     g_lay.build_h = clampf(g_lay.build_h, 110.0f, fmaxf(110.0f, ((float)h - TOPBAR_H - STATUSBAR_H) * 0.75f));
     g_lay.palette_zoom = clampf(g_lay.palette_zoom, CCR_PALETTE_ZOOM_MIN, CCR_PALETTE_ZOOM_MAX);
+}
+
+/* ------------------------------------------------------ interface size */
+
+/* "auto" -> 0, "1.5" or "150%" -> 1.5, nonsense -> -1. */
+static float parse_ui_scale(const char *v)
+{
+    if (!v || !*v)
+        return -1.0f;
+    if (strcmp(v, "auto") == 0)
+        return 0.0f;
+    char *end;
+    float f = strtof(v, &end);
+    if (end == v)
+        return -1.0f;
+    if (*end == '%' || f > 4.0f)
+        f /= 100.0f;
+    return f >= 0.5f && f <= 4.0f ? f : -1.0f;
+}
+
+static float g_ui_choice;   /* 0: automatic, else the size picked */
+
+/* The interface `choice` big (0: as the screen wants); `save`: remembered. */
+static void ui_scale_use(ccr_document *doc, float choice, bool save)
+{
+    g_ui_choice = choice;
+    ccr_gui_set_scale(choice > 0.0f ? choice : ccr_gui_auto_scale());
+    layout_fit(ccr_gui_width(), ccr_gui_height());
+    if (save) {
+        char v[16];
+        if (choice > 0.0f)
+            snprintf(v, sizeof v, "%.4g", (double)choice);
+        else
+            snprintf(v, sizeof v, "auto");
+        if (!ccr_config_set("ui_scale", v))
+            fprintf(stderr, "ccratch: could not remember the interface size in ~/.config/ccratch\n");
+    }
+    if (doc) {
+        const int pct = (int)(ccr_gui_scale() * 100.0f + 0.5f);
+        ccr_trf(doc->status, sizeof doc->status, choice > 0.0f ? CCR_T_UI_SCALE : CCR_T_UI_SCALE_AUTO, pct);
+        doc->has_errors = false;
+    }
+}
+
+/* Ctrl+Alt+= / - : a step bigger or smaller; Ctrl+Alt+0: automatic. And
+ * automatic follows the window onto another screen. */
+static void ui_scale_keys(ccr_document *doc)
+{
+    static double checked;
+    if (g_ui_choice == 0.0f && ccr_gui_time() - checked > 1.0) {
+        checked = ccr_gui_time();
+        if (ccr_gui_auto_scale() != ccr_gui_scale())
+            ui_scale_use(NULL, 0.0f, false);
+    }
+    if (!ccr_gui_ctrl_down() || !ccr_gui_alt_down())
+        return;
+    static const float steps[] = { 0.75f, 0.875f, 1.0f, 1.125f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f };
+    const int n = (int)(sizeof steps / sizeof steps[0]);
+    const float now = ccr_gui_scale();
+    if (ccr_gui_key_pressed(CCR_KEY_EQUAL)) {
+        int k = 0;
+        while (k < n - 1 && steps[k] <= now + 0.01f)
+            ++k;
+        ui_scale_use(doc, steps[k], true);
+    } else if (ccr_gui_key_pressed(CCR_KEY_MINUS)) {
+        int k = n - 1;
+        while (k > 0 && steps[k] >= now - 0.01f)
+            --k;
+        ui_scale_use(doc, steps[k], true);
+    } else if (ccr_gui_key_pressed(CCR_KEY_ZERO)) {
+        ui_scale_use(doc, 0.0f, true);
+    }
 }
 
 enum { SPLIT_NONE, SPLIT_PALETTE, SPLIT_FILES, SPLIT_BUILD };
@@ -6243,11 +6355,6 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     ccr_gui_rect((ccr_rect){ 0, 0, (float)width, TOPBAR_H }, COL_BAR);
     ccr_gui_circle((ccr_vec2){ 22.0f, TOPBAR_H * 0.5f }, 8.0f, COL_ACCENT);
     ccr_gui_text("Ccratch", 38.0f, 8.0f, 22.0f, COL_TITLE);
-    if (g_files.root[0]) {   /* the project; the files are the tabs */
-        const char *proj = strrchr(g_files.root, '/');
-        ccr_gui_text(proj ? proj + 1 : g_files.root, 38.0f + ccr_gui_text_width("Ccratch", 22.0f) + 18.0f,
-                     11.0f, 18.0f, COL_BAR_TEXT);
-    }
     const ccr_button_style plain = *button_style(false), *bs = &plain;   /* the style is static */
     const ccr_button_style main_ = *button_style(true);
     const bool busy = ccr_job_busy(&g_job);
@@ -6353,6 +6460,16 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     if (ccr_gui_button((ccr_rect){ x, y, cw, bh }, ccr_tr(CCR_T_CMAKE_BUTTON), on_cmake ? &main_ : bs) && !modal &&
         !g_libs.open)
         clicked |= TOP_CMAKE;
+    /* the project (the files are the tabs), in what room the buttons left */
+    if (g_files.root[0]) {
+        const char *proj = strrchr(g_files.root, '/');
+        const float px = 38.0f + ccr_gui_text_width("Ccratch", 22.0f) + 18.0f;
+        if (x - 10.0f > px + 20.0f) {
+            ccr_gui_clip_begin((ccr_rect){ px, 0.0f, x - 10.0f - px, TOPBAR_H });
+            ccr_gui_text(proj ? proj + 1 : g_files.root, px, 11.0f, 18.0f, COL_BAR_TEXT);
+            ccr_gui_clip_end();
+        }
+    }
     return clicked;
 }
 
@@ -6717,6 +6834,22 @@ int ccr_run(int argc, char **argv)
     ccr_lang_pick(opt.lang, stderr);
     ccr_theme_pick(opt.theme, stderr);
     ccr_lib_load(stderr);   /* block packs: libraries as blocks */
+    {   /* the interface's size: --ui-scale, $CCRATCH_UI_SCALE, remembered, or the screen's */
+        float choice = opt.smoke_frames ? 1.0f : 0.0f;   /* tests: the sizes they expect */
+        char saved[16];
+        const char *env = getenv("CCRATCH_UI_SCALE");
+        if (opt.ui_scale && parse_ui_scale(opt.ui_scale) >= 0.0f)
+            choice = parse_ui_scale(opt.ui_scale);
+        else if (env && parse_ui_scale(env) >= 0.0f)
+            choice = parse_ui_scale(env);
+        else if (!opt.smoke_frames && ccr_config_get("ui_scale", saved, sizeof saved) && parse_ui_scale(saved) >= 0.0f)
+            choice = parse_ui_scale(saved);
+        if (opt.ui_scale && parse_ui_scale(opt.ui_scale) < 0.0f)
+            fprintf(stderr, "ccratch: --ui-scale %s: a size like 1.5, 150%% or auto\n", opt.ui_scale);
+        ui_scale_use(NULL, choice, false);
+        if (!opt.smoke_frames)
+            ccr_gui_window_fit(1280, 800);
+    }
     if (opt.smoke_frames == 0) {   /* tests and screenshots: the sizes they expect */
         layout_load();
         char v[16];
@@ -6804,6 +6937,7 @@ int ccr_run(int argc, char **argv)
                            g_ren.open;   /* a dialog has the mouse */
         if (ccr_gui_key_pressed(CCR_KEY_F1) && !eula.open && !g_quit.open)
             g_help = !g_help;
+        ui_scale_keys(&doc);
 
         if (ccr_gui_file_dropped(dropped, sizeof dropped) &&
             switch_to(&doc, &canvas, viewport, dropped, &opt)) {
@@ -7064,6 +7198,19 @@ int ccr_run(int argc, char **argv)
                 g_glide.active = false;
         }
 
+        /* Something else took the mouse in the middle of a drag (a dialog
+         * opened, a text field got the keys): the rectangle or the block
+         * must not stay stuck to the cursor. Let go of it, as if released. */
+        if (!(can_act && !pie.open && !was_open) && !ccr_gui_mouse_down(CCR_MOUSE_LEFT)) {
+            g_sel.band = false;
+            if (doc.loaded && doc.ed.drag != CCR_DRAG_IDLE && !doc.ed.carrying) {   /* a carried copy waits for a click */
+                ccr_editor_input up = { .mouse = world, .released = true, .zoom = canvas.zoom, .dt = dt };
+                ccr_editor_update(&doc.ed, &up);
+            }
+        }
+        if (modal)
+            g_sel.band = false;   /* a dialog over it: no rectangle under it */
+
         if (can_act && !pie.open && !was_open) {
             /* a carried copy (Duplicate) lands on a click anywhere, the
              * palette included, where it is thrown away */
@@ -7081,7 +7228,8 @@ int ccr_run(int argc, char **argv)
             /* a press on empty canvas: a selection rectangle; on a block:
              * the old selection goes */
             bool band_press = false;
-            if (lmb && inside && !doc.ed.carrying && doc.ed.drag == CCR_DRAG_IDLE) {
+            if (lmb && inside && !doc.ed.carrying && doc.ed.drag == CCR_DRAG_IDLE &&
+                !blame_badge_under(&doc, &canvas, m)) {
                 if (doc.ed.hover_arrow == CCR_NONE && ccr_editor_context(&doc.ed, world).node == CCR_NONE) {
                     sel_clear();
                     g_sel.band = band_press = true;

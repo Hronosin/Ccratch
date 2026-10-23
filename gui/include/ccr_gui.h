@@ -93,6 +93,17 @@ bool  ccr_gui_load_fonts(const ccr_font_part *parts, int n, float base_size);
 /* Window icon from an in-memory PNG. Returns false if it could not decode. */
 bool  ccr_gui_set_icon_png(const unsigned char *png, unsigned int size);
 
+/* Interface size. Everything (sizes, the mouse, ccr_gui_width) is in units
+ * of `scale` pixels: 1.5 draws all half as big again, for dense screens.
+ * ccr_gui_auto_scale: the system's scaling, else from the screen's pixels
+ * an inch (Ccratch was drawn for 27" 2560x1440), in quarters. */
+void  ccr_gui_set_scale(float scale);
+float ccr_gui_scale(void);
+float ccr_gui_auto_scale(void);
+/* The window w x h units big (so bigger with the scale), but never over
+ * most of the screen; centred on it. */
+void  ccr_gui_window_fit(int w, int h);
+
 /* Queries */
 int      ccr_gui_width(void);
 int      ccr_gui_height(void);

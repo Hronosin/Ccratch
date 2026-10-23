@@ -914,6 +914,23 @@ ccratch --list-blocks                    block packs found, and where
 `--dump-ast` exits with 0 if the file is clean, 1 if it has errors,
 2 if clang could not read it at all.
 
+## Interface size
+
+Ccratch was drawn on a 27" 2560x1440 screen. On any other it sizes itself:
+the system's scaling if it has one (GNOME, KDE, Windows), else the
+screen's pixels an inch, so a 4K monitor or a dense laptop gets bigger
+text and buttons, and a small screen a bit smaller ones, never so big the
+panels don't fit. Then by hand:
+
+- **Ctrl+Alt+=** / **Ctrl+Alt+-**: bigger or smaller (75% to 300%),
+  remembered; **Ctrl+Alt+0**: as the screen wants again;
+- `ccratch --ui-scale 150%` (or `1.5`, or `auto`), or `CCRATCH_UI_SCALE`;
+- `CCRATCH_UI_SCALE_WHY=1 ccratch` prints what the screen said and what
+  was picked.
+
+The canvas zoom (Ctrl+= / -, the wheel) is separate: it sizes the blocks,
+this sizes everything.
+
 ## Controls
 
 - Drop a `.c` file onto the window: open it

@@ -4,10 +4,25 @@
 #include <rlgl.h>
 #include <GLFW/glfw3.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static Texture2D g_shapes_tex;
+static float     g_scale = 1.0f;  /* interface size: everything is drawn in units this many pixels big */
+
+/* The mouse, in interface units. */
+static Vector2 mouse_units(void)
+{
+    const Vector2 v = GetMousePosition();
+    return (Vector2){ v.x / g_scale, v.y / g_scale };
+}
+
+/* A clip rectangle given in units, in the framebuffer's pixels. */
+static void scissor_units(float x, float y, float w, float h)
+{
+    BeginScissorMode((int)(x * g_scale), (int)(y * g_scale), (int)(w * g_scale + 0.999f), (int)(h * g_scale + 0.999f));
+}
 static Font      g_font;          /* loaded TTF; .texture.id == 0: raylib's pixel font */
 static bool      g_font_loaded;
 
@@ -105,9 +120,73 @@ void ccr_gui_cancel_close(void)
     if (w)
         glfwSetWindowShouldClose(w, GLFW_FALSE);
 }
-void ccr_gui_end_frame(void)        { EndDrawing(); }
-int  ccr_gui_width(void)            { return GetScreenWidth(); }
-int  ccr_gui_height(void)           { return GetScreenHeight(); }
+void ccr_gui_end_frame(void)
+{
+    rlDrawRenderBatchActive();
+    rlPopMatrix();
+    EndDrawing();
+}
+int  ccr_gui_width(void)            { return (int)((float)GetScreenWidth() / g_scale); }
+int  ccr_gui_height(void)           { return (int)((float)GetScreenHeight() / g_scale); }
+
+void ccr_gui_window_fit(int w, int h)
+{
+    const int mon = GetCurrentMonitor();
+    const int mw = GetMonitorWidth(mon), mh = GetMonitorHeight(mon);
+    int pw = (int)((float)w * g_scale), ph = (int)((float)h * g_scale);
+    if (mw > 0 && pw > mw * 92 / 100)
+        pw = mw * 92 / 100;
+    if (mh > 0 && ph > mh * 88 / 100)
+        ph = mh * 88 / 100;
+    if (pw == GetScreenWidth() && ph == GetScreenHeight())
+        return;
+    SetWindowSize(pw, ph);
+    if (mw > 0 && mh > 0) {
+        const Vector2 at = GetMonitorPosition(mon);
+        SetWindowPosition((int)at.x + (mw - pw) / 2, (int)at.y + (mh - ph) / 2);
+    }
+}
+
+void ccr_gui_set_scale(float s)
+{
+    g_scale = s < 0.5f ? 0.5f : s > 4.0f ? 4.0f : s;
+    if (IsWindowReady()) {   /* never so small that the panels pile up: 640x400 units */
+        const int mon = GetCurrentMonitor();
+        int mw = (int)(640.0f * g_scale), mh = (int)(400.0f * g_scale);
+        if (GetMonitorWidth(mon) > 0 && mw > GetMonitorWidth(mon) * 9 / 10)
+            mw = GetMonitorWidth(mon) * 9 / 10;
+        if (GetMonitorHeight(mon) > 0 && mh > GetMonitorHeight(mon) * 9 / 10)
+            mh = GetMonitorHeight(mon) * 9 / 10;
+        SetWindowMinSize(mw, mh);
+    }
+}
+float ccr_gui_scale(void)           { return g_scale; }
+
+float ccr_gui_auto_scale(void)
+{
+    /* the system's own setting (GNOME/KDE scaling, Windows' %), if any */
+    const Vector2 dpi = GetWindowScaleDPI();
+    if (dpi.x > 1.05f)
+        return dpi.x;
+    /* else from the screen: Ccratch was drawn for a 27" 2560x1440 one,
+     * about 109 pixels an inch; denser screens get bigger units */
+    const int mon = GetCurrentMonitor();
+    const int px = GetMonitorWidth(mon), mm = GetMonitorPhysicalWidth(mon), py = GetMonitorHeight(mon);
+    float s = 1.0f;
+    if (px > 0 && mm > 100 && mm < 2000) {   /* sizes some screens report are nonsense */
+        const float ppi = (float)px / ((float)mm / 25.4f);
+        s = ppi / 109.0f;
+    }
+    /* and never so big that the window cannot hold the panels */
+    if (py > 0 && (float)py / s < 720.0f)
+        s = (float)py / 720.0f;
+    s = (float)(int)(s * 4.0f + 0.5f) / 4.0f;   /* in quarters: 100%, 125%, 150%... */
+    s = s < 0.75f ? 0.75f : s > 3.0f ? 3.0f : s;
+    if (getenv("CCRATCH_UI_SCALE_WHY"))
+        fprintf(stderr, "ccratch: screen %d: %dx%d pixels, %dx%d mm, system scale %.2f -> interface %.0f%%\n", mon, px,
+                py, mm, GetMonitorPhysicalHeight(mon), (double)dpi.x, (double)(s * 100.0f));
+    return s;
+}
 double ccr_gui_time(void)           { return GetTime(); }
 float ccr_gui_wheel(void)           { return GetMouseWheelMove(); }
 
@@ -115,6 +194,8 @@ void ccr_gui_begin_frame(ccr_color clear)
 {
     BeginDrawing();
     ClearBackground(to_rl(clear));
+    rlPushMatrix();
+    rlScalef(g_scale, g_scale, 1.0f);
 }
 
 bool ccr_gui_screenshot(const char *path)
@@ -205,14 +286,14 @@ bool ccr_gui_set_icon_png(const unsigned char *png, unsigned int size)
 
 ccr_vec2 ccr_gui_mouse(void)
 {
-    Vector2 v = GetMousePosition();
+    Vector2 v = mouse_units();
     return (ccr_vec2){ v.x, v.y };
 }
 
 ccr_vec2 ccr_gui_mouse_delta(void)
 {
     Vector2 v = GetMouseDelta();
-    return (ccr_vec2){ v.x, v.y };
+    return (ccr_vec2){ v.x / g_scale, v.y / g_scale };
 }
 
 bool ccr_gui_mouse_down(ccr_mouse_button button)
@@ -322,7 +403,7 @@ void ccr_gui_triangle(ccr_vec2 a, ccr_vec2 b, ccr_vec2 c, ccr_color col)
 
 void ccr_gui_clip_begin(ccr_rect r)
 {
-    BeginScissorMode((int)r.x, (int)r.y, (int)r.w, (int)r.h);
+    scissor_units(r.x, r.y, r.w, r.h);
 }
 
 void ccr_gui_clip_end(void)
@@ -421,7 +502,7 @@ bool ccr_gui_button(ccr_rect r, const char *label, const ccr_button_style *st)
 {
     /* a click: pressed and let go over the button */
     static Vector2 pressed_at = { -1e9f, -1e9f };
-    const Vector2 m = GetMousePosition();
+    const Vector2 m = mouse_units();
     const Rectangle rr = rect_to_rl(r);
     const bool over = CheckCollisionPointRec(m, rr);
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
@@ -598,7 +679,7 @@ drawn:
 
     DrawRectangleRec(rect_to_rl(r), to_rl(g_tb_edge));
     DrawRectangleRec((Rectangle){ r.x + 2, r.y + 2, r.w - 4, r.h - 4 }, to_rl(g_tb_fill));
-    BeginScissorMode((int)r.x + 2, (int)r.y + 2, (int)r.w - 4, (int)r.h - 4);
+    scissor_units(r.x + 2, r.y + 2, r.w - 4, r.h - 4);
     const float ty = r.y + (r.h - font_size) * 0.5f;
     if (g_tb_all && buf[0]) {   /* selected: on a band of the edge's colour, faint */
         const float tw = MeasureTextEx(font, buf, font_size, spacing).x;
@@ -613,7 +694,7 @@ drawn:
                          to_rl(g_tb_text));
     EndScissorMode();
 
-    Vector2 m = GetMousePosition();
+    Vector2 m = mouse_units();
     bool outside = !CheckCollisionPointRec(m, rect_to_rl(r));
     bool done = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
                 (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && outside);
