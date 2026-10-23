@@ -85,6 +85,30 @@ and next to it every block, drawn as the real thing:
 | **Types** | `(int) a`, `sizeof(int)`, `sizeof a` |
 | **File** | a function (a hat to stack its body under), a prototype, `struct` (declarations go in its mouth), `enum`, `typedef`, a global, `#include <...>`, `#include "..."`, `#define` |
 
+### What is this block for?
+
+Rest the mouse on a block in the palette for half a second and a card
+slides out beside it: what the block does, how to use it in Ccratch
+(which slot wants what, what goes in its mouth), and a few lines of C
+that use it. A block from a library pack or from the project shows its
+C signature, its comment and the header it comes from.
+
+![the card for `for`: "Repeats a set number of times, counting as it goes", how to fill its three slots, and a for loop that prints 0, 1, 2](docs/explain.png)
+
+The words are in `lang/CODE.explain`, plain enough for someone who has
+never programmed. English and Russian say something for every block;
+any other language falls back to English for what it leaves out, and
+`CODE-plain.explain` can say it plainer still:
+
+```
+for.what = Repeats a set number of times, counting as it goes.
+for.how  = Three slots: where the counter starts, until when, how it steps.
+```
+
+`ccratch --check-explain lang/fi.explain` finds unknown blocks and broken
+lines (`--complete`: and the blocks it says nothing about yet).
+`explain = off` in `~/.config/ccratch/config` turns the cards off.
+
 Blocks from **File** are the file's own: let one go anywhere on the canvas
 and it joins the file where C wants it, after the last one of its kind:
 `#include`s, then `#define`s, types, prototypes, globals, functions. In a
@@ -552,6 +576,10 @@ everything as it was:
 | **Super Serious** | soft pink pastels that do not burn your eyes, deeply serious about it |
 | **Masochist** | white. All of it. You asked for this |
 | **Scratch** | the editor all of this started from, blue bar and all; pointers are Pen green, dragons are Sound purple |
+| **Vim** | a dark terminal and the green of the logo; blocks in the colours `:syntax on` gives C: Statement yellow, Type green, Identifier cyan, PreProc magenta. `:q!` to leave (or pick another theme) |
+| **Kernel Space** | the Linux console at boot: black, VGA's sixteen colours, dmesg grey, Tux yellow. Pointers are oops red: in ring 0 nobody catches you |
+
+![Vim and Kernel Space, each with the card for if / else out](docs/themes_vim_kernel.png)
 
 A theme is a text file like a language pack: `themes/NAME.theme`, found
 in `$CCRATCH_THEME_DIR`, `~/.local/share/ccratch/themes/` and

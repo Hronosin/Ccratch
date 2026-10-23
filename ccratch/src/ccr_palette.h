@@ -93,6 +93,9 @@ bool ccr_palette_on_bar(const ccr_palette *p, ccr_rect area, ccr_vec2 mouse);
  * was hit, in block units (what a drag out of the palette holds it by). */
 int  ccr_palette_hit(const ccr_palette *p, ccr_rect area, ccr_vec2 mouse, ccr_vec2 *grab);
 
+/* The same, with where that block is on screen (to show something beside it). */
+int  ccr_palette_hover(const ccr_palette *p, ccr_rect area, ccr_vec2 mouse, ccr_rect *where);
+
 /* `trash`: a block is being dragged over it (dropping it deletes it). */
 void ccr_palette_draw(const ccr_palette *p, ccr_rect area, bool trash);
 

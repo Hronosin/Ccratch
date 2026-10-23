@@ -11,6 +11,7 @@
 #include "ccr_gui.h"
 #include "ccr_lang.h"
 #include "ccr_parse.h"
+#include "ccr_explain.h"
 #include "ccr_files.h"
 #include "ccr_fonts.h"
 #include "ccr_gdb.h"
@@ -137,6 +138,9 @@ static bool load_font(void)
     const char *want = ccr_lang_font();
     const int nl = ccr_lang_codepoints(lang, 4096);
     for (int i = 0; i < nl; ++i)
+        plan_char(&fp, lang[i], want);
+    const int ne = ccr_explain_codepoints(lang, 4096);   /* the cards' words */
+    for (int i = 0; i < ne; ++i)
         plan_char(&fp, lang[i], want);
     const int nn = ccr_lang_scan(langs, 64);
     for (int i = 0; i < nn; ++i)
@@ -273,6 +277,8 @@ static void print_usage(const char *argv0)
            "  --list-themes          show the themes found, and where\n"
            "  --check-theme FILE     check a theme file for unknown keys and bad colours\n"
            "  --check-lang FILE      check a language pack for missing or broken text\n"
+           "  --check-explain FILE   check a block explanation file (lang/CODE.explain);\n"
+           "                         --complete after it: every block must be there\n"
            "  --make-blocks HEADER   print a draft block pack for a library's header\n"
            "                         (save it as blocks/NAME.yaml and make it read well)\n"
            "  --make-cmake DIR       print the CMakeLists.txt Ccratch would make for a project\n"
@@ -472,6 +478,10 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
                        langs[k].path[0] ? langs[k].path : "(built in)");
             }
             return 0;
+        } else if (strcmp(a, "--check-explain") == 0 && i + 1 < argc) {
+            const char *f = argv[++i];
+            const bool complete = i + 1 < argc && strcmp(argv[i + 1], "--complete") == 0;
+            return ccr_explain_check(f, complete, stdout) == 0 ? 0 : 1;
         } else if (strcmp(a, "--lang-template") == 0) {
             ccr_lang_write_template(stdout);
             return 0;
@@ -1084,6 +1094,12 @@ static const ccr_button_style *button_style(bool main)
         .edge  = main ? ccr_th(CCR_C_ACCENT) : ccr_th(CCR_C_BUTTON_EDGE),
         .text  = main ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT),
     };
+    if (main) {   /* a light accent (a yellow one) wants dark letters */
+        const ccr_color a = st.fill;
+        const unsigned luma = ((a >> 24) & 0xFFu) * 299 + ((a >> 16) & 0xFFu) * 587 + ((a >> 8) & 0xFFu) * 114;
+        if (luma > 170u * 1000u)
+            st.text = 0x141414FFu;
+    }
     if (main)   /* a little lighter under the mouse */
         st.hover = (st.fill & 0xFFu) | (((((st.fill >> 24) & 0xFFu) * 7 + 0xFF) / 8) << 24) |
                    (((((st.fill >> 16) & 0xFFu) * 7 + 0xFF) / 8) << 16) |
@@ -1431,6 +1447,7 @@ static void use_language(ccr_document *doc, const char *code)
     ccr_theme_use(theme, NULL);   /* theme names come in this language too */
     ccr_trf(doc->status, sizeof doc->status, CCR_T_LANGUAGE, ccr_lang_name());
     doc->has_errors = false;
+    ccr_explain_load(ccr_lang_code(), ccr_lang_in_plain_words());
     load_font();   /* its letters */
     /* C keywords stay, but pack blocks speak this language now */
     libs_reload(doc);
@@ -3596,6 +3613,145 @@ static void blame_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewpor
             g_blame.open = 0.0f;
         }
     }
+}
+
+/* ------------------------------------------------- block explanations
+ *
+ * The mouse rests on a block in the palette: a card slides out of the
+ * palette beside it, saying what the block does, how to use it, and a
+ * few lines of C that use it (a pack's block: its C, its comment, its
+ * header). "explain = off" in the config turns it off.
+ */
+static struct {
+    int      t;          /* the block it is about, -1 */
+    double   since;      /* when the mouse came to it */
+    float    open;       /* 0..1 */
+    ccr_rect at;         /* the block, on screen */
+    bool     off;
+} g_explain = { .t = -1 };
+
+/* Draws text a line at a time (the example), clipped to `w`. Its height. */
+static float code_lines(const char *text, float x, float y, float size, ccr_color c, bool draw)
+{
+    float h = 0.0f;
+    char line[256];
+    for (const char *p = text; *p;) {
+        const char *e = strchr(p, '\n');
+        const size_t n = e ? (size_t)(e - p) : strlen(p);
+        snprintf(line, sizeof line, "%.*s", (int)(n < sizeof line ? n : sizeof line - 1), p);
+        if (draw)
+            ccr_gui_text(line, x, y + h, size, c);
+        h += size * 1.35f;
+        p += n;
+        if (*p == '\n')
+            ++p;
+    }
+    return h;
+}
+
+static ccr_rect palette_area(int h);
+
+static void explain_card(int h, bool interactive, float dt)
+{
+    if (g_explain.off || !g_palette.ready) {
+        g_explain.t = -1;
+        return;
+    }
+    const ccr_vec2 m = ccr_gui_mouse();
+    ccr_rect at = { 0 };
+    const int t = interactive && !ccr_gui_mouse_down(CCR_MOUSE_LEFT) ? ccr_palette_hover(&g_palette, palette_area(h), m, &at)
+                                                                       : -1;
+    if (t != g_explain.t) {
+        g_explain.t = t;
+        g_explain.since = ccr_gui_time();
+        g_explain.open = 0.0f;
+    }
+    if (t < 0 || ccr_gui_time() - g_explain.since < 0.45)
+        return;
+    g_explain.at = at;
+    g_explain.open = fminf(1.0f, g_explain.open + dt * 7.0f);
+    const float ease = 1.0f - (1.0f - g_explain.open) * (1.0f - g_explain.open);
+
+    /* what it says */
+    char title[300], what[600], how[600], example[700], from[300];
+    title[0] = what[0] = how[0] = example[0] = from[0] = '\0';
+    if (t < CCR_TEMPLATE_COUNT) {
+        snprintf(title, sizeof title, "%s", ccr_template_label((ccr_template)t));
+        snprintf(what, sizeof what, "%s", ccr_explain_what((ccr_template)t));
+        snprintf(how, sizeof how, "%s", ccr_explain_how((ccr_template)t));
+        snprintf(example, sizeof example, "%s", ccr_explain_example((ccr_template)t));
+    } else {
+        const int li = t - CCR_TEMPLATE_COUNT;
+        if (li >= ccr_lib_block_count())
+            return;   /* a pack's CMake block: nothing to say yet */
+        const ccr_lib_block *b = ccr_lib_block_at(li);
+        snprintf(title, sizeof title, "%s", b->call);
+        size_t k = (size_t)snprintf(example, sizeof example, "%s %s(", b->returns, b->call);
+        for (int i = 0; i < b->nparams && k < sizeof example; ++i)
+            k += (size_t)snprintf(example + k, sizeof example - k, "%s%s%s%s", i ? ", " : "", b->types[i],
+                                  b->types[i][0] ? " " : "", b->params[i]);
+        if (k < sizeof example)
+            snprintf(example + k, sizeof example - k, b->nparams ? ")" : "void)");
+        snprintf(what, sizeof what, "%s", b->doc);
+        const ccr_lib_pack *pk = ccr_lib_pack_at(b->pack);
+        if (b->include[0])
+            ccr_trf(from, sizeof from, CCR_T_NAV_FROM, b->include);
+        else if (pk)
+            ccr_trf(from, sizeof from, CCR_T_NAV_FROM, pk->include[0] ? pk->include : pk->name);
+    }
+    if (!what[0] && !how[0] && !example[0])
+        return;
+
+    /* sizes */
+    const float pad = 14.0f, w = 380.0f, fs = 15.0f;
+    const float wh = what[0] ? wrap_text(what, 0, 0, w, fs, 0, false) : 0.0f;
+    const float hh = how[0] ? wrap_text(how, 0, 0, w, 13.5f, 0, false) : 0.0f;
+    const float eh = example[0] ? code_lines(example, 0, 0, 13.0f, 0, false) + 14.0f : 0.0f;
+    const float fh = from[0] ? 20.0f : 0.0f;
+    const float card_h = pad + 26.0f + (wh > 0 ? wh + 6.0f : 0) + (hh > 0 ? hh + 8.0f : 0) + (eh > 0 ? eh + 4.0f : 0) +
+                         fh + pad - 4.0f;
+    const ccr_rect pa = palette_area(h);
+    ccr_rect card = { pa.x + pa.w + 10.0f, at.y - 6.0f, w + pad * 2.0f, card_h };
+    if (card.y + card.h > (float)h - STATUSBAR_H - 6.0f)
+        card.y = (float)h - STATUSBAR_H - 6.0f - card.h;
+    if (card.y < TOPBAR_H + 6.0f)
+        card.y = TOPBAR_H + 6.0f;
+    /* out of the palette's edge: the visible part grows from the left */
+    ccr_gui_clip_begin((ccr_rect){ card.x - 12.0f, card.y - 4.0f, (card.w + 20.0f) * ease, card.h + 12.0f });
+    card.x -= (1.0f - ease) * 24.0f;
+    ccr_gui_rect_rounded((ccr_rect){ card.x + 3, card.y + 4, card.w, card.h }, 0.08f, ccr_th(CCR_C_SHADOW));
+    ccr_gui_rect_rounded((ccr_rect){ card.x - 1, card.y - 1, card.w + 2, card.h + 2 }, 0.08f, ccr_th(CCR_C_ACCENT));
+    ccr_gui_rect_rounded(card, 0.08f, ccr_th(CCR_C_PANEL) | 0xFFu);
+    /* a tongue towards the block it is about */
+    const float ty = fminf(fmaxf(at.y + fminf(at.h, 40.0f) * 0.5f, card.y + 14.0f), card.y + card.h - 14.0f);
+    ccr_gui_triangle((ccr_vec2){ card.x - 9.0f, ty }, (ccr_vec2){ card.x + 1.0f, ty - 8.0f }, (ccr_vec2){ card.x + 1.0f, ty + 8.0f },
+                     ccr_th(CCR_C_ACCENT));
+    float x = card.x + pad, y = card.y + pad - 2.0f;
+    ccr_gui_clip_begin((ccr_rect){ card.x, card.y, card.w, card.h });
+    ccr_gui_text(title, x, y, 18.0f, ccr_th(CCR_C_PANEL_TEXT));
+    y += 26.0f;
+    if (wh > 0) {
+        wrap_text(what, x, y, w, fs, ccr_th(CCR_C_PANEL_TEXT), true);
+        y += wh + 6.0f;
+    }
+    if (hh > 0) {
+        wrap_text(how, x, y, w, 13.5f, ccr_th(CCR_C_PANEL_HINT), true);
+        y += hh + 8.0f;
+    }
+    if (eh > 0) {
+        const ccr_rect box = { x - 4.0f, y, w + 8.0f, eh };
+        ccr_gui_rect_rounded(box, 0.08f, ccr_th(CCR_C_FIELD));
+        ccr_gui_rect((ccr_rect){ box.x, box.y + 4.0f, 3.0f, box.h - 8.0f }, ccr_th(CCR_C_ACCENT));
+        ccr_gui_clip_begin((ccr_rect){ box.x + 8.0f, box.y, box.w - 12.0f, box.h });
+        code_lines(example, x + 8.0f, y + 7.0f, 13.0f, ccr_th(CCR_C_FIELD_TEXT), true);
+        ccr_gui_clip_end();
+        ccr_gui_clip_begin((ccr_rect){ card.x, card.y, card.w, card.h });
+        y += eh + 4.0f;
+    }
+    if (fh > 0)
+        ccr_gui_text(from, x, y + 2.0f, 12.5f, ccr_th(CCR_C_PANEL_HINT));
+    ccr_gui_clip_end();
+    ccr_gui_clip_end();
 }
 
 /* Every frame: a pull or push going on; the status now and then; the
@@ -6341,7 +6497,7 @@ static void icon_bug(ccr_rect r, ccr_color c)
 static void drop_arrow(ccr_rect b, bool open)
 {
     const float cx = b.x + b.w - 14.0f, cy = b.y + b.h * 0.5f;
-    const ccr_color c = open ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT);
+    const ccr_color c = open ? button_style(true)->text : ccr_th(CCR_C_BUTTON_TEXT);
     if (open)
         ccr_gui_triangle((ccr_vec2){ cx - 4.0f, cy + 2.5f }, (ccr_vec2){ cx + 4.0f, cy + 2.5f }, (ccr_vec2){ cx, cy - 2.5f }, c);
     else
@@ -6407,7 +6563,7 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     const ccr_rect lb = { x, y, 60.0f, bh };
     if (ccr_gui_button(lb, "", g_pick.kind == 2 ? &main_ : bs) && !modal)
         pick_open(2, lb);
-    ccr_gui_text(code, lb.x + 12.0f, lb.y + 5.0f, 16.0f, g_pick.kind == 2 ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT));
+    ccr_gui_text(code, lb.x + 12.0f, lb.y + 5.0f, 16.0f, g_pick.kind == 2 ? main_.text : ccr_th(CCR_C_BUTTON_TEXT));
     if (ccr_lang_in_plain_words())   /* in plain words: a little smile of a dot */
         ccr_gui_circle((ccr_vec2){ lb.x + 14.0f + ccr_gui_text_width(code, 16.0f), lb.y + 7.0f }, 3.0f,
                        ccr_th(CCR_C_ACCENT));
@@ -6418,7 +6574,7 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     if (ccr_gui_button(tb, "", g_pick.kind == 1 ? &main_ : bs) && !modal)
         pick_open(1, tb);
     ccr_gui_text(ccr_tr(CCR_T_THEME_BUTTON), tb.x + 12.0f, tb.y + 5.0f, 16.0f,
-                 g_pick.kind == 1 ? 0xFFFFFFFFu : ccr_th(CCR_C_BUTTON_TEXT));
+                 g_pick.kind == 1 ? main_.text : ccr_th(CCR_C_BUTTON_TEXT));
     drop_arrow(tb, g_pick.kind == 1);
     if (!modal && !g_pick.kind) {
         tip(tb, ccr_theme_name());
@@ -6855,6 +7011,7 @@ int ccr_run(int argc, char **argv)
         char v[16];
         g_auto.on = ccr_config_get("autosave", v, sizeof v) && strcmp(v, "on") == 0;
         g_minimap = !(ccr_config_get("minimap", v, sizeof v) && strcmp(v, "off") == 0);
+        g_explain.off = ccr_config_get("explain", v, sizeof v) && strcmp(v, "off") == 0;
     }
     layout_fit(ccr_gui_width(), ccr_gui_height());
     char anim[16];
@@ -6865,6 +7022,7 @@ int ccr_run(int argc, char **argv)
     eula_view eula = { 0 };
     eula.open = eula.first_run =
         opt.smoke_frames == 0 && !ccr_config_get("eula", answered, sizeof answered);
+    ccr_explain_load(ccr_lang_code(), ccr_lang_in_plain_words());
     if (!load_font())
         fprintf(stderr, "ccratch: font did not load, falling back to raylib's (ASCII only)\n");
     g_palette.zoom = g_lay.palette_zoom;
@@ -7304,6 +7462,8 @@ int ccr_run(int argc, char **argv)
                    !modal && !pie.open && !opm.open && te.node == CCR_NONE);
         mark_tooltip(&doc, &canvas, viewport);
         blame_card(&doc, &canvas, viewport, !modal && !pie.open && !opm.open && te.node == CCR_NONE, dt);
+        explain_card(h, !modal && !pie.open && !opm.open && te.node == CCR_NONE &&
+                            (!doc.loaded || doc.ed.drag == CCR_DRAG_IDLE) && !(doc.loaded && doc.ed.carrying), dt);
         if (!modal && !pie.open && !opm.open && te.node == CCR_NONE)
             call_tooltip(&doc, &canvas, viewport);
         refs_frame(&doc, &canvas, viewport, &opt, !modal && !pie.open && !opm.open && te.node == CCR_NONE);
@@ -7431,6 +7591,7 @@ int ccr_run(int argc, char **argv)
     g_stash_n = 0;
     ccr_files_free(&g_files);
     ccr_palette_free(&g_palette);
+    ccr_explain_free();
     ccr_lib_unload();
     ccr_gui_shutdown();
     ccr_lang_reset();

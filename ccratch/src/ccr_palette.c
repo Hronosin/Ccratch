@@ -442,6 +442,26 @@ int ccr_palette_hit(const ccr_palette *p, ccr_rect area, ccr_vec2 mouse, ccr_vec
     return -1;
 }
 
+int ccr_palette_hover(const ccr_palette *p, ccr_rect area, ccr_vec2 mouse, ccr_rect *where)
+{
+    const ccr_rect fly = fly_of(area);
+    if (!p->ready || !inside(mouse, fly) || ccr_palette_on_bar(p, area, mouse))
+        return -1;
+    const ccr_canvas cv = fly_canvas(p, fly);
+    const ccr_vec2 w = ccr_canvas_to_world(&cv, mouse);
+    for (uint32_t i = 0; i < p->item_count; ++i) {
+        const ccr_palette_item *it = &p->items[i];
+        const ccr_vec2 local = { w.x - PAD_X, w.y - it->y };
+        if (ccr_blocks_hit(&it->blocks, local) == CCR_NONE)
+            continue;
+        const ccr_rect b = it->blocks.bounds;
+        const ccr_vec2 a = ccr_canvas_to_screen(&cv, (ccr_vec2){ PAD_X + b.x, it->y + b.y });
+        *where = (ccr_rect){ a.x, a.y, b.w * cv.zoom, b.h * cv.zoom };
+        return (int)it->t;
+    }
+    return -1;
+}
+
 /* ------------------------------------------------------------ drawing */
 
 void ccr_palette_draw(const ccr_palette *p, ccr_rect area, bool trash)

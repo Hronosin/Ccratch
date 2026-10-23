@@ -45,7 +45,7 @@ add_subdirectory(plugins)   # *.so         - everything optional
 # Language packs and themes are plain files found at run time, next to the program in
 # share/ccratch/lang (bin/../share/...). Copied there on every build, so a
 # pack edited in lang/ shows up after `cmake --build`.
-file(GLOB CCR_LANG_PACKS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/lang/*.lang)
+file(GLOB CCR_LANG_PACKS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/lang/*.lang ${PROJECT_SOURCE_DIR}/lang/*.explain)
 set(CCR_LANG_OUT ${CMAKE_BINARY_DIR}/share/ccratch/lang)
 add_custom_target(ccratch_lang ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CCR_LANG_OUT}

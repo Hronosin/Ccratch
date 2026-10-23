@@ -1,0 +1,194 @@
+# Ccratch: what each block in the palette is for, and how to use it.
+# The card that slides out when the mouse rests on a block shows these.
+# block.what = what it does; block.how = how to use it in Ccratch.
+# Other languages: CODE.explain with the same keys (anything left out is
+# said in English). Check one with: ccratch --check-explain FILE
+
+code.what = A line of plain C, for anything there is no block for yet.
+code.how = Drop it in, double-click it and type the C. It stays text until Ccratch learns a block for it.
+if.what = Does the blocks inside only when the condition is true.
+if.how = Put a green condition (like a < b) into its slot, and the blocks to do into its mouth.
+if_else.what = Two ways: the first mouth when the condition is true, the second when it is not.
+if_else.how = A condition into the slot; what to do if yes into the top mouth, if no into the bottom one.
+while.what = Repeats the blocks inside as long as the condition stays true.
+while.how = A condition into the slot, the blocks to repeat into the mouth. Something inside must change the condition, or it never stops.
+for.what = Repeats a set number of times, counting as it goes.
+for.how = Three slots: where the counter starts (int i = 0), until when (i < 10), how it steps (i++). The blocks to repeat go into the mouth; i is the count.
+do_while.what = Like while, but does the blocks once before it checks anything.
+do_while.how = Blocks into the mouth, the condition at the bottom: good for "ask until the answer is right".
+return.what = Leaves the function at once, giving back a value.
+return.how = Put what the function gives back into its slot (or leave it empty in a void function). Nothing under it runs.
+break.what = Jumps out of the loop (or switch) it is in, right now.
+break.how = Usually inside an if, inside a loop: "if this happens, stop looping".
+continue.what = Skips the rest of this round of the loop and starts the next one.
+continue.how = Inside an if, inside a loop: "skip this one".
+switch.what = Picks one of several branches by a value: a tidy row of ifs.
+switch.how = The value to look at into its slot; case blocks inside, one per value, each ending with break.
+case.what = One branch of a switch: what to do when the value is this.
+case.how = Goes inside a switch. Its value into the slot, the blocks under it, then a break.
+default.what = The branch of a switch for every value no case took.
+default.how = Goes last inside a switch.
+goto.what = Jumps to a label in the same function. Ccratch draws an arrow to it.
+goto.how = Type the label's name into it. Best kept for one thing: jumping to the cleanup at the end.
+label.what = A named place in a function that goto can jump to.
+label.how = Put it where the jump should land and give it a name.
+add.what = Adds two numbers.
+add.how = Drop it into any slot that takes a value; fill its two holes with numbers or variables.
+sub.what = Subtracts the second number from the first.
+sub.how = Drop it into a slot that takes a value and fill both holes.
+mul.what = Multiplies two numbers.
+mul.how = Drop it into a slot that takes a value and fill both holes.
+div.what = Divides. Two whole numbers give a whole number: 7 / 2 is 3.
+div.how = Fill both holes. For 3.5, make one of them a float (7.0f).
+mod.what = The remainder of a division: 7 % 3 is 1.
+mod.how = Good for "every Nth time" and "is it even": n % 2 == 0.
+lt.what = True when the left is smaller than the right.
+lt.how = A green condition: drop it into an if, a while or a for, then fill both sides.
+gt.what = True when the left is bigger than the right.
+gt.how = A green condition: drop it into an if, a while or a for.
+le.what = True when the left is smaller than or equal to the right.
+le.how = A green condition: drop it into an if, a while or a for.
+ge.what = True when the left is bigger than or equal to the right.
+ge.how = A green condition: drop it into an if, a while or a for.
+eq.what = True when both sides are equal. Two = signs; one would change the value instead.
+eq.how = A green condition: drop it into an if or a while. A list of values (enums) drops down on the slot.
+ne.what = True when the two sides differ.
+ne.how = A green condition: drop it into an if or a while.
+and.what = True only when both conditions are true.
+and.how = Put a condition on each side: (a > 0) && (b > 0).
+or.what = True when at least one of the conditions is true.
+or.how = Put a condition on each side: (hp <= 0) || (time == 0).
+not.what = Turns true into false and false into true.
+not.how = Put a condition inside: !found means "not found".
+bit_and.what = Keeps only the bits set in both numbers: for flags.
+bit_and.how = flags & FLAG asks "is this flag on?".
+bit_or.what = Sets the bits of both numbers: for turning flags on.
+bit_or.how = flags | FLAG gives the flags with that one on too.
+bit_xor.what = Flips the bits that differ: a switch that toggles.
+bit_xor.how = x ^ 1 turns 0 into 1 and 1 into 0.
+bit_not.what = Flips every bit of a number.
+bit_not.how = Mostly with &: flags & ~FLAG turns that flag off.
+shl.what = Shifts the bits left: each step doubles the number.
+shl.how = 1 << n is 2 to the power n.
+shr.what = Shifts the bits right: each step halves the number.
+shr.how = n >> 1 is n / 2 (for positive whole numbers).
+ternary.what = A tiny if that gives back a value: this if the condition is true, that if not.
+ternary.how = The condition first, then the value for yes, then for no.
+decl_init.what = Makes a new variable (a named box for a value) and puts a first value in it.
+decl_init.how = Pick its type (int for whole numbers, float for fractions, char for a letter), name it, set the value.
+decl.what = Makes a new variable without a value yet.
+decl.how = Give it a value (a = b) before reading it: until then it holds whatever was in memory.
+assign.what = Puts a new value into a variable.
+assign.how = The variable on the left, the new value on the right. x = x + 1 is fine: right first, then left.
+add_assign.what = Adds to a variable: a += 5 is a = a + 5.
+add_assign.how = The variable on the left, how much to add on the right.
+sub_assign.what = Takes away from a variable: a -= 5 is a = a - 5.
+sub_assign.how = The variable on the left, how much to take on the right.
+mul_assign.what = Multiplies a variable: a *= 2 doubles it.
+mul_assign.how = The variable on the left, the multiplier on the right.
+inc.what = Adds 1 to a variable.
+inc.how = Its own block, or the step of a for: i++.
+dec.what = Takes 1 from a variable.
+dec.how = Its own block, or the step of a for counting down: i--.
+addr.what = The address of a variable: where in memory it lives.
+addr.how = Gives a pointer: int *p = &n. Also what scanf wants: scanf("%d", &n).
+deref.what = Follows a pointer to the value it points at.
+deref.how = *p reads it; *p = 5 changes the variable p points at.
+index.what = One element of an array, by its number. The first one is [0].
+index.how = The array on the left, the number in the brackets. An array of 7 goes from [0] to [6], never [7].
+member.what = One field of a struct: player.hp.
+member.how = The struct on the left, the field's name on the right.
+arrow.what = One field of a struct you have a pointer to: p->hp is (*p).hp.
+arrow.how = The pointer on the left, the field's name on the right.
+null_ptr.what = A pointer that points at nothing.
+null_ptr.how = Start pointers with it, and check for it before following one.
+call_stmt.what = Calls a function: runs its blocks, then comes back here.
+call_stmt.how = The function's name, then what it needs in the slots. F12 on a call goes to the function.
+call_expr.what = Calls a function and uses what it gives back.
+call_expr.how = Drop it into a slot that takes a value: int n = rand();
+printf.what = Prints text, with values put in its % places.
+printf.how = The text first: %d for a whole number, %f for a fraction, %s for text, \n for a new line. Then the values, in order.
+malloc.what = Asks for memory while the program runs: room for that many bytes.
+malloc.how = Usually malloc(count * sizeof(type)). Give it back with free when done.
+free.what = Gives back memory that malloc gave.
+free.how = Once per malloc, and never use the pointer after it.
+cast.what = Turns a value into another type: (float)n.
+cast.how = The type in the brackets, the value after. Mostly for dividing without losing the fraction.
+sizeof_type.what = How many bytes a type takes.
+sizeof_type.how = Mostly inside malloc: malloc(10 * sizeof(int)).
+sizeof_expr.what = How many bytes a variable takes.
+sizeof_expr.how = sizeof arr / sizeof arr[0] counts the elements of an array.
+func_def.what = Makes a function: a named set of blocks you can call from anywhere.
+func_def.how = Drop it on the canvas, name it, add parameters; its blocks go under its hat. The program starts at main.
+func_decl.what = Says a function exists and what it takes, before it is made.
+func_decl.how = Needed when a function is called above the place it is made, or from another file (in a .h).
+struct_def.what = A new type made of several fields: a player with a name and hp.
+struct_def.how = Drop it on the canvas, name it, add a declaration per field inside.
+enum_def.what = A list of named values: RED, GREEN, BLUE.
+enum_def.how = Name it, list the values. The == slots then offer them in a drop-down.
+typedef.what = Gives a type another name.
+typedef.how = typedef struct player player; lets you write player instead of struct player.
+global_var.what = A variable outside every function: all of them see it.
+global_var.how = Drop it on the canvas, outside the functions. Handy, but easy to get tangled in: prefer parameters.
+include_sys.what = Uses a header that comes with the system: printf is in stdio.h.
+include_sys.how = Drop it at the top of the file and pick the header. Libraries adds blocks for whole libraries.
+include_loc.what = Uses a header of your own project.
+include_loc.how = Put your function declarations into a .h, then include it wherever you call them. A click on it opens the file.
+define.what = A name for a value, swapped in before compiling: #define MAX 10.
+define.how = Name it in capitals, give the value; use the name everywhere instead of the number.
+cm_minimum.what = Says which CMake the project needs, at least.
+cm_minimum.how = The first line of every CMakeLists.txt.
+cm_project.what = Names the project and its language.
+cm_project.how = Right after cmake_minimum_required. ${PROJECT_NAME} is this name afterwards.
+cm_exe.what = Makes a program out of .c files.
+cm_exe.how = The program's name, then every .c file that goes into it.
+cm_lib.what = Makes a library: code several programs can link.
+cm_lib.how = Name it and list its .c files; programs get it with target_link_libraries.
+cm_subdir.what = Builds another folder that has its own CMakeLists.txt.
+cm_subdir.how = The folder's name.
+cm_install.what = Says what make install copies onto the system.
+cm_install.how = Usually the program: install(TARGETS name).
+cm_sources.what = Adds more .c files to a program.
+cm_sources.how = The program, PRIVATE, then the files.
+cm_incdirs.what = Where the compiler looks for #include "..." headers.
+cm_incdirs.how = The program, PRIVATE, then the folders.
+cm_options.what = Extra flags for the compiler, like -Wall for more warnings.
+cm_options.how = The program, PRIVATE, then the flags.
+cm_defines.what = Defines names for the code, as #define would.
+cm_defines.how = The program, PRIVATE, then NAME=value.
+cm_link.what = Links a library into a program (m is the maths library).
+cm_link.how = The program, PRIVATE, then the libraries.
+cm_props.what = Sets properties of a program, like the C standard.
+cm_props.how = The program, PROPERTIES, then name and value pairs.
+cm_find.what = Finds a library installed on the system.
+cm_find.how = Then link what it found with target_link_libraries.
+cm_threads.what = Links threads, for programs that do several things at once.
+cm_threads.how = After find_package(Threads).
+cm_pkg.what = Finds a library through pkg-config (GTK and friends).
+cm_pkg.how = After find_package(PkgConfig); link PkgConfig::NAME afterwards.
+cm_std.what = Which C standard to compile with.
+cm_std.how = 11 or 17 is a good choice.
+cm_set.what = Makes a CMake variable.
+cm_set.how = The name, then its value; read it as ${NAME}.
+cm_option.what = A switch someone building can turn on or off (cmake -DNAME=OFF).
+cm_option.how = The name, a description, the default; check it with if(NAME).
+cm_append.what = Adds to a list variable.
+cm_append.how = The list's name, then what to add.
+cm_glob.what = Collects files by a pattern, like every .c in src.
+cm_glob.how = With CONFIGURE_DEPENDS, new files are noticed on the next build.
+cm_message.what = Prints a message while CMake sets up the build.
+cm_message.how = STATUS for a normal note, WARNING or FATAL_ERROR for trouble.
+cm_if.what = Does the commands inside only when the condition is true.
+cm_if.how = The condition into the slot (WIN32, NOT USE_SOUND...), the commands into the mouth.
+cm_if_else.what = Two ways: one set of commands if the condition is true, another if not.
+cm_if_else.how = The condition into the slot, each set into its mouth.
+cm_foreach.what = Repeats the commands for every item of a list.
+cm_foreach.how = The loop variable's name, IN LISTS and the list.
+cm_while.what = Repeats the commands while the condition is true.
+cm_while.how = Something inside must change the condition.
+cm_function.what = Makes your own CMake command.
+cm_function.how = Its name and parameters; the commands into the mouth.
+cm_return.what = Leaves this CMakeLists.txt (or function) here.
+cm_return.how = Usually inside an if.
+cm_line.what = A line of plain CMake, for anything there is no block for.
+cm_line.how = Double-click it and type the command.

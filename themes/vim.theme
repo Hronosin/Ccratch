@@ -1,0 +1,75 @@
+# Vim: a dark terminal, the green of the logo, and blocks in the colours
+# :syntax on gives C - Statement yellow, Type green, Identifier cyan,
+# PreProc magenta, Constant pink, Special orange, comments in blue.
+# To leave: :q! (or just pick another theme).
+@name    = Vim
+@name.ru = Vim (:q!)
+@name.uk = Vim (:q!)
+@name.be = Vim (:q!)
+
+bg            = #1C1C1C
+grid          = #2E2E2E
+bar           = #303030
+bar_text      = #D0D0D0
+title         = #87D75F
+hint          = #5F87AF
+accent        = #019833
+ok            = #5FAF5F
+error         = #D75F5F
+glow          = #87FF5F
+palette       = #121212
+palette_text  = #9E9E9E
+trash         = #5F1F1F
+panel         = #262626F4
+panel_edge    = #019833
+panel_text    = #E4E4E4
+panel_hint    = #5F87AF
+disabled      = #4E4E4E
+hot           = #FFD75F
+backdrop      = #000000AA
+button        = #303030
+button_hover  = #3A3A3A
+button_press  = #019833
+button_edge   = #4E4E4E
+button_text   = #D0D0D0
+field         = #080808
+field_edge    = #019833
+field_text    = #D0D0D0
+shadow        = #00000090
+dim           = #303030
+dim_text      = #6C6C6C
+
+# blocks: the syntax groups
+control       = #D7AF00
+control_edge  = #AF8700
+control_text  = #1C1C1C
+operator      = #5FAF5F
+operator_edge = #3A873A
+operator_text = #121212
+variable      = #00AFAF
+variable_edge = #008787
+variable_text = #121212
+call          = #5F87D7
+call_edge     = #3F67B7
+call_text     = #FFFFFF
+event         = #D7875F
+event_edge    = #AF5F3F
+event_text    = #121212
+type          = #87D75F
+type_edge     = #5FAF3F
+type_text     = #121212
+preproc       = #D75FD7
+preproc_edge  = #AF3FAF
+preproc_text  = #121212
+pointer       = #FF5F87
+pointer_edge  = #D73F67
+pointer_text  = #121212
+literal       = #1C1C1C
+literal_edge  = #5F5F5F
+literal_text  = #FFD7AF
+dragon        = #6C6C6C
+dragon_edge   = #4E4E4E
+dragon_text   = #E4E4E4
+library       = #AF87FF
+library_edge  = #875FD7
+library_text  = #121212

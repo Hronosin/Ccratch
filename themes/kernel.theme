@@ -1,0 +1,76 @@
+# Kernel Space: the Linux console at boot. Black, VGA's sixteen colours,
+# grey text like dmesg, Tux's yellow for what matters and oops red for
+# what went wrong. Pointers are red here: in ring 0 nobody catches you.
+@name    = Kernel Space
+@name.ru = Пространство ядра
+@name.uk = Простір ядра
+@name.be = Прастора ядра
+@name.kk = Ядро кеңістігі
+@name.fi = Ytimen tila
+
+bg            = #000000
+grid          = #1C1C1C
+bar           = #0C0C0C
+bar_text      = #AAAAAA
+title         = #FFFFFF
+hint          = #00AAAA
+accent        = #F4BE1A
+ok            = #55FF55
+error         = #FF5555
+glow          = #F4BE1A
+palette       = #050505
+palette_text  = #AAAAAA
+trash         = #550000
+panel         = #0A0A0AF4
+panel_edge    = #555555
+panel_text    = #AAAAAA
+panel_hint    = #00AAAA
+disabled      = #555555
+hot           = #FFFF55
+backdrop      = #000000C0
+button        = #161616
+button_hover  = #262626
+button_press  = #AA5500
+button_edge   = #555555
+button_text   = #AAAAAA
+field         = #000000
+field_edge    = #AAAAAA
+field_text    = #AAAAAA
+shadow        = #000000A0
+dim           = #161616
+dim_text      = #555555
+
+# blocks: VGA, as the console has them
+control       = #AA5500
+control_edge  = #773B00
+control_text  = #FFFFFF
+operator      = #00AA00
+operator_edge = #007700
+operator_text = #000000
+variable      = #AA00AA
+variable_edge = #770077
+variable_text = #FFFFFF
+call          = #0000AA
+call_edge     = #5555FF
+call_text     = #FFFFFF
+event         = #F4BE1A
+event_edge    = #C4960A
+event_text    = #000000
+type          = #00AAAA
+type_edge     = #007777
+type_text     = #000000
+preproc       = #555555
+preproc_edge  = #333333
+preproc_text  = #FFFF55
+pointer       = #AA0000
+pointer_edge  = #FF5555
+pointer_text  = #FFFFFF
+literal       = #000000
+literal_edge  = #555555
+literal_text  = #AAAAAA
+dragon        = #5555FF
+dragon_edge   = #3333AA
+dragon_text   = #FFFFFF
+library       = #55FFFF
+library_edge  = #00AAAA
+library_text  = #000000

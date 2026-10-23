@@ -57,6 +57,7 @@ add_library(ccratch_core OBJECT
     src/ccr_rename.c
     src/ccr_git.c
     src/ccr_gitlog.c
+    src/ccr_explain.c
     src/ccr_app.c
     src/ccr_ast.c
     src/ccr_blocks.c

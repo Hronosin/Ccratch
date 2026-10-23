@@ -111,6 +111,18 @@ foreach(pack ${CCR_SHIPPED_PACKS})
     get_filename_component(code ${pack} NAME_WE)
     add_test(NAME lang_check_${code} COMMAND ${CCR_BIN} --check-lang ${pack})
 endforeach()
+# The block explanations: English says something of every block, the
+# others only of blocks that exist.
+file(GLOB CCR_SHIPPED_EXPLAIN CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/lang/*.explain)
+foreach(ex ${CCR_SHIPPED_EXPLAIN})
+    get_filename_component(code ${ex} NAME_WE)
+    if(code STREQUAL "en")
+        add_test(NAME explain_check_${code} COMMAND ${CCR_BIN} --check-explain ${ex} --complete)
+    else()
+        add_test(NAME explain_check_${code} COMMAND ${CCR_BIN} --check-explain ${ex})
+    endif()
+endforeach()
+
 # ...and every letter of them has a font that draws it.
 add_executable(test_fonts test_fonts.c)
 target_include_directories(test_fonts PRIVATE ${PROJECT_SOURCE_DIR}/ccratch/src)
