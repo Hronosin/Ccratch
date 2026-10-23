@@ -164,3 +164,14 @@ set.mode_debug_hint = Tez edilir və «Addım-addım» içinə baxa bilər. Bilm
 set.mode_release = Sürətli
 set.mode_release_hint = Hazır proqram daha sürətli işləyir, amma daha uzun edilir. «Addım-addım» yenə də özü üçün adisini edir
 set.mode_sanitize_hint = Proqram işləyərkən izlənir: toxunmamalı olduğu yaddaşa toxunsa və ya yaddaşını qaytarmağı unutsa, dayanır və bunu edən blok qızarır. libasan və libubsan lazımdır
+
+# assembly
+palette.asm = Assembler
+palette.asm_move = Verilənlərin köçürülməsi
+palette.asm_math = Hesab
+palette.asm_jumps = Keçidlər
+palette.asm_data = Bölmələr və verilənlər
+palette.asm_att = GNU as, AT&T sintaksisi: əvvəl haradan, sonra haraya; registrlər faiz işarəsi ilə, ədədlər $ ilə başlayır
+palette.asm_intel = GNU as, Intel sintaksisi (.intel_syntax): əvvəl haraya (mov rax, 1)
+palette.asm_nasm = NASM: əvvəl haraya (mov rax, 1); ; şərh başladır
+files.name_file = Faylın adı (.c, .h, .s və ya .asm), Enter: yarat

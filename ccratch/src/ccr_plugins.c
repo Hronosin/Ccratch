@@ -1,5 +1,6 @@
 #define _GNU_SOURCE   /* RTLD_LOCAL */
 #include "ccr_plugins.h"
+#include "ccr_asm.h"
 #include "ccratch/ccr_plugin.h"
 
 #include "ccr_cmake.h"
@@ -17,6 +18,8 @@
 _Static_assert((int)CCR_FIND_ERROR == (int)CCR_FINDING_ERROR && (int)CCR_FIND_PRAISE == (int)CCR_FINDING_PRAISE,
                "ccr_find_level mirrors ccr_finding_level");
 
+#define MAX_SETTINGS 16
+
 typedef struct loaded {
     void             *handle;
     const ccr_plugin *p;
@@ -24,6 +27,8 @@ typedef struct loaded {
     char              file[256];  /* "code_hater.so" */
     char              path[1100];
     bool              enabled;
+    int               nsettings;
+    char              values[MAX_SETTINGS][48];   /* each setting's value now */
 } loaded;
 
 static loaded g_plugins[MAX_PLUGINS];
@@ -101,9 +106,29 @@ static void load_one(const char *dir, const char *file, FILE *log)
         return;
     }
     l->size = l->p->struct_size;
-    char key[96], v[16];
+    char key[160], v[48];
     snprintf(key, sizeof key, "plugin.%s", l->p->name);
     l->enabled = !(ccr_config_get(key, v, sizeof v) && strcmp(v, "off") == 0);
+    /* its settings: what the config says, if it is one of the values; else its default */
+    if (HAS(l, setting_count) && l->p->settings)
+        for (uint32_t k = 0; k < l->p->setting_count && l->nsettings < MAX_SETTINGS; ++k) {
+            const ccr_plugin_setting *st = &l->p->settings[k];
+            if (!st->key)
+                continue;
+            char *val = l->values[l->nsettings++];
+            snprintf(val, sizeof l->values[0], "%s", st->def ? st->def : "");
+            snprintf(key, sizeof key, "plugin.%s.%s", l->p->name, st->key);
+            if (!ccr_config_get(key, v, sizeof v))
+                continue;
+            bool fits = false;
+            if (st->kind == CCR_SETTING_TOGGLE)
+                fits = strcmp(v, "on") == 0 || strcmp(v, "off") == 0;
+            else
+                for (const char *const *c = st->choices; c && *c && !fits; ++c)
+                    fits = strcmp(*c, v) == 0;
+            if (fits)
+                snprintf(val, sizeof l->values[0], "%s", v);
+        }
     ++g_count;
 }
 
@@ -217,6 +242,113 @@ void ccr_plugins_set_enabled(int i, bool on, bool save)
     }
 }
 
+/* ------------------------------------------------------------ settings */
+
+static const ccr_plugin_setting *setting_at(int i, int k)
+{
+    const loaded *l = at(i);
+    if (!l || k < 0 || k >= l->nsettings)
+        return NULL;
+    /* the k-th with a key (the host skipped those without) */
+    int seen = 0;
+    for (uint32_t j = 0; j < l->p->setting_count; ++j)
+        if (l->p->settings[j].key && seen++ == k)
+            return &l->p->settings[j];
+    return NULL;
+}
+
+int ccr_plugins_setting_count(int i)
+{
+    return at(i) ? at(i)->nsettings : 0;
+}
+
+const char *ccr_plugins_setting_key(int i, int k)
+{
+    const ccr_plugin_setting *st = setting_at(i, k);
+    return st ? st->key : "";
+}
+
+bool ccr_plugins_setting_is_toggle(int i, int k)
+{
+    const ccr_plugin_setting *st = setting_at(i, k);
+    return st && st->kind == CCR_SETTING_TOGGLE;
+}
+
+/* The plugin's own words for `what`, else `english`. */
+static const char *words(int i, const char *what, const char *english, const char *ui_language)
+{
+    const loaded *l = at(i);
+    if (l && HAS(l, setting_text) && l->p->setting_text && ui_language) {
+        const char *t = l->p->setting_text(ui_language, what);
+        if (t && *t)
+            return t;
+    }
+    return english ? english : "";
+}
+
+const char *ccr_plugins_setting_title(int i, int k, const char *ui_language)
+{
+    const ccr_plugin_setting *st = setting_at(i, k);
+    return st ? words(i, st->key, st->title ? st->title : st->key, ui_language) : "";
+}
+
+const char *ccr_plugins_setting_hint(int i, int k, const char *ui_language)
+{
+    const ccr_plugin_setting *st = setting_at(i, k);
+    if (!st)
+        return "";
+    char what[96];
+    snprintf(what, sizeof what, "%s.hint", st->key);
+    return words(i, what, st->hint, ui_language);
+}
+
+int ccr_plugins_setting_choice_count(int i, int k)
+{
+    const ccr_plugin_setting *st = setting_at(i, k);
+    int n = 0;
+    if (st && st->kind == CCR_SETTING_CHOICE)
+        while (st->choices && st->choices[n])
+            ++n;
+    return n;
+}
+
+const char *ccr_plugins_setting_choice(int i, int k, int c)
+{
+    const ccr_plugin_setting *st = setting_at(i, k);
+    return st && c >= 0 && c < ccr_plugins_setting_choice_count(i, k) ? st->choices[c] : "";
+}
+
+const char *ccr_plugins_setting_choice_title(int i, int k, int c, const char *ui_language)
+{
+    const ccr_plugin_setting *st = setting_at(i, k);
+    if (!st || c < 0 || c >= ccr_plugins_setting_choice_count(i, k))
+        return "";
+    char what[160];
+    snprintf(what, sizeof what, "%s=%s", st->key, st->choices[c]);
+    return words(i, what, st->choice_titles && st->choice_titles[c] ? st->choice_titles[c] : st->choices[c],
+                 ui_language);
+}
+
+const char *ccr_plugins_setting_value(int i, int k)
+{
+    const loaded *l = at(i);
+    return l && k >= 0 && k < l->nsettings ? l->values[k] : "";
+}
+
+void ccr_plugins_set_setting(int i, int k, const char *value, bool save)
+{
+    const ccr_plugin_setting *st = setting_at(i, k);
+    if (!st || !value)
+        return;
+    snprintf(g_plugins[i].values[k], sizeof g_plugins[i].values[k], "%s", value);
+    if (save) {
+        char key[160];
+        snprintf(key, sizeof key, "plugin.%s.%s", g_plugins[i].p->name, st->key);
+        if (!ccr_config_set(key, value))
+            fprintf(stderr, "ccratch: could not remember %s in ~/.config/ccratch\n", key);
+    }
+}
+
 /* ------------------------------------------------------------ checking */
 
 typedef struct collect {
@@ -225,6 +357,37 @@ typedef struct collect {
     int          plugin;
     uint32_t     node_count;
 } collect;
+
+static const char *on_setting(const ccr_plugin_file *file, const char *key)
+{
+    const collect *c = file->host_data;
+    for (int k = 0; key && k < ccr_plugins_setting_count(c->plugin); ++k)
+        if (strcmp(ccr_plugins_setting_key(c->plugin, k), key) == 0)
+            return ccr_plugins_setting_value(c->plugin, k);
+    return "";
+}
+
+static void on_report(const ccr_plugin_file *file, uint32_t node, ccr_finding_level level, const char *title,
+                      const char *message);
+
+static void on_poke(const ccr_plugin_file *file, uint32_t node, const char *say)
+{
+    collect *c = file->host_data;
+    if (node >= c->node_count)
+        return;
+    /* its last finding about that node gets the poke; or one of its own */
+    for (int k = c->n - 1; k >= 0; --k)
+        if (c->list[k].plugin == c->plugin && c->list[k].node == node) {
+            c->list[k].poke = true;
+            snprintf(c->list[k].say, sizeof c->list[k].say, "%s", say ? say : "");
+            return;
+        }
+    on_report(file, node, CCR_FINDING_ERROR, say, say);
+    if (c->n && c->list[c->n - 1].node == node) {
+        c->list[c->n - 1].poke = true;
+        snprintf(c->list[c->n - 1].say, sizeof c->list[c->n - 1].say, "%s", say ? say : "");
+    }
+}
 
 static void on_report(const ccr_plugin_file *file, uint32_t node, ccr_finding_level level, const char *title,
                       const char *message)
@@ -244,6 +407,8 @@ static void on_report(const ccr_plugin_file *file, uint32_t node, ccr_finding_le
     f->plugin = c->plugin;
     f->node = node;
     f->level = (ccr_find_level)level;
+    f->poke = false;
+    f->say[0] = '\0';
     snprintf(f->title, sizeof f->title, "%s", title ? title : "");
     snprintf(f->message, sizeof f->message, "%s", message ? message : "");
 }
@@ -289,7 +454,8 @@ int ccr_plugins_check(const ccr_ast *ast, const char *path, const char *ui_langu
                    ((n->flags & CCR_FLAG_POSTFIX) ? CCR_PNODE_POSTFIX : 0u) |
                    ((n->flags & CCR_FLAG_ARROW) ? CCR_PNODE_ARROW : 0u) |
                    ((n->flags & CCR_FLAG_INIT) ? CCR_PNODE_INIT : 0u) |
-                   ((n->flags & CCR_FLAG_ANGLED) ? CCR_PNODE_ANGLED : 0u);
+                   ((n->flags & CCR_FLAG_ANGLED) ? CCR_PNODE_ANGLED : 0u) |
+                   ((n->flags & CCR_FLAG_ASM) ? CCR_PNODE_ASM : 0u);
         const bool has_text = !(n->flags & CCR_FLAG_NEW) && n->src_e > n->src_b && n->src_e <= ast->source_len;
         p->src_begin = has_text ? n->src_b : 0;
         p->src_end = has_text ? n->src_e : 0;
@@ -313,7 +479,8 @@ int ccr_plugins_check(const ccr_ast *ast, const char *path, const char *ui_langu
     ccr_plugin_file file = {
         .struct_size = sizeof file,
         .path = path ? path : "",
-        .language = ast->lang == CCR_LANG_CMAKE ? "cmake" : ast->cpp ? "c++" : "c",
+        .language = ast->lang == CCR_LANG_CMAKE ? "cmake" : ast->lang == CCR_LANG_ASM ? "asm"
+                  : ast->cpp ? "c++" : "c",
         .ui_language = ui_language ? ui_language : "en",
         .plain = plain,
         .nodes = nodes,
@@ -323,6 +490,8 @@ int ccr_plugins_check(const ccr_ast *ast, const char *path, const char *ui_langu
         .source_len = ast->source ? ast->source_len : 0,
         .report = on_report,
         .host_data = &c,
+        .setting = on_setting,
+        .poke = on_poke,
     };
     for (int i = 0; i < g_count; ++i) {
         if (!g_plugins[i].enabled || !ccr_plugins_is_checker(i))
@@ -350,6 +519,9 @@ int ccr_plugins_check_file(const char *path, const char *ui_language, FILE *out)
     if (ccr_cmake_is_cmake(path)) {
         ccr_cmake_parse_file(path, &ast);
         ok = ast.source != NULL;
+    } else if (ccr_asm_is_asm(path)) {
+        ccr_asm_parse_file(path, &ast);
+        ok = ast.source != NULL;
     } else {
         ok = ccr_parse_file(path, NULL, 0, &ast);
     }
@@ -367,6 +539,8 @@ int ccr_plugins_check_file(const char *path, const char *ui_language, FILE *out)
                 ccr_plugins_name(f[i].plugin), f[i].title);
         if (f[i].message[0])
             fprintf(out, "    %s\n", f[i].message);
+        if (f[i].poke)
+            fprintf(out, "    *nose rubbed in it*: %s\n", f[i].say);
         bad += f[i].level >= CCR_FIND_WARNING;
     }
     if (n == 0)

@@ -164,3 +164,14 @@ set.mode_debug_hint = 做得快，“一步一步”也能看进去。不知道�
 set.mode_release = 快速
 set.mode_release_hint = 做好的程序跑得更快，但做得更慢。“一步一步”仍会给自己做一个普通的
 set.mode_sanitize_hint = 程序运行时有人盯着：碰了不该碰的内存，或忘了还内存，就会停下，做这件事的积木会变红。需要 libasan 和 libubsan
+
+# assembly
+palette.asm = 汇编
+palette.asm_move = 数据传送
+palette.asm_math = 算术
+palette.asm_jumps = 跳转
+palette.asm_data = 段与数据
+palette.asm_att = GNU as，AT&T 语法：先源后目标；寄存器以百分号开头，数字以 $ 开头
+palette.asm_intel = GNU as，Intel 语法 (.intel_syntax)：目标在前 (mov rax, 1)
+palette.asm_nasm = NASM：目标在前 (mov rax, 1)；; 开始注释
+files.name_file = 文件名 (.c、.h、.s 或 .asm)，按 Enter 创建

@@ -44,6 +44,7 @@ dim_text      = #555555
 lang_c        = #55FF55
 lang_cpp      = #FF55FF
 lang_cmake    = #5555FF
+lang_asm      = #55FF55
 
 # blocks: VGA, as the console has them
 control       = #AA5500

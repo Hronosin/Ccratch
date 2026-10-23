@@ -276,6 +276,8 @@ static uint32_t lift_expr(ccr_editor *ed, ccr_node_id x, uint32_t from)
 static bool goes_right(const ccr_editor *ed, ccr_node_id id)
 {
     const ccr_node *n = N(ed, id);
+    if (n->kind == CCR_NODE_FUNCTION && ed->ast.lang == CCR_LANG_ASM)   /* code at a label: right; sections: left */
+        return strcmp(ccr_ast_str(&ed->ast, n->type), "label") == 0;
     if (n->kind == CCR_NODE_FUNCTION)
         return (n->flags & CCR_FLAG_DEFINITION) != 0;
     if (n->kind == CCR_NODE_NAMESPACE)
@@ -1586,6 +1588,10 @@ static void find_snap(ccr_editor *ed)
     if (N(ed, d->root)->flags & CCR_FLAG_TOPLEVEL)
         return;   /* a declaration for the file finds its own place there */
     const bool reporter = (N(ed, d->root)->flags & CCR_FLAG_REPORTER) != 0;
+    /* only assembly goes into asm("..."); nothing goes into an instruction's operand */
+    bool all_asm = true;
+    for (ccr_node_id c = N(ed, d->root)->first_child; c != CCR_NONE; c = N(ed, c)->next_sibling)
+        all_asm &= (N(ed, c)->flags & CCR_FLAG_ASM) != 0;
     float best = SNAP_RADIUS * SNAP_RADIUS;
     for (uint32_t i = 0; i < ed->script_count; ++i) {
         if (i == ed->dragged)
@@ -1595,6 +1601,16 @@ static void find_snap(ccr_editor *ed)
             ccr_snap sn = s->blocks.snaps[k];
             if ((sn.kind == CCR_SNAP_SLOT) != reporter)
                 continue;   /* expressions go into slots, statements into stacks */
+            if (sn.kind == CCR_SNAP_SLOT) {
+                const ccr_node_id holder = N(ed, sn.ref)->parent;
+                if (holder != CCR_NONE && (N(ed, holder)->flags & CCR_FLAG_ASM))
+                    continue;   /* `movl a + b, %eax`: no */
+            } else if (!all_asm) {
+                const ccr_node_id into = sn.kind == CCR_SNAP_AFTER ? N(ed, sn.ref)->parent : sn.ref;
+                if (into != CCR_NONE && N(ed, into)->parent != CCR_NONE &&
+                    N(ed, N(ed, into)->parent)->kind == CCR_NODE_ASM)
+                    continue;   /* C in an asm()'s mouth */
+            }
             sn.at.x += s->pos.x;
             sn.at.y += s->pos.y;
             float dx = sn.at.x - d->pos.x, dy = sn.at.y - d->pos.y;
@@ -3049,9 +3065,13 @@ unsigned ccr_editor_akind(const ccr_editor *ed, uint32_t i)
     case CCR_NODE_TYPEDEF:      return CCR_AK_TYPES;
     case CCR_NODE_VAR:          return CCR_AK_GLOBALS;
     case CCR_NODE_FUNCTION:
+        if (ed->ast.lang == CCR_LANG_ASM && !goes_right(ed, root))
+            return CCR_AK_GLOBALS;   /* a section of data and directives */
         if (!(r->flags & CCR_FLAG_DEFINITION))
             return CCR_AK_PROTOS;
-        return r->name && strcmp(ccr_ast_str(&ed->ast, r->name), "main") == 0 ? CCR_AK_MAIN : CCR_AK_FUNCS;
+        return r->name && (strcmp(ccr_ast_str(&ed->ast, r->name), "main") == 0 ||
+                           (ed->ast.lang == CCR_LANG_ASM && strcmp(ccr_ast_str(&ed->ast, r->name), "_start") == 0))
+                   ? CCR_AK_MAIN : CCR_AK_FUNCS;
     case CCR_NODE_DECL_GROUP: {   /* `int a, b;`, `struct p {...} x;`: by what it holds first */
         const ccr_node_id c = r->first_child;
         if (c != CCR_NONE && (N(ed, c)->kind == CCR_NODE_STRUCT || N(ed, c)->kind == CCR_NODE_UNION ||

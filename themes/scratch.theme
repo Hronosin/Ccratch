@@ -38,6 +38,7 @@ dim_text      = #A0A8BA
 lang_c        = #4C97FF
 lang_cpp      = #9966FF
 lang_cmake    = #0FBD8C
+lang_asm      = #4C97FF
 
 # blocks: Scratch 3's own. Pointers are Pen, dragons are Sound
 control       = #FFAB19

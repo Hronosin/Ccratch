@@ -36,6 +36,11 @@ static const ccr_text g_cat_names[CCR_TCAT_COUNT] = {
     [CCR_TCAT_CM_LIBS]    = CCR_T_LIBS_TITLE,
     [CCR_TCAT_CM_VARS]    = CCR_T_CAT_VARIABLES,
     [CCR_TCAT_CM_CONTROL] = CCR_T_CAT_CONTROL,
+    [CCR_TCAT_ASM_INLINE] = CCR_T_CAT_ASM,
+    [CCR_TCAT_ASM_MOVE]   = CCR_T_CAT_ASM_MOVE,
+    [CCR_TCAT_ASM_MATH]   = CCR_T_CAT_ASM_MATH,
+    [CCR_TCAT_ASM_JUMPS]  = CCR_T_CAT_ASM_JUMPS,
+    [CCR_TCAT_ASM_DATA]   = CCR_T_CAT_ASM_DATA,
 };
 
 static const ccr_theme_cat g_cat_colors[CCR_TCAT_COUNT] = {
@@ -54,6 +59,11 @@ static const ccr_theme_cat g_cat_colors[CCR_TCAT_COUNT] = {
     [CCR_TCAT_CM_LIBS]    = CCR_CAT_LIBRARY,
     [CCR_TCAT_CM_VARS]    = CCR_CAT_VARIABLE,
     [CCR_TCAT_CM_CONTROL] = CCR_CAT_CONTROL,
+    [CCR_TCAT_ASM_INLINE] = CCR_CAT_PREPROC,
+    [CCR_TCAT_ASM_MOVE]   = CCR_CAT_VARIABLE,
+    [CCR_TCAT_ASM_MATH]   = CCR_CAT_OPERATOR,
+    [CCR_TCAT_ASM_JUMPS]  = CCR_CAT_CONTROL,
+    [CCR_TCAT_ASM_DATA]   = CCR_CAT_TYPE,
 };
 
 /* Halfway between two colours (the flyout: between palette and canvas). */
@@ -150,7 +160,7 @@ static bool add_item(ccr_palette *p, ccr_template t, float *y)
     ccr_node_id made = ccr_template_build(&p->ast, t, root);
     if (made == CCR_NONE)
         return false;
-    if (t == CCR_TEMPLATE_CODE || t == CCR_TEMPLATE_CM_LINE)   /* an empty white bar says nothing: name it */
+    if (t == CCR_TEMPLATE_CODE || t == CCR_TEMPLATE_CM_LINE || t == CCR_TEMPLATE_A_LINE)   /* an empty white bar says nothing: name it */
         p->ast.nodes[made].name = ccr_ast_intern(&p->ast, ccr_tr(CCR_T_TEMPLATE_CODE));
 
     ccr_palette_item *it = &p->items[p->item_count];
@@ -198,6 +208,7 @@ bool ccr_palette_init(ccr_palette *p)
     const float scroll = p->ready ? p->scroll : 0.0f;
     const ccr_lang_kind lang = p->lang;
     const bool cpp = p->cpp, no_std = p->no_std;
+    const ccr_asm_syntax asm_syntax = p->asm_syntax;
     const float lang_scroll[2] = { p->lang_scroll[0], p->lang_scroll[1] };
     char filter[sizeof p->filter];
     memcpy(filter, p->filter, sizeof filter);
@@ -217,6 +228,7 @@ bool ccr_palette_init(ccr_palette *p)
     p->lang = lang;
     p->cpp = cpp;
     p->no_std = no_std;
+    p->asm_syntax = asm_syntax;
     p->lang_scroll[0] = lang_scroll[0];
     p->lang_scroll[1] = lang_scroll[1];
     memcpy(p->filter, filter, sizeof filter);
@@ -226,11 +238,12 @@ bool ccr_palette_init(ccr_palette *p)
     p->ast.lang = lang;   /* blocks drawn the way the file on screen speaks */
     p->ast.cpp = cpp;
 
-    const bool cmake = lang == CCR_LANG_CMAKE;
+    const bool cmake = lang != CCR_LANG_C;   /* CMake or assembly: no C++ flags, no packs */
+    p->ast.asm_syntax = lang == CCR_LANG_ASM ? p->asm_syntax : CCR_ASM_ATT;   /* asm() in C: gcc's AT&T */
     const unsigned want = cpp ? CCR_TLANG_CPP : CCR_TLANG_C;
     float y = PAD_TOP;
     for (int c = 0; c < CCR_TCAT_COUNT; ++c) {
-        if (ccr_tcat_is_cmake((ccr_tcat)c) != cmake)
+        if (ccr_tcat_lang((ccr_tcat)c) != lang)
             continue;
         if (!cmake && ccr_tcat_is_std((ccr_tcat)c) && no_std)
             continue;   /* programming without the standard library */
@@ -334,6 +347,14 @@ bool ccr_palette_set_lang(ccr_palette *p, ccr_lang_kind lang)
         return true;
     p->lang = lang;
     p->scroll = p->scroll_to = 0.0f;
+    return !p->ready || ccr_palette_relayout(p);
+}
+
+bool ccr_palette_set_asm_syntax(ccr_palette *p, ccr_asm_syntax syntax)
+{
+    if (p->asm_syntax == syntax)
+        return true;
+    p->asm_syntax = syntax;
     return !p->ready || ccr_palette_relayout(p);
 }
 

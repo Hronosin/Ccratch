@@ -1,4 +1,5 @@
 #include "ccr_codegen.h"
+#include "ccr_asm.h"
 #include "ccr_lang.h"
 
 #include <stdarg.h>
@@ -15,6 +16,8 @@ typedef struct gen {
     size_t   err_cap;
     uint8_t *dirty;     /* per node: 0 unknown, 1 clean, 2 something below changed */
     ccr_out_range *map; /* per node: where it went in the output (may be NULL) */
+    int      asm_depth; /* inside an asm("...") being written, or one asm line */
+    char     asm_indent[32];   /* the file's instructions' indent */
 } gen;
 
 static const ccr_node *N(const gen *g, ccr_node_id id) { return &g->ast->nodes[id]; }
@@ -123,6 +126,10 @@ static void comment_out(gen *g, size_t from, size_t keep)
 {
     const char *mark = g->ast->lang == CCR_LANG_CMAKE ? "# " : "// ";
     const char *bare = g->ast->lang == CCR_LANG_CMAKE ? "#" : "//";
+    if (g->ast->lang == CCR_LANG_ASM || g->asm_depth) {
+        mark = ccr_asm_comment(g->ast->asm_syntax);
+        bare = g->ast->asm_syntax == CCR_ASM_NASM ? ";" : "#";
+    }
     if (!g->ok)
         return;
     size_t n = g->len - from;
@@ -197,12 +204,23 @@ static void rebuild_cmake(gen *g, ccr_node_id id, unsigned depth)
     }
 }
 
+static void rebuild_asm(gen *g, ccr_node_id id, unsigned depth);
+static void rebuild_asm_literal(gen *g, ccr_node_id id, unsigned depth);
+
 /* A Block whose statements moved: written anew from their original text. */
 static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
 {
     const ccr_node *b = N(g, id);
     if (g->ast->lang == CCR_LANG_CMAKE) {
         rebuild_cmake(g, id, depth);
+        return;
+    }
+    if (g->ast->lang == CCR_LANG_ASM || g->asm_depth) {
+        rebuild_asm(g, id, depth);
+        return;
+    }
+    if (b->parent != CCR_NONE && N(g, b->parent)->kind == CCR_NODE_ASM) {
+        rebuild_asm_literal(g, id, depth);
         return;
     }
     if (b->flags & CCR_FLAG_UNSAFE_GAP) {
@@ -229,14 +247,15 @@ static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
         if ((k->flags & CCR_FLAG_BLANK_BEFORE) && c != b->first_child)
             puts_(g, "\n");
         uint32_t eb = k->ext_b, ee = k->ext_e;
-        if (ee <= eb || eb > k->src_b || ee < k->src_e) {   /* never had ext */
+        const bool asm_line = (k->flags & CCR_FLAG_ASM) != 0;   /* comes out as __asm__("...") */
+        if (ee <= eb || eb > k->src_b || ee < k->src_e || asm_line) {   /* never had ext */
             eb = k->src_b;
             ee = k->src_e;
         }
         /* the block's indent, plus however much deeper this line was */
         char line_indent[512];
         snprintf(line_indent, sizeof line_indent, "%s%s", indent,
-                 ccr_ast_str(g->ast, k->extra_indent));
+                 asm_line ? "" : ccr_ast_str(g->ast, k->extra_indent));
         puts_(g, "\n");
         puts_(g, line_indent);
         size_t start = g->len;
@@ -245,7 +264,7 @@ static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
         put_src(g, k->src_e, ee);        /* comment at the end of its line */
 
         uint32_t ib, ie;
-        if (indent_before(g->ast, eb, &ib, &ie))
+        if (!asm_line && indent_before(g->ast, eb, &ib, &ie))
             reindent(g, start, g->ast->source + ib, ie - ib, line_indent, strlen(line_indent));
         if (k->flags & CCR_FLAG_COMMENTED)   /* after reindent: final columns */
             comment_out(g, start, strlen(line_indent));
@@ -488,8 +507,10 @@ static int operand_need(const gen *g, ccr_node_id parent, uint32_t index)
  * not parsed there get parentheses if C would otherwise bind them wrong. */
 static void emit_operand(gen *g, ccr_node_id id, unsigned depth)
 {
-    if (g->ast->lang == CCR_LANG_CMAKE) {   /* words, no precedence */
-        emit(g, id, depth);
+    if (g->ast->lang != CCR_LANG_C || g->asm_depth || (N(g, id)->flags & CCR_FLAG_ASM) ||
+        N(g, id)->kind == CCR_NODE_BLOCK ||
+        (N(g, id)->parent != CCR_NONE && N(g, N(g, id)->parent)->kind == CCR_NODE_ASM)) {
+        emit(g, id, depth);   /* words, no precedence */
         return;
     }
     const ccr_node *n = N(g, id);
@@ -623,6 +644,327 @@ static void print_new_cmake(gen *g, ccr_node_id id, unsigned depth)
     }
 }
 
+
+/* ------------------------------------------------------- assembly */
+
+static const char *asm_default_indent(const gen *g)
+{
+    return g->asm_indent[0] ? g->asm_indent : g->ast->asm_syntax == CCR_ASM_NASM ? "    " : "\t";
+}
+
+/* The indent of statement `c`'s line in block `blk`: as it was written, or
+ * the block's (labels: none). */
+static void asm_line_indent(const gen *g, ccr_node_id blk, ccr_node_id c, char *out, size_t cap)
+{
+    const ccr_node *k = N(g, c);
+    const char *was = ccr_ast_str(g->ast, k->extra_indent);
+    if (!(k->flags & CCR_FLAG_NEW) && was[0] == '|') {
+        snprintf(out, cap, "%s", was + 1);
+        return;
+    }
+    if (k->kind == CCR_NODE_LABEL) {
+        out[0] = '\0';
+        return;
+    }
+    const char *bi = blk != CCR_NONE && !(N(g, blk)->flags & CCR_FLAG_NEW) ? ccr_ast_str(g->ast, N(g, blk)->indent)
+                                                                         : "";
+    snprintf(out, cap, "%s", *bi ? bi : asm_default_indent(g));
+}
+
+/* One statement per line; each keeps the indent it had. */
+static void rebuild_asm(gen *g, ccr_node_id id, unsigned depth)
+{
+    bool first = true;
+    for (ccr_node_id c = N(g, id)->first_child; c != CCR_NONE && g->ok; c = N(g, c)->next_sibling) {
+        const ccr_node *k = N(g, c);
+        uint32_t eb = k->ext_b, ee = k->ext_e;
+        const bool written = !(k->flags & CCR_FLAG_NEW);
+        if (!written || ee <= eb || eb > k->src_b || ee < k->src_e) {
+            eb = k->src_b;
+            ee = k->src_e;
+        }
+        char ind[160];
+        asm_line_indent(g, id, c, ind, sizeof ind);
+        if (first) {
+            const char last = g->len ? g->buf[g->len - 1] : '\n';
+            if (last != '\n' && last != ' ' && last != '\t')
+                puts_(g, "\n");   /* right after `main:`, or the head of a .macro */
+            if (!g->len || g->buf[g->len - 1] == '\n')
+                puts_(g, ind);
+        } else {
+            if (k->flags & CCR_FLAG_BLANK_BEFORE)
+                puts_(g, "\n");
+            puts_(g, "\n");
+            puts_(g, ind);
+        }
+        first = false;
+        const size_t start = g->len;
+        if (written)
+            put_src(g, eb, k->src_b);   /* comments above it */
+        emit(g, c, depth + 1);
+        if (written)
+            put_src(g, k->src_e, ee);   /* and the one at the end of its line */
+        if (k->flags & CCR_FLAG_COMMENTED)
+            comment_out(g, start, strlen(ind));
+    }
+}
+
+/* The Text slots of a node, as operands: "a, b, c". */
+static void asm_operands(gen *g, ccr_node_id id, unsigned depth, uint32_t from)
+{
+    bool first = true;
+    uint32_t i = 0;
+    for (ccr_node_id a = N(g, id)->first_child; a != CCR_NONE; a = N(g, a)->next_sibling, ++i) {
+        const ccr_node *k = N(g, a);
+        if (i < from || (k->flags & CCR_FLAG_WORD) || k->kind == CCR_NODE_BLOCK)
+            continue;
+        if (k->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, k->name))
+            continue;   /* an empty slot is no operand */
+        puts_(g, first ? " " : ", ");
+        first = false;
+        emit(g, a, depth + 1);
+    }
+}
+
+static void print_new_asm(gen *g, ccr_node_id id, unsigned depth)
+{
+    const ccr_node *n = N(g, id);
+    const char *name = ccr_ast_str(g->ast, n->name);
+    char ind[160] = "";
+    if (n->parent != CCR_NONE && N(g, n->parent)->kind == CCR_NODE_BLOCK)
+        asm_line_indent(g, n->parent, id, ind, sizeof ind);
+    switch (n->kind) {
+    case CCR_NODE_TEXT:
+        if (!(n->flags & CCR_FLAG_WORD))
+            puts_(g, name);
+        break;
+    case CCR_NODE_BLOCK:
+        rebuild_asm(g, id, depth);
+        break;
+    case CCR_NODE_CALL: {
+        if (!filled(g, id, name))
+            break;
+        const char *label = ccr_ast_str(g->ast, n->type);
+        if (*label) {
+            puts_(g, label);
+            puts_(g, " ");
+        }
+        puts_(g, name);
+        asm_operands(g, id, depth, 0);
+        break;
+    }
+    case CCR_NODE_LABEL:
+        if (filled(g, id, name)) {
+            puts_(g, name);
+            puts_(g, ":");
+        }
+        break;
+    case CCR_NODE_GOTO:
+        if (filled(g, id, name)) {
+            puts_(g, ccr_ast_str(g->ast, n->op));
+            puts_(g, " ");
+            puts_(g, name);
+        }
+        break;
+    case CCR_NODE_SCOPE:
+    case CCR_NODE_IF: {
+        puts_(g, name);
+        const ccr_node_id head = kid(g, id, 0);
+        if (head != CCR_NONE && *ccr_ast_str(g->ast, N(g, head)->name)) {
+            puts_(g, " ");
+            emit(g, head, depth + 1);
+        }
+        const ccr_node_id b1 = kid(g, id, 1), b2 = kid(g, id, 2);
+        if (b1 != CCR_NONE)
+            emit(g, b1, depth + 1);
+        if (n->kind == CCR_NODE_IF && b2 != CCR_NONE) {
+            puts_(g, "\n");
+            puts_(g, ind);
+            puts_(g, ccr_asm_else_word(name));
+            emit(g, b2, depth + 1);
+        }
+        puts_(g, "\n");
+        puts_(g, ind);
+        puts_(g, ccr_asm_end_word(name));
+        break;
+    }
+    case CCR_NODE_FUNCTION:
+        if (filled(g, id, name)) {
+            puts_(g, name);
+            puts_(g, ":");
+            if (kid(g, id, 0) != CCR_NONE)
+                emit(g, N(g, id)->last_child, depth + 1);
+        }
+        break;
+    default:
+        fail(g, "internal: cannot print a new %s block in assembly", ccr_node_kind_name(n->kind));
+        break;
+    }
+}
+
+/* Takes buf[from..] out, as the inside of a C string ("\n" between
+ * lines as `sep` says). */
+static char *take_escaped(gen *g, size_t from, const char *sep)
+{
+    if (!g->ok)
+        return NULL;
+    const size_t n = g->len - from;
+    char *raw = malloc(n + 1);
+    char *out = malloc(n * 4 + 64);
+    if (!raw || !out) {
+        free(raw);
+        free(out);
+        fail(g, "out of memory");
+        return NULL;
+    }
+    memcpy(raw, g->buf + from, n);
+    raw[n] = '\0';
+    g->len = from;
+    size_t o = 0;
+    const char *line = raw;
+    for (;;) {
+        const char *nl = strchr(line, '\n');
+        const size_t ln = nl ? (size_t)(nl - line) : strlen(line);
+        size_t b = 0;
+        if (line != raw)
+            while (b < ln && (line[b] == ' ' || line[b] == '\t'))
+                ++b;   /* the separator has the indent */
+        ccr_asm_escape(line + b, ln - b, out + o, n * 4 + 64 - o);
+        o += strlen(out + o);
+        if (!nl)
+            break;
+        o += (size_t)snprintf(out + o, n * 4 + 64 - o, "%s", sep);
+        line = nl + 1;
+    }
+    free(raw);
+    return out;
+}
+
+/* An instruction among C statements: __asm__ volatile("..."); */
+static void emit_asm_line(gen *g, ccr_node_id id, unsigned depth)
+{
+    const bool statement = N(g, id)->parent != CCR_NONE && N(g, N(g, id)->parent)->kind == CCR_NODE_BLOCK;
+    const size_t from = g->len;
+    ++g->asm_depth;
+    if (N(g, id)->flags & CCR_FLAG_NEW)
+        print_new_asm(g, id, depth);
+    else
+        emit(g, id, depth);
+    --g->asm_depth;
+    char *text = take_escaped(g, from, "\\n\\t");
+    if (!text)
+        return;
+    puts_(g, "__asm__ volatile (\"");
+    puts_(g, text);
+    puts_(g, statement ? "\");" : "\")");
+    free(text);
+}
+
+/* asm("..."): its Block written again, as C strings, laid out as they were
+ * (one per line, or all on one), lines split as they were ("\n\t"...). */
+static void rebuild_asm_literal(gen *g, ccr_node_id id, unsigned depth)
+{
+    const ccr_node *b = N(g, id);
+    const char *src = g->ast->source;
+    bool multi = false;
+    const char *sep = "\\n\\t";
+    char indent[64] = "    ";
+    if (!(b->flags & CCR_FLAG_NEW) && b->src_e > b->src_b && b->src_e <= g->ast->source_len) {
+        for (uint32_t i = b->src_b; i < b->src_e; ++i)
+            multi |= src[i] == '\n';
+        bool tab = false, nl = false;
+        for (uint32_t i = b->src_b; i + 1 < b->src_e; ++i) {
+            if (src[i] == '\\' && src[i + 1] == 'n') {
+                nl = true;
+                tab |= i + 3 < b->src_e && src[i + 2] == '\\' && src[i + 3] == 't';
+            }
+        }
+        sep = nl ? (tab ? "\\n\\t" : "\\n") : "\\n\\t";
+        /* the indent of the second string's line */
+        uint32_t i = b->src_b;
+        while (i < b->src_e && src[i] != '\n')
+            ++i;
+        if (i < b->src_e) {
+            uint32_t k = i + 1, n = 0;
+            while (k + n < b->src_e && (src[k + n] == ' ' || src[k + n] == '\t') && n + 1 < sizeof indent)
+                ++n;
+            memcpy(indent, src + k, n);
+            indent[n] = '\0';
+        }
+    } else {
+        uint32_t count = 0;
+        for (ccr_node_id c = b->first_child; c != CCR_NONE; c = N(g, c)->next_sibling)
+            ++count;
+        multi = count > 2;
+    }
+    if (b->first_child == CCR_NONE) {
+        puts_(g, "\"\"");
+        return;
+    }
+    ++g->asm_depth;
+    bool first = true;
+    for (ccr_node_id c = b->first_child; c != CCR_NONE && g->ok; c = N(g, c)->next_sibling) {
+        const ccr_node *k = N(g, c);
+        const size_t from = g->len;
+        if (k->flags & CCR_FLAG_NEW)
+            print_new_asm(g, c, depth + 1);
+        else
+            emit(g, c, depth + 1);
+        if (k->flags & CCR_FLAG_COMMENTED)
+            comment_out(g, from, 0);
+        char *text = take_escaped(g, from, sep);
+        if (!text)
+            break;
+        const bool last = N(g, c)->next_sibling == CCR_NONE;
+        if (first || multi) {
+            if (!first) {
+                puts_(g, "\n");
+                puts_(g, indent);
+            }
+            puts_(g, "\"");
+        }
+        puts_(g, text);
+        if (!last)
+            puts_(g, sep);
+        if (multi || last)
+            puts_(g, "\"");
+        free(text);
+        first = false;
+    }
+    --g->asm_depth;
+}
+
+/* A new asm volatile("..." : out : in : clobbers) from the palette. */
+static void print_new_inline(gen *g, ccr_node_id id, unsigned depth)
+{
+    const ccr_node *n = N(g, id);
+    puts_(g, ccr_ast_str(g->ast, n->name));
+    if (*ccr_ast_str(g->ast, n->op)) {
+        puts_(g, " ");
+        puts_(g, ccr_ast_str(g->ast, n->op));
+    }
+    puts_(g, " (");
+    const ccr_node_id blk = kid(g, id, 0);
+    if (blk != CCR_NONE)
+        emit(g, blk, depth + 1);
+    else
+        puts_(g, "\"\"");
+    /* the slots after it, the trailing empty ones left out */
+    ccr_node_id slots[3] = { kid(g, id, 1), kid(g, id, 2), kid(g, id, 3) };
+    int used = 0;
+    for (int i = 0; i < 3; ++i)
+        if (slots[i] != CCR_NONE && !(N(g, slots[i])->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, slots[i])->name)))
+            used = i + 1;
+    for (int i = 0; i < used; ++i) {
+        puts_(g, " :");
+        if (slots[i] != CCR_NONE && !(N(g, slots[i])->kind == CCR_NODE_TEXT && !*ccr_ast_str(g->ast, N(g, slots[i])->name))) {
+            puts_(g, " ");
+            emit(g, slots[i], depth + 1);
+        }
+    }
+    puts_(g, ")");
+}
+
 static void print_new_inner(gen *g, ccr_node_id id, unsigned depth);
 
 /* Where node `id` went: [b, e) of the output; `clean` when its own text was
@@ -648,6 +990,10 @@ static void print_new_inner(gen *g, ccr_node_id id, unsigned depth)
     const ccr_node *n = N(g, id);
     if (g->ast->lang == CCR_LANG_CMAKE) {
         print_new_cmake(g, id, depth);
+        return;
+    }
+    if (g->ast->lang == CCR_LANG_ASM || (n->flags & CCR_FLAG_ASM)) {
+        print_new_asm(g, id, depth);
         return;
     }
     const ccr_node_id p = n->parent;
@@ -742,6 +1088,11 @@ static void print_new_inner(gen *g, ccr_node_id id, unsigned depth)
     case CCR_NODE_DEFAULT:
         puts_(g, "default: ");
         body(g, kid(g, id, 0), depth);
+        break;
+    case CCR_NODE_ASM:
+        print_new_inline(g, id, depth);
+        if (statement)
+            puts_(g, ";");
         break;
     case CCR_NODE_GOTO:
         if (filled(g, id, name)) {
@@ -1096,11 +1447,18 @@ static void indent_lines(gen *g, size_t mark, const char *indent)
     }
 }
 
+static void emit_asm_line(gen *g, ccr_node_id id, unsigned depth);
+
 static void emit(gen *g, ccr_node_id id, unsigned depth)
 {
     if (!g->ok)
         return;
     const size_t b = g->len;
+    if ((N(g, id)->flags & CCR_FLAG_ASM) && g->ast->lang == CCR_LANG_C && !g->asm_depth) {
+        emit_asm_line(g, id, depth);   /* an instruction among C statements */
+        mark_out(g, id, b, false);
+        return;
+    }
     if (!has_dirty(g, id, 0)) {
         put_src(g, N(g, id)->src_b, N(g, id)->src_e);
         mark_out(g, id, b, true);
@@ -1116,6 +1474,11 @@ static void emit_inner(gen *g, ccr_node_id id, unsigned depth)
     const ccr_node *n = N(g, id);
     if (depth > 4000) {
         fail(g, "code nested too deeply");
+        return;
+    }
+    if (n->kind == CCR_NODE_BLOCK && n->parent != CCR_NONE && N(g, n->parent)->kind == CCR_NODE_ASM &&
+        g->ast->lang == CCR_LANG_C) {
+        rebuild_asm_literal(g, id, depth);   /* asm("..."): the string, written again */
         return;
     }
     if (n->flags & CCR_FLAG_NEW) {
@@ -1173,7 +1536,7 @@ static void emit_inner(gen *g, ccr_node_id id, unsigned depth)
             continue;
         }
         if (lives_in_gaps(k->kind) ||
-            (k->place_e <= k->place_b && !(g->ast->lang == CCR_LANG_CMAKE && k->place_b >= cur))) {
+            (k->place_e <= k->place_b && !(g->ast->lang != CCR_LANG_C && k->place_b >= cur))) {
             if (dirty)
                 fail(g, ccr_tr(CCR_T_GEN_LOST), k->line);
             continue;
@@ -1246,7 +1609,7 @@ static bool spliceable(const ccr_ast *ast, ccr_node_id id)
          * own (a macro), unless it is the Block around a braceless body */
         if (n->kind != CCR_NODE_BLOCK && !(k->flags & CCR_FLAG_NEW) &&
             k->place_b == n->src_b && k->place_e == n->src_e &&
-            !(ast->lang == CCR_LANG_CMAKE && n->kind == CCR_NODE_FUNCTION))   /* a file of commands only */
+            !(ast->lang != CCR_LANG_C && n->kind == CCR_NODE_FUNCTION))   /* a file of commands only */
             return false;
         cur = k->place_e;
     }
@@ -1342,6 +1705,17 @@ static void derive_map(const ccr_ast *ast, ccr_out_range *map, ccr_node_id id, u
     }
 }
 
+/* What new instructions are indented with: what the file's are. */
+static void find_asm_indent(gen *g)
+{
+    for (uint32_t i = 0; i < g->ast->node_count && !g->asm_indent[0]; ++i) {
+        const ccr_node *n = &g->ast->nodes[i];
+        if (n->kind == CCR_NODE_BLOCK && !(n->flags & CCR_FLAG_NEW) && n->first_child != CCR_NONE &&
+            (g->ast->nodes[n->first_child].flags & CCR_FLAG_ASM))
+            snprintf(g->asm_indent, sizeof g->asm_indent, "%s", ccr_ast_str(g->ast, n->indent));
+    }
+}
+
 bool ccr_codegen(const ccr_ast *ast, char **out, size_t *out_len, char *err, size_t err_cap)
 {
     return ccr_codegen_mapped(ast, out, out_len, NULL, err, err_cap);
@@ -1360,6 +1734,7 @@ bool ccr_codegen_mapped(const ccr_ast *ast, char **out, size_t *out_len, ccr_out
     }
 
     gen g = { .ast = ast, .ok = true, .err = err, .err_cap = err_cap, .map = map };
+    find_asm_indent(&g);
     for (uint32_t i = 0; map && i < ast->node_count; ++i)
         map[i] = (ccr_out_range){ UINT32_MAX, UINT32_MAX, false };
     g.dirty = calloc(ast->node_count, 1);
@@ -1399,6 +1774,7 @@ bool ccr_codegen_node(const ccr_ast *ast, ccr_node_id id, char **out, size_t *ou
         return false;
     }
     gen g = { .ast = ast, .ok = true, .err = err, .err_cap = err_cap };
+    find_asm_indent(&g);
     g.dirty = calloc(ast->node_count, 1);
     if (!g.dirty) {
         snprintf(err, err_cap, "out of memory");

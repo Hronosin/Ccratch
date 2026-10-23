@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "ccr_build.h"
+#include "ccr_asm.h"
 #include "ccr_files.h"
 #include "ccr_lib.h"
 
@@ -143,6 +144,24 @@ static void collect(const scanned *sc, libs *l)
     }
 }
 
+/* An assembly file with a main: of its own (the program starts there). */
+static bool asm_has_main(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    char line[512];
+    bool found = false;
+    while (!found && fgets(line, sizeof line, f)) {
+        const char *p = line;
+        while (*p == ' ' || *p == '\t')
+            ++p;
+        found = strncmp(p, "main:", 5) == 0;
+    }
+    fclose(f);
+    return found;
+}
+
 static int compare_str(const void *a, const void *b)
 {
     return strcmp(*(char *const *)a, *(char *const *)b);
@@ -160,6 +179,8 @@ char *ccr_build_cmake_text(const char *project, const char *main_hint, int *file
     char **sources = calloc((size_t)tree.count + 1, sizeof *sources);
     char **mains = calloc((size_t)tree.count + 1, sizeof *mains);
     int ns = 0, nm = 0;
+    bool any_asm = false;
+    char nasm_note[1024] = "";
     libs L = { 0 };
     char *text = NULL;
     size_t text_len = 0;
@@ -172,9 +193,31 @@ char *ccr_build_cmake_text(const char *project, const char *main_hint, int *file
         const size_t n = strlen(e->path);
         const bool c_file = n > 2 && strcmp(e->path + n - 2, ".c") == 0;
         const bool h_file = n > 2 && strcmp(e->path + n - 2, ".h") == 0;
-        if (e->dir || (!c_file && !h_file))
+        const bool s_file = !e->dir && ccr_asm_is_asm(e->path);
+        if (e->dir || (!c_file && !h_file && !s_file))
             continue;
         const char *rel = e->path + root_len + (e->path[root_len] == '/');
+        if (s_file) {
+            /* GNU as: built with the C files (gcc assembles it); NASM would want a language of its own */
+            if (ccr_asm_syntax_of(e->path, NULL, 0) == CCR_ASM_NASM) {
+                const size_t k = strlen(nasm_note);
+                snprintf(nasm_note + k, sizeof nasm_note - k, "# %s is NASM: build it with nasm (it is left out)\n", rel);
+                continue;
+            }
+            if (skip_for_program(rel))
+                continue;
+            any_asm = true;
+            const bool hinted_s = main_hint && ccr_files_same(e->path, main_hint);
+            if (!asm_has_main(e->path)) {
+                sources[ns++] = strdup(rel);
+            } else if (hinted_s && nm > 0) {   /* the open file's main wins */
+                mains[nm++] = mains[0];
+                mains[0] = strdup(rel);
+            } else {
+                mains[nm++] = strdup(rel);
+            }
+            continue;
+        }
         const bool hinted = main_hint && ccr_files_same(e->path, main_hint);
         if (skip_for_program(rel) && !hinted)
             continue;
@@ -198,7 +241,7 @@ char *ccr_build_cmake_text(const char *project, const char *main_hint, int *file
     }
     if (ns + nm == 0)
         goto done;
-    if (nm) {   /* the program's own main() */
+    if (nm && !ccr_asm_is_asm(mains[0])) {   /* the program's own main() */
         char full[2400];
         scanned sc;
         snprintf(full, sizeof full, "%s/%s", tree.root, mains[0]);
@@ -214,7 +257,7 @@ char *ccr_build_cmake_text(const char *project, const char *main_hint, int *file
     project_name(tree.root, name, sizeof name);
     fprintf(out, "# Made by Ccratch for %s. Open it as blocks, or as text: it is plain CMake.\n", name);
     fprintf(out, "cmake_minimum_required(VERSION 3.16)\n");
-    fprintf(out, "project(%s LANGUAGES C)\n\n", name);
+    fprintf(out, "project(%s LANGUAGES C%s)\n\n", name, any_asm ? " ASM" : "");
     fprintf(out, "set(CMAKE_C_STANDARD 11)\nset(CMAKE_C_STANDARD_REQUIRED ON)\n\n");
     fprintf(out, "add_executable(${PROJECT_NAME}\n");
     if (nm)
@@ -224,6 +267,7 @@ char *ccr_build_cmake_text(const char *project, const char *main_hint, int *file
     fprintf(out, ")\n");
     for (int i = 1; i < nm; ++i)
         fprintf(out, "# %s has a main() of its own: a program of its own, left out\n", mains[i]);
+    fputs(nasm_note, out);
 
     char inc_dir[1200];
     struct stat st;

@@ -164,3 +164,14 @@ set.mode_debug_hint = Արագ է պատրաստվում, և «Քայլ առ ք�
 set.mode_release = Արագ
 set.mode_release_hint = Պատրաստ ծրագիրն ավելի արագ է աշխատում, բայց ավելի երկար է պատրաստվում։ «Քայլ առ քայլ»-ը միևնույն է իր համար սովորականն է պատրաստում
 set.mode_sanitize_hint = Ծրագրին հետևում են, մինչ այն աշխատում է։ Եթե այն դիպչի օտար հիշողությանը կամ մոռանա վերադարձնել իրը, կկանգնի, իսկ դա արած բլոկը կկարմրի։ Պետք են libasan և libubsan
+
+# assembly
+palette.asm = Ասեմբլեր
+palette.asm_move = Տվյալների տեղափոխում
+palette.asm_math = Թվաբանություն
+palette.asm_jumps = Թռիչքներ
+palette.asm_data = Բաժիններ և տվյալներ
+palette.asm_att = GNU as, AT&T շարահյուսություն. նախ՝ որտեղից, հետո՝ ուր։ Ռեգիստրները սկսվում են տոկոսի նշանով, թվերը՝ $-ով
+palette.asm_intel = GNU as, Intel շարահյուսություն (.intel_syntax). նախ՝ ուր (mov rax, 1)
+palette.asm_nasm = NASM. նախ՝ ուր (mov rax, 1)։ ; նշանը սկսում է մեկնաբանություն
+files.name_file = Ֆայլի անունը (.c, .h, .s կամ .asm), Enter՝ ստեղծել

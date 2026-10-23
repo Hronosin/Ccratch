@@ -31,6 +31,8 @@ typedef struct ccr_finding {
     ccr_find_level    level;
     char              title[96];
     char              message[1400];
+    bool              poke;      /* the plugin wants the user's nose rubbed in it */
+    char              say[160];  /* ...shouting this */
 } ccr_finding;
 
 /* Loads every plugin found (again: unloads the old ones first). Problems
@@ -51,6 +53,18 @@ bool        ccr_plugins_is_checker(int i);
 bool        ccr_plugins_enabled(int i);
 /* On or off; `save`: remembered in the config. */
 void        ccr_plugins_set_enabled(int i, bool on, bool save);
+
+/* Its settings (Settings > Plugins), remembered as plugin.NAME.KEY. */
+int         ccr_plugins_setting_count(int i);
+const char *ccr_plugins_setting_key(int i, int k);
+bool        ccr_plugins_setting_is_toggle(int i, int k);   /* else a choice */
+const char *ccr_plugins_setting_title(int i, int k, const char *ui_language);
+const char *ccr_plugins_setting_hint(int i, int k, const char *ui_language);
+int         ccr_plugins_setting_choice_count(int i, int k);
+const char *ccr_plugins_setting_choice(int i, int k, int c);
+const char *ccr_plugins_setting_choice_title(int i, int k, int c, const char *ui_language);
+const char *ccr_plugins_setting_value(int i, int k);   /* "on", "mother_cat"... */
+void        ccr_plugins_set_setting(int i, int k, const char *value, bool save);
 
 /*
  * Every checker that is on, on this tree. *out: a malloc'd array (free

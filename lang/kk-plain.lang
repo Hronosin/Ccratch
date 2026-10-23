@@ -164,3 +164,14 @@ set.mode_debug_hint = Тез жасалады, «Қадам-қадаммен» �
 set.mode_release = Жылдам
 set.mode_release_hint = Дайын бағдарлама жылдамырақ жұмыс істейді, бірақ ұзағырақ жасалады. «Қадам-қадаммен» бәрібір өзіне қарапайымын жасайды
 set.mode_sanitize_hint = Бағдарлама жұмыс істеп тұрғанда бақыланады: бөтен жадқа тиіссе не өз жадын қайтаруды ұмытса, тоқтайды, ал мұны істеген блок қызарады. libasan мен libubsan керек
+
+# assembly
+palette.asm = Ассемблер
+palette.asm_move = Деректерді тасымалдау
+palette.asm_math = Арифметика
+palette.asm_jumps = Секірістер
+palette.asm_data = Бөлімдер мен деректер
+palette.asm_att = GNU as, AT&T синтаксисі: алдымен қайдан, содан кейін қайда; регистрлер пайыз белгісімен, сандар $ белгісімен басталады
+palette.asm_intel = GNU as, Intel синтаксисі (.intel_syntax): алдымен қайда (mov rax, 1)
+palette.asm_nasm = NASM: алдымен қайда (mov rax, 1); ; түсініктеме бастайды
+files.name_file = Файл аты (.c, .h, .s не .asm), Enter: жасау

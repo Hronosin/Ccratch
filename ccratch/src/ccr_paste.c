@@ -1,4 +1,5 @@
 #include "ccr_paste.h"
+#include "ccr_asm.h"
 #include "ccr_cmake.h"
 #include "ccr_codegen.h"
 #include "ccr_parse.h"
@@ -273,6 +274,18 @@ bool ccr_snippet_parse(const char *code, const char *context, size_t context_len
     if (!n)
         return false;
 
+    if (path && ccr_asm_is_asm(path)) {
+        /* assembly: its statements, read the file's way */
+        if (!ccr_ast_init(&out->ast))
+            return false;
+        const ccr_asm_syntax syn = ccr_asm_syntax_of(path, context, context_len);
+        if (ccr_asm_parse_text(code, n, "pasted", syn, false, &out->ast))
+            for (ccr_node_id h = out->ast.nodes[0].first_child; h != CCR_NONE; h = N(out, h)->next_sibling)
+                for (ccr_node_id b = N(out, h)->first_child; b != CCR_NONE; b = N(out, b)->next_sibling)
+                    for (ccr_node_id c = N(out, b)->first_child; c != CCR_NONE; c = N(out, c)->next_sibling)
+                        add_item(out, c);
+        return out->count > 0;
+    }
     if (cmake) {
         if (!ccr_ast_init(&out->ast))
             return false;

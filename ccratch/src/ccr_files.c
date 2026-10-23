@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE   /* realpath */
 #include "ccr_files.h"
+#include "ccr_asm.h"
 #include "ccr_cmake.h"
 #include "ccr_lang.h"
 #include "ccr_theme.h"
@@ -17,7 +18,8 @@
 static bool is_source(const char *name)
 {
     const char *dot = strrchr(name, '.');
-    return (dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0)) || ccr_cmake_is_cmake(name);
+    return (dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0)) || ccr_cmake_is_cmake(name) ||
+           ccr_asm_is_asm(name);
 }
 
 /* Folders nobody wants to see code in. */
@@ -241,7 +243,16 @@ ccr_create_result ccr_files_create_file(const char *dir, const char *name, char 
     const size_t n = strlen(file);
     const bool header = n > 2 && strcmp(file + n - 2, ".h") == 0;
     char text[512];
-    if (header) {
+    if (ccr_asm_is_asm(file)) {
+        /* assembly: a program that does nothing yet, in the file's syntax */
+        if (ccr_asm_syntax_of(file, NULL, 0) == CCR_ASM_NASM)
+            snprintf(text, sizeof text, "; %s\n        global  main\n\n        section .text\nmain:\n"
+                                        "        xor     eax, eax\n        ret\n", file);
+        else
+            snprintf(text, sizeof text, "# %s\n        .text\n        .globl  main\nmain:\n"
+                                        "        xorl    %%eax, %%eax\n        ret\n\n"
+                                        "        .section .note.GNU-stack,\"\",@progbits\n", file);
+    } else if (header) {
         /* util.h -> UTIL_H */
         char guard[136];
         size_t g = 0;
@@ -536,7 +547,7 @@ void ccr_files_panel_draw(const ccr_files_panel *p, const ccr_files *f, ccr_rect
 
         /* a file: a dot in the colour of what it holds, .c code, .h types */
         const bool header = e->name[strlen(e->name) - 1] == 'h';
-        const ccr_theme_cat cat = header ? CCR_CAT_TYPE : CCR_CAT_CALL;
+        const ccr_theme_cat cat = ccr_asm_is_asm(e->name) ? CCR_CAT_OPERATOR : header ? CCR_CAT_TYPE : CCR_CAT_CALL;
         ccr_gui_circle((ccr_vec2){ x + 5.0f, cy }, 6.0f, ccr_th_cat(cat, CCR_EDGE));
         ccr_gui_circle((ccr_vec2){ x + 5.0f, cy }, 4.5f, ccr_th_cat(cat, CCR_FILL));
         char label[160];

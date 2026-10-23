@@ -164,3 +164,14 @@ set.mode_debug_hint = すぐ作れて、「一歩ずつ」で中をのぞける�
 set.mode_release = 速い
 set.mode_release_hint = できたプログラムは速いが、作るのに時間がかかる。「一歩ずつ」は自分用にふつうのものを作る
 set.mode_sanitize_hint = 動いているプログラムを見張る：さわってはいけないメモリにさわったり、メモリを返し忘れたりすると止まり、そうしたブロックが赤くなる。libasan と libubsan が必要
+
+# assembly
+palette.asm = アセンブリ
+palette.asm_move = データ転送
+palette.asm_math = 算術
+palette.asm_jumps = ジャンプ
+palette.asm_data = セクションとデータ
+palette.asm_att = GNU as、AT&T 構文: 先に転送元、後に転送先。レジスタはパーセント記号、数値は $ で始まる
+palette.asm_intel = GNU as、Intel 構文 (.intel_syntax): 先に転送先 (mov rax, 1)
+palette.asm_nasm = NASM: 先に転送先 (mov rax, 1)。; はコメントの始まり
+files.name_file = ファイル名 (.c、.h、.s、.asm)、Enter で作成

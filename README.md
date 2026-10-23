@@ -37,6 +37,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 26: C and C++ as the palette's catalogue tabs, in each theme's colours, with the standard library's switch beside them.
 - Step 27: search and replace across the project, as VS Code's (text, or names as the compiler sees them); blocks put anywhere and kept there, arranged as columns, a newspaper or by calls.
 - Step 28: arrangements of your own (a builder, and files to write by hand), one of them for files opening for the first time; Code Hater reads context.
+- Step 29: assembly as blocks: `.s`/`.S`/`.asm` files (GNU as, AT&T or Intel, and NASM) and `asm()` inside C; plugins with settings of their own; Code Hater learns assembly, a hundred new ways to say it, and a mother cat who rubs your nose in the bug.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -398,6 +399,64 @@ If there is none, it makes one first, from what is there:
 
 It is plain CMake: `ccratch --make-cmake DIR` prints the same for a
 look first, and `cmake -S . -B build && cmake --build build` builds it.
+
+## Assembly as blocks
+
+Under C there is always the machine, and Ccratch opens that too. A `.s`,
+`.S` or `.asm` file is read by Ccratch's own assembly reader (no clang,
+no assembler needed), in the syntax it is written in: GNU as with AT&T
+operands (what gcc writes), GNU as after `.intel_syntax`, or NASM.
+
+- every **global label** (`.globl main`, `global _start`) gets a hat:
+  that is where code starts running, so that is where a stack starts;
+  every **section** (`.data`, `section .rodata`) gets one of its own, on
+  the left, code on the right;
+- an **instruction** is a block, its mnemonic and then each operand a
+  slot: `movl [$1] , [%ebx]`; coloured by what it does: moving data
+  orange, arithmetic and compares green, jumps and calls gold,
+  directives purple, data blue;
+- a **local label** is a block of its own, and every **jump** to it
+  (`jne .L3`, `loop`, `jmp`) has an arrow to it, as `goto` does in C.
+  `jmp` and `ret` have flat bottoms: nothing after them runs; `jne`
+  does not, the code goes on when it does not jump;
+- `.macro`/`.endm`, `.rept`, `%macro`, `%rep` are C-shaped blocks with
+  their end written under the mouth, `.if`/`.else`/`.endif`, `%ifdef` and
+  `#ifdef` in a `.S` file too;
+- `msg db "hi", 10` and `len equ $ - msg` keep their label with them;
+- saving works as for C and CMake: nothing touched, nothing changed, byte
+  for byte; a moved instruction keeps its own spacing and comment. The
+  tests read gcc's own assembly of this project and of raylib (AT&T and
+  Intel), save it with every block rebuilt, assemble both and compare the
+  bytes.
+
+![examples/hello.s as blocks: the .rodata and .text sections on the left, main on the right, the jle .Lagain with its arrow back up to the label](docs/asm.png)
+
+The palette follows the file, and speaks its syntax (the pill beside the
+tab says which): **Moving data** (`mov`, `lea`, `push`, `pop`, loads and
+stores), **Arithmetic** (`add`, `sub`, `imul`, `xor`, shifts, `cmp`,
+`test`), **Jumps** (a label, `jmp`, `je`, `jne`, `jl`, `jg`, `call`,
+`ret`, `syscall`) and **Sections and data** (`.globl`, `.text`, `.data`,
+`.string`, `.quad`, `.byte`, a macro, a repeat). The same block is
+`movq %rbx, %rax` in an AT&T file and `mov rax, rbx` in NASM. **+ file**
+makes a `.s` or an `.asm` that already assembles; the Build button builds
+GNU assembly with the C files (`project(... LANGUAGES C ASM)`), and a
+`main:` in one is the program's `main` (NASM wants its own assembler, so
+an `.asm` is left out, with a note in the CMakeLists).
+
+### asm() in C
+
+`asm volatile("..." : outputs : inputs : clobbers)` is a purple block with
+a mouth: the string is taken apart into its instructions, one block each,
+and the operands go under it, `out: "=r" (sum)  in: "r" (a)`, the
+expressions as real slots. Drag instructions in, out, around: saving
+writes the string again the way it was written (one string per line with
+`\n\t`, or all on one). An instruction dragged out among the C blocks
+saves as an `__asm__ volatile("...")` of its own. The C palette has an
+**Assembly** section: the `asm` block (with slots for outputs, inputs and
+clobbers) and a few instructions, in AT&T as gcc wants it; only assembly
+goes into an `asm` block's mouth.
+
+![examples/inline.c: an __asm__ block with movl and addl in its mouth and its outputs, inputs and clobbers under it, and the Assembly section of the palette](docs/asm_inline.png)
 
 ## Getting around
 
@@ -939,8 +998,8 @@ stays English.
 
 ## Files
 
-**Files** in the top bar (or Ctrl+P) slides in the project: every `.c` and
-`.h` in the folder of the file you opened and the folders under it
+**Files** in the top bar (or Ctrl+P) slides in the project: every `.c`,
+`.h`, `.s` and `.asm` in the folder of the file you opened and the folders under it
 (hidden folders, `build/` and the like left out, folders with no code
 too). Click a file to open it; the one you were in stays open, with its
 undo history, its unsaved changes and where you were looking, and comes
@@ -1036,6 +1095,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_lib     block packs: libraries as blocks
   ccr_api     a library's public functions: headers (API) and .so/.a (ELF ABI)
   ccr_cmake   CMake files into the same syntax tree, as blocks
+  ccr_asm     assembly (.s, .asm, asm() in C) into the same tree, as blocks
   ccr_build   the project as something to build: a first CMakeLists.txt
   ccr_job     the Build button: configure, build, run; output read for errors
   ccr_proc    a program in the background, its output read line by line
@@ -1047,7 +1107,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
 gui/        libccr_gui   - the only code that knows raylib exists
 include/    public headers: ccratch.h, ccr_plugin.h (plugin ABI)
 plugins/    each plugin is its own .so: code_hater/, and hello/, the template
-examples/   C files to feed the parser
+examples/   files to feed the parser: C, C++, assembly (hello.s, hello.asm, inline.c)
 lang/       language packs (ru.lang...); English is built in
 blocks/     block packs (raylib.yaml...)
 arrangements/ ways to lay out the blocks (kernel.arrange...)
@@ -1151,6 +1211,7 @@ ccratch file.c --no-animations           blocks just jump into place
 ccratch --make-blocks lib.h              a draft block pack for a library
 ccratch --make-cmake DIR                 the CMakeLists.txt Ccratch would make for a project
 ccratch --check-blocks pack.yaml         check a block pack
+ccratch --check-code a.c b.s             what the plugins say about some files
 ccratch --list-blocks                    block packs found, and where
 ```
 
@@ -1160,7 +1221,7 @@ ccratch --list-blocks                    block packs found, and where
 ## Settings
 
 The cog in the top bar (or **Ctrl+,**) opens every setting on one card,
-in four sections. Every change takes at once and is remembered:
+in five sections. Every change takes at once and is remembered:
 
 - **Look**: theme and language (click the name for the next one, or the
   arrows), Human language, the interface size (auto, or 75% to 300%),
@@ -1169,6 +1230,7 @@ in four sections. Every change takes at once and is remembered:
   the dots on the canvas, the standard library's blocks, block
   explanations, Git authors beside blocks;
 - **Building**: Debug, Release or Bug hunt (above);
+- **Plugins**: each plugin's switch, and its own settings under it;
 - **Other**: panel sizes back to how they were, forget the recent files,
   the agreement once more. Where the settings file is, at the bottom.
 
@@ -1191,6 +1253,9 @@ explain = on
 palette_std = on
 git_authors = off
 build_mode = sanitize
+plugin.code_hater = on
+plugin.code_hater.brutality = mother_cat
+plugin.code_hater.nits = off
 ```
 
 ## Plugins
@@ -1202,13 +1267,24 @@ one. Yes, even Rust. It will regret it). Ccratch loads every `.so` in
 `share/ccratch/plugins` next to the program, and **Settings > Plugins**
 lists them with a switch each (`plugin.NAME = off` in the config).
 
+A plugin can have **settings of its own**: switches and choices it lists
+in its `ccr_plugin` (`settings`, with the words for each in the
+interface's language from `setting_text`). Settings > Plugins shows them
+under its switch, the config keeps them as `plugin.NAME.KEY = VALUE`, and
+the plugin reads them while it checks (`file->setting(file, "KEY")`).
+A checker can also **poke** a node (`file->poke`): when the user saves or
+builds, Ccratch flies there and makes a scene of it (below). Both came
+later than the first plugins, so a plugin looks at `struct_size` before
+using them, and the host does the same with the plugin's: old ones keep
+working.
+
 A checker plugin gets the file a moment after every change: the same tree
 `--dump-ast` prints, as a flat array of nodes, plus the source. It reports
 findings on nodes, and each lands on its block as a badge: **NAK**, **!**,
 **nit** or **+1**. The mouse on a badge slides out the plugin's reply; the
 status bar counts them, and a click there glides to the next one.
 
-`ccratch --check-code FILE` prints the same in a terminal (exit 1 on a
+`ccratch --check-code FILE...` prints the same in a terminal (exit 1 on a
 warning or worse, so it fits in CI), `--list-plugins` shows what was
 found. `plugins/hello/` is the smallest plugin there is: copy it.
 
@@ -1228,6 +1304,8 @@ with the fix.
 | **nit** | four levels of nesting (`else if` chains don't count); functions over 80 lines or with more than 12 locals; `sizeof(int)` where `sizeof *p` would follow the pointer; casting `malloc`'s result; `f()` instead of `f(void)`; `atoi`; Rust only mentioned, nobody pushing it |
 | **+1** | a `goto` forward, to cleanup: the kernel way |
 | **C++** | raw `new` (a nit: who deletes it?), `using namespace` in a header (a warning); C's nits about `f()` and casting `malloc` stay quiet in C++, where both are right |
+| **asm()** | a register the instructions write that is neither an output nor a clobber (NAK: `movl $1, %%ecx` with no `"ecx"`; `rdtsc` and `cpuid` count, they write registers without naming them); a store to memory with no `"memory"` clobber (!); `rdtsc`, `pause`, `cpuid`, `bswap`, `popcnt` where a builtin says the same in C (nit) |
+| **.s / .asm** | `ret` with the pushes and pops out of step (NAK, following the jumps to see what the stack is at each label); writing `rbx`, `rbp`, `r12`-`r15` without saving them first (NAK: they are the caller's); a function that ends with no `ret` or `jmp` and falls into the next (!); code right after a `jmp` or `ret` that no label leads to (!); `mov $0` where `xor` would do, no `.note.GNU-stack` (nits) |
 
 It looks at what is in the program: loose blocks on the canvas and
 commented-out ones are left alone. And it reads context:
@@ -1246,6 +1324,29 @@ commented-out ones are left alone. And it reads context:
   there is a rant about Rust, so it says "this is me" instead of NAKing
   its own insults (and reviews the rest like anyone else's). The persona is made up; no real person
 said any of it, although several would have.
+
+How brutal it is, and what it looks at, are its settings (Settings >
+Plugins, under it):
+
+- **How brutal**: *Grumpy* says what is wrong; *Linus on a bad day* says
+  it the way the old lists did, an opener before ("Stop. Put the keyboard
+  down. Step away from the keyboard.") and a verdict after ("Go read K&R.
+  The whole thing. I'll wait."); *Mother cat* (the default) grabs you by
+  the scruff ("*drags you across the canvas by the scruff* Here. Right
+  here.") and, when you save or build, **rubs your nose in it**: the view
+  flies to the block, everything else goes dark, a ginger paw comes in
+  from the corner and pushes your face into the bug three times while she
+  shouts. The worst three, a few seconds each; a click or Esc and she
+  lets go. Autosave does not set her off, only you pressing Ctrl+S or
+  Build;
+- **Praise**, **Nits**, **Rust patrol**, **Assembly**: each its switch.
+
+Every rant has a few ways to say it, and the tone has dozens more: the
+same block always gets the same words (no flicker), two blocks rarely do.
+
+![the mother cat: the view zoomed onto `return &x;`, the rest of the canvas dark, a ginger paw pressing into the block, a bubble shouting "Нюхай. Это баг." over "NAK: адрес локальной переменной наружу"](docs/mother_cat.png)
+
+![Settings > Plugins: Code Hater's switch, and under it, in its red, how brutal (Mother cat), praise, nits, Rust patrol, assembly](docs/hater_settings.png)
 
 ## Interface size
 

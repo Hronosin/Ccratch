@@ -425,6 +425,7 @@ static bool needs_semicolon(ccr_node_kind k)
     case CCR_NODE_COMPOUND_LIT: case CCR_NODE_MACRO_VALUE:
     case CCR_NODE_INT_LIT: case CCR_NODE_FLOAT_LIT: case CCR_NODE_CHAR_LIT:
     case CCR_NODE_STRING_LIT: case CCR_NODE_NEW: case CCR_NODE_DELETE: case CCR_NODE_USING:
+    case CCR_NODE_ASM:
         return true;
     default:
         return false;

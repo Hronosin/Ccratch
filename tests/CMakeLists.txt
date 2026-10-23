@@ -266,6 +266,26 @@ set_tests_properties(cmake_blocks PROPERTIES
     ENVIRONMENT "CCRATCH_BLOCKS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/blocks")
 add_test(NAME roundtrip_cmake COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/CMakeLists.txt)
 
+# Assembly as blocks: .s/.S/.asm files, asm() in C. The corpus: gcc's own
+# assembly of this project's C and raylib's (AT&T and Intel), and NASM.
+add_executable(test_asm test_asm.c)
+target_link_libraries(test_asm PRIVATE ccratch_core)
+add_test(NAME asm_blocks COMMAND test_asm
+         ${PROJECT_SOURCE_DIR}/examples/hello.s ${PROJECT_SOURCE_DIR}/examples/hello.asm
+         --from-c ${PROJECT_SOURCE_DIR}/examples/tour.c
+         --from-c ${PROJECT_SOURCE_DIR}/ccratch/src/ccr_codegen.c
+         --flags "-I${PROJECT_SOURCE_DIR}/ccratch/src -I${PROJECT_SOURCE_DIR}/include"
+         --from-c ${PROJECT_SOURCE_DIR}/ccratch/src/ccr_editor.c
+         --flags "-std=c99 -I${raylib_SOURCE_DIR}/src -I${raylib_SOURCE_DIR}/src/external/glfw/include -DPLATFORM_DESKTOP"
+         --from-c ${raylib_SOURCE_DIR}/src/rshapes.c
+         --from-c ${raylib_SOURCE_DIR}/src/rtext.c)
+set_tests_properties(asm_blocks PROPERTIES TIMEOUT 300)
+foreach(f examples/hello.s examples/hello.asm examples/inline.c)
+    get_filename_component(stem ${f} NAME)
+    add_test(NAME roundtrip_asm_${stem} COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/${f})
+    set_tests_properties(roundtrip_asm_${stem} PROPERTIES PASS_REGULAR_EXPRESSION "identical")
+endforeach()
+
 # The Build button: compiler, linker and CMake output read for places;
 # a real project configured, built, run and stopped.
 add_executable(test_job test_job.c)
@@ -390,6 +410,51 @@ set_tests_properties(code_hater_self PROPERTIES
     ENVIRONMENT "${CCR_HATER_ENV}"
     PASS_REGULAR_EXPRESSION "praise: .code_hater. this is me"
     FAIL_REGULAR_EXPRESSION "Rust propaganda|Rust detected|Rust, mentioned")
+# assembly: .s files and asm() in C; clean ones say nothing
+foreach(expect "bad\\.s:7:[0-9]+: nit: .code_hater. mov 0 into eax"
+               "bad\\.s:9:[0-9]+: error: .code_hater. NAK: the stack is off by 1 at ret"
+               "bad\\.s:10:[0-9]+: warning: .code_hater. nothing ever gets here"
+               "bad\\.s:14:[0-9]+: warning: .code_hater. g falls into whatever comes next"
+               "bad\\.s:15:[0-9]+: error: .code_hater. NAK: r12 is not yours"
+               "bad\\.s:2:[0-9]+: nit: .code_hater. no .note.GNU-stack"
+               "inline_bad\\.c:6:[0-9]+: error: .code_hater. NAK: rcx trashed"
+               "inline_bad\\.c:14:[0-9]+: warning: .code_hater. asm writes memory"
+               "inline_bad\\.c:20:[0-9]+: nit: .code_hater. rdtsc: there is a builtin")
+    string(REGEX REPLACE "[^a-z0-9]+" "_" tag "${expect}")
+    string(SUBSTRING "${tag}" 0 50 tag)
+    add_test(NAME code_hater_asm_${tag} COMMAND ${CCR_BIN} --lang en --check-code
+             ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/bad.s ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/inline_bad.c)
+    set_tests_properties(code_hater_asm_${tag} PROPERTIES
+        ENVIRONMENT "${CCR_HATER_ENV}"
+        PASS_REGULAR_EXPRESSION "${expect}")
+endforeach()
+add_test(NAME code_hater_asm_honest COMMAND ${CCR_BIN} --lang en --check-code
+         ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/inline_bad.c)
+set_tests_properties(code_hater_asm_honest PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "inline_bad\\.c:6:"
+    FAIL_REGULAR_EXPRESSION "inline_bad\\.c:2[6-9]:")
+foreach(f examples/hello.s examples/hello.asm examples/inline.c)
+    get_filename_component(stem ${f} NAME)
+    add_test(NAME code_hater_quiet_${stem} COMMAND ${CCR_BIN} --lang en --check-code ${PROJECT_SOURCE_DIR}/${f})
+    set_tests_properties(code_hater_quiet_${stem} PROPERTIES
+        ENVIRONMENT "${CCR_HATER_ENV}"
+        FAIL_REGULAR_EXPRESSION "warning:|error:")
+endforeach()
+# how brutal: the mother cat (the default) rubs your nose in it; grumpy
+# just says it; and with the nits switched off there are none
+add_test(NAME code_hater_mother_cat COMMAND ${CCR_BIN} --lang en --check-code ${CCR_HATER_BAD})
+set_tests_properties(code_hater_mother_cat PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "nose rubbed in it")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hater-grumpy/ccratch/config
+     "plugin.code_hater.brutality = grumpy\nplugin.code_hater.nits = off\n")
+add_test(NAME code_hater_grumpy COMMAND ${CCR_BIN} --lang en --check-code ${CCR_HATER_BAD})
+set_tests_properties(code_hater_grumpy PROPERTIES
+    ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/hater-grumpy;XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/hater-data;CCRATCH_PLUGIN_DIR="
+    PASS_REGULAR_EXPRESSION "NAK: use after free"
+    FAIL_REGULAR_EXPRESSION "nose rubbed in it|: nit: ")
+
 add_test(NAME code_hater_good
          COMMAND ${CCR_BIN} --lang en --check-code ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/good.c)
 set_tests_properties(code_hater_good PROPERTIES

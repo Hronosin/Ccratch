@@ -164,3 +164,14 @@ set.mode_debug_hint = Tez qilinadi, «Qadamma-qadam» ichiga qaray oladi. Bilmas
 set.mode_release = Tez
 set.mode_release_hint = Tayyor dastur tezroq ishlaydi, lekin uzoqroq qilinadi. «Qadamma-qadam» baribir oʻziga oddiysini qiladi
 set.mode_sanitize_hint = Dastur ishlayotganda kuzatiladi: begona xotiraga tegsa yoki oʻz xotirasini qaytarishni unutsa, toʻxtaydi va buni qilgan blok qizaradi. libasan va libubsan kerak
+
+# assembly
+palette.asm = Assembler
+palette.asm_move = Ma'lumot ko'chirish
+palette.asm_math = Arifmetika
+palette.asm_jumps = Sakrashlar
+palette.asm_data = Bo'limlar va ma'lumotlar
+palette.asm_att = GNU as, AT&T sintaksisi: avval qayerdan, keyin qayerga; registrlar foiz belgisi bilan, sonlar $ bilan boshlanadi
+palette.asm_intel = GNU as, Intel sintaksisi (.intel_syntax): avval qayerga (mov rax, 1)
+palette.asm_nasm = NASM: avval qayerga (mov rax, 1); ; izohni boshlaydi
+files.name_file = Fayl nomi (.c, .h, .s yoki .asm), Enter: yaratish

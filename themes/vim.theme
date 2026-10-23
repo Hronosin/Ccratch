@@ -43,6 +43,7 @@ dim_text      = #6C6C6C
 lang_c        = #D7AF00
 lang_cpp      = #AF5FD7
 lang_cmake    = #5F87D7
+lang_asm      = #87AF5F
 
 # blocks: the syntax groups
 control       = #D7AF00

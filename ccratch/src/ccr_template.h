@@ -29,12 +29,18 @@ typedef enum ccr_tcat {
     CCR_TCAT_DECLS,          /* the file's own: functions, structs, #include */
     CCR_TCAT_STD_C,          /* C's standard library: printf, malloc, strlen... */
     CCR_TCAT_STD_CPP,        /* C++'s: std::cout, std::string, std::vector... */
+    CCR_TCAT_ASM_INLINE,     /* C: asm volatile (...) and a few instructions */
     /* CMake */
     CCR_TCAT_CM_PROJECT,     /* project, targets */
     CCR_TCAT_CM_TARGETS,     /* what a target is built with */
     CCR_TCAT_CM_LIBS,        /* find_package, and the block packs' libraries */
     CCR_TCAT_CM_VARS,
     CCR_TCAT_CM_CONTROL,
+    /* assembly files */
+    CCR_TCAT_ASM_MOVE,       /* mov, lea, push, pop */
+    CCR_TCAT_ASM_MATH,       /* add, sub, cmp, xor... */
+    CCR_TCAT_ASM_JUMPS,      /* labels, jumps, call, ret, syscall */
+    CCR_TCAT_ASM_DATA,       /* sections, .globl, data, macros */
     CCR_TCAT_COUNT
 } ccr_tcat;
 
@@ -175,7 +181,54 @@ typedef enum ccr_tcat {
     X(CM_WHILE,    CM_CONTROL, "while(n LESS 10)")        \
     X(CM_FUNCTION, CM_CONTROL, "function(add_game name)") \
     X(CM_RETURN,   CM_CONTROL, "return()")                \
-    X(CM_LINE,     CM_CONTROL, "code line")
+    X(CM_LINE,     CM_CONTROL, "code line")              \
+    /* asm() in C; then assembly files. The label is Intel's spelling: the \
+     * block says it the file's way (AT&T, Intel or NASM) */         \
+    X(INL_ASM,     ASM_INLINE, "asm volatile (...)")      \
+    X(INL_MOV,     ASM_INLINE, "mov eax, ebx")            \
+    X(INL_ADD,     ASM_INLINE, "add eax, 1")              \
+    X(INL_XOR,     ASM_INLINE, "xor eax, eax")            \
+    X(INL_NOP,     ASM_INLINE, "nop")                     \
+    X(INL_PAUSE,   ASM_INLINE, "pause")                   \
+    X(A_MOV,       ASM_MOVE,  "mov rax, rbx")             \
+    X(A_MOV_IMM,   ASM_MOVE,  "mov rax, 1")               \
+    X(A_LOAD,      ASM_MOVE,  "mov eax, [rdi]")           \
+    X(A_STORE,     ASM_MOVE,  "mov [rdi], eax")           \
+    X(A_LEA,       ASM_MOVE,  "lea rsi, [rip + msg]")     \
+    X(A_PUSH,      ASM_MOVE,  "push rbp")                 \
+    X(A_POP,       ASM_MOVE,  "pop rbp")                  \
+    X(A_ADD,       ASM_MATH,  "add rax, rbx")             \
+    X(A_SUB,       ASM_MATH,  "sub rsp, 16")              \
+    X(A_IMUL,      ASM_MATH,  "imul rax, rbx")            \
+    X(A_INC,       ASM_MATH,  "inc rcx")                  \
+    X(A_DEC,       ASM_MATH,  "dec rcx")                  \
+    X(A_NEG,       ASM_MATH,  "neg rax")                  \
+    X(A_XOR,       ASM_MATH,  "xor eax, eax")             \
+    X(A_AND,       ASM_MATH,  "and rax, 15")              \
+    X(A_OR,        ASM_MATH,  "or rax, rbx")              \
+    X(A_SHL,       ASM_MATH,  "shl rax, 1")               \
+    X(A_SHR,       ASM_MATH,  "shr rax, 1")               \
+    X(A_CMP,       ASM_MATH,  "cmp rax, rbx")             \
+    X(A_TEST,      ASM_MATH,  "test rax, rax")            \
+    X(A_LABEL,     ASM_JUMPS, ".Lloop:")                  \
+    X(A_JMP,       ASM_JUMPS, "jmp .Lloop")               \
+    X(A_JE,        ASM_JUMPS, "je .Lloop")                \
+    X(A_JNE,       ASM_JUMPS, "jne .Lloop")               \
+    X(A_JL,        ASM_JUMPS, "jl .Lloop")                \
+    X(A_JG,        ASM_JUMPS, "jg .Lloop")                \
+    X(A_CALL,      ASM_JUMPS, "call puts")                \
+    X(A_RET,       ASM_JUMPS, "ret")                      \
+    X(A_SYSCALL,   ASM_JUMPS, "syscall")                  \
+    X(A_NOP,       ASM_JUMPS, "nop")                      \
+    X(A_GLOBL,     ASM_DATA,  ".globl main")              \
+    X(A_TEXT,      ASM_DATA,  ".text")                    \
+    X(A_DATA,      ASM_DATA,  ".data")                    \
+    X(A_STRING,    ASM_DATA,  ".string \"Hello\"")        \
+    X(A_QUAD,      ASM_DATA,  ".quad 0")                  \
+    X(A_BYTE,      ASM_DATA,  ".byte 1, 2, 3")            \
+    X(A_MACRO,     ASM_DATA,  ".macro name")              \
+    X(A_REPT,      ASM_DATA,  ".rept 4")                  \
+    X(A_LINE,      ASM_DATA,  "code line")
 
 typedef enum ccr_template {
 #define X(id, cat, label) CCR_TEMPLATE_##id,
@@ -192,6 +245,10 @@ ccr_template ccr_template_pack_link(int pack);
 ccr_template ccr_template_pack_find(int pack);
 /* Is section `c` for CMake files (or for C)? */
 bool        ccr_tcat_is_cmake(ccr_tcat c);
+/* The files section `c` is for: C (and C++), CMake or assembly. */
+ccr_lang_kind ccr_tcat_lang(ccr_tcat c);
+/* An assembly template's line in a syntax ("movq %rbx, %rax"), or NULL. */
+const char *ccr_template_asm_line(ccr_template t, ccr_asm_syntax syntax);
 /* A standard library's section (the palette can do without them). */
 bool        ccr_tcat_is_std(ccr_tcat c);
 

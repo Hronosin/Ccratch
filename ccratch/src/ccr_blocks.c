@@ -1,10 +1,12 @@
 #include "ccr_blocks.h"
+#include "ccr_asm.h"
 #include "ccr_template.h"
 #include "ccr_choice.h"
 #include "ccr_cmake.h"
 #include "ccr_lib.h"
 #include "ccr_theme.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -907,6 +909,17 @@ static bool ends_flow(ccr_node_kind k)
            k == CCR_NODE_GOTO;
 }
 
+/* Nothing runs after this statement: no tab under it. Assembly says so by
+ * its mnemonic (jmp, ret; jne goes on). */
+static bool stmt_ends_flow(const layout *L, ccr_node_id id)
+{
+    const ccr_node *n = N(L, id);
+    if (n->flags & CCR_FLAG_ASM)
+        return (n->kind == CCR_NODE_GOTO && ccr_asm_ends_flow(S(L, n->op))) ||
+               (n->kind == CCR_NODE_CALL && ccr_asm_ends_flow(S(L, n->name)));
+    return ends_flow(n->kind);
+}
+
 static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w)
 {
     const bool off = (N(L, id)->flags & CCR_FLAG_COMMENTED) != 0;
@@ -920,7 +933,7 @@ static float emit_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w
         const ccr_prim top = L->out->prims[first];
         if (top.node == id && top.kind == CCR_PRIM_BLOCK && top.rect.x == x && top.rect.y == y) {
             L->out->prims[first].notch = true;   /* a real hole: what is under shows */
-            if (!ends_flow(N(L, id)->kind) && N(L, id)->kind != CCR_NODE_LABEL)
+            if (!stmt_ends_flow(L, id) && (N(L, id)->kind != CCR_NODE_LABEL || (N(L, id)->flags & CCR_FLAG_ASM)))
                 add_tab(L, x, y + h, top.fill, top.edge, id);
         }
     }
@@ -1008,8 +1021,130 @@ static float emit_cmake_stmt(layout *L, ccr_node_id id, float x, float y, float 
     return sz.h;
 }
 
+/* An assembly statement: its mnemonic, then each operand a slot. */
+static float emit_asm_stmt(layout *L, ccr_node_id id, float x, float y, float *max_w)
+{
+    const ccr_node *n = N(L, id);
+    items head = { .n = 0, .used = 0 };
+    size2 sz = { 0, 0 };
+    switch (n->kind) {
+    case CCR_NODE_CALL: {
+        it_text(&head, S(L, n->type));   /* msg db ..., x = ... */
+        it_text(&head, S(L, n->name));
+        bool first = true;
+        for (ccr_node_id c = n->first_child; c != CCR_NONE; c = N(L, c)->next_sibling) {
+            if (N(L, c)->flags & CCR_FLAG_WORD)
+                continue;
+            if (!first)
+                it_text(&head, ",");
+            it_expr(&head, c);
+            first = false;
+        }
+        sz = emit_line_block(L, &head, (category)ccr_asm_category(S(L, n->name)), x, y, id);
+        break;
+    }
+    case CCR_NODE_LABEL:
+        push_jump(L, id);
+        if (n->flags & CCR_FLAG_NEW) {
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_NAME));
+            it_text(&head, ":");
+        } else {
+            it_fmt(&head, "%s:", S(L, n->name));
+        }
+        sz = emit_line_block(L, &head, CAT_CONTROL, x, y, id);
+        break;
+    case CCR_NODE_GOTO:
+        push_jump(L, id);
+        it_text(&head, S(L, n->op));
+        if (n->flags & CCR_FLAG_NEW)
+            it_expr(&head, word_of(L, id, CCR_FLAG_WORD_NAME));
+        else
+            it_text(&head, S(L, n->name));
+        sz = emit_line_block(L, &head, CAT_CONTROL, x, y, id);
+        break;
+    case CCR_NODE_SCOPE:
+    case CCR_NODE_IF: {
+        /* .macro / .rept / .if: a C block, its end written under its mouth */
+        const char *name = S(L, n->name);
+        it_text(&head, name);
+        it_expr(&head, child_at(L, id, 0));
+        items els = { .n = 0, .used = 0 }, end = { .n = 0, .used = 0 };
+        it_text(&els, ccr_asm_else_word(name));
+        it_text(&end, ccr_asm_end_word(name));
+        const ccr_node_id other = n->kind == CCR_NODE_IF ? child_at(L, id, 2) : CCR_NONE;
+        mouth m[2] = { { child_at(L, id, 1), other != CCR_NONE ? &els : &end }, { other, &end } };
+        const bool macro = strstr(name, "macro") != NULL;
+        sz = emit_c_block(L, &head, m, other != CCR_NONE ? 2 : 1, macro ? CAT_PREPROC : CAT_CONTROL, x, y, id,
+                          max_w);
+        break;
+    }
+    case CCR_NODE_TEXT:
+        it_expr(&head, id);
+        sz = emit_line_block(L, &head, CAT_CALL, x, y, id);
+        break;
+    default:
+        it_text(&head, ccr_node_kind_name(n->kind));
+        sz = emit_line_block(L, &head, CAT_DRAGON, x, y, id);
+        break;
+    }
+    if (sz.w > *max_w)
+        *max_w = sz.w;
+    return sz.h;
+}
+
+/* asm volatile ( instructions ) out: "=r" x  in: "r" a  clobbers: "cc" */
+static float emit_inline_asm(layout *L, ccr_node_id id, float x, float y, float *max_w)
+{
+    const ccr_node *n = N(L, id);
+    items head = { .n = 0, .used = 0 }, foot = { .n = 0, .used = 0 };
+    it_text(&head, S(L, n->name));
+    it_text(&head, S(L, n->op));
+    const ccr_node_id body = child_at(L, id, 0);
+    if (n->flags & CCR_FLAG_NEW) {
+        static const char *const words[] = { "out:", "in:", "clobbers:" };
+        for (uint32_t k = 0; k < 3; ++k) {
+            it_text(&foot, words[k]);
+            it_expr(&foot, child_at(L, id, 1 + k));
+        }
+    } else if (n->src_e > n->src_b && n->src_e <= L->ast->source_len) {
+        ccr_asm_parts p;
+        const char *t = L->ast->source + n->src_b;
+        if (ccr_asm_parts_of(t, n->src_e - n->src_b, &p)) {
+            int section = -1;
+            for (int k = 0; k < p.op_count; ++k) {
+                if (p.op_section[k] != section) {
+                    section = p.op_section[k];
+                    it_text(&foot, section == 0 ? "out:" : "in:");
+                }
+                it_fmt(&foot, "%.*s", (int)(p.ops[k].ce - p.ops[k].cb), t + p.ops[k].cb);
+                const ccr_node_id e = child_at(L, id, 1 + (uint32_t)k);
+                if (e != CCR_NONE)
+                    it_expr(&foot, e);
+                else
+                    it_fmt(&foot, "(%.*s)", (int)(p.ops[k].ee - p.ops[k].eb), t + p.ops[k].eb);
+            }
+            for (int sct = 2; sct < p.sections; ++sct) {
+                uint32_t b = p.sec_b[sct], e = p.sec_e[sct];
+                while (b < e && isspace((unsigned char)t[b])) ++b;
+                while (e > b && isspace((unsigned char)t[e - 1])) --e;
+                if (e > b)
+                    it_fmt(&foot, "%s %.*s", sct == 2 ? "clobbers:" : "goto:", (int)(e - b), t + b);
+            }
+        }
+    }
+    mouth m = { body, foot.n ? &foot : NULL };
+    const size2 sz = emit_c_block(L, &head, &m, 1, CAT_PREPROC, x, y, id, max_w);
+    if (sz.w > *max_w)
+        *max_w = sz.w;
+    return sz.h;
+}
+
 static float emit_stmt_body(layout *L, ccr_node_id id, float x, float y, float *max_w)
 {
+    if (N(L, id)->flags & CCR_FLAG_ASM)
+        return emit_asm_stmt(L, id, x, y, max_w);
+    if (N(L, id)->kind == CCR_NODE_ASM)
+        return emit_inline_asm(L, id, x, y, max_w);
     if (L->ast->lang == CCR_LANG_CMAKE)
         return emit_cmake_stmt(L, id, x, y, max_w);
     const ccr_node *n = N(L, id);
@@ -1364,6 +1499,10 @@ static size2 emit_hat(layout *L, ccr_node_id fn, float x, float y, float *max_w)
     items head = { .n = 0, .used = 0 };
     if (L->ast->lang == CCR_LANG_CMAKE)
         it_text(&head, S(L, N(L, fn)->name));   /* the file: CMake runs it top to bottom */
+    else if (L->ast->lang == CCR_LANG_ASM && strcmp(S(L, N(L, fn)->type), "label") == 0)
+        it_fmt(&head, "%s:", S(L, N(L, fn)->name));   /* where code starts: a global label */
+    else if (L->ast->lang == CCR_LANG_ASM)
+        it_text(&head, S(L, N(L, fn)->name));   /* a section, or the file */
     else if (N(L, fn)->flags & CCR_FLAG_NEW)
         new_signature(L, fn, &head);
     else if (!written_head(L, fn, head_end(L, fn), &head))

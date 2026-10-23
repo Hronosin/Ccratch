@@ -8,6 +8,7 @@
 #include "ccr_palette.h"
 
 #include <stdio.h>
+#include <string.h>
 
 static int g_failures;
 
@@ -28,7 +29,7 @@ static uint32_t expected_for(bool cmake, bool cpp, bool std)
     uint32_t n = 0;
     for (int t = 0; t < CCR_TEMPLATE_COUNT; ++t) {
         const ccr_tcat c = ccr_template_category((ccr_template)t);
-        if (ccr_tcat_is_cmake(c) != cmake)
+        if (ccr_tcat_lang(c) != (cmake ? CCR_LANG_CMAKE : CCR_LANG_C))
             continue;
         if (!cmake && !(ccr_template_langs((ccr_template)t) & (cpp ? CCR_TLANG_CPP : CCR_TLANG_C)))
             continue;
@@ -128,6 +129,24 @@ int main(void)
     for (uint32_t i = 0; i < p.item_count; ++i)
         CHECK(ccr_tcat_is_cmake(ccr_template_category(p.items[i].t)), "%s on CMake's palette",
               ccr_template_label(p.items[i].t));
+    check_hits(&p);
+
+    /* an assembly file: its blocks, spelled its way */
+    CHECK(ccr_palette_set_lang(&p, CCR_LANG_ASM) && p.item_count > 30, "%u blocks for assembly", p.item_count);
+    bool att = false, nasm = false;
+    for (uint32_t i = 0; i < p.item_count; ++i) {
+        CHECK(ccr_tcat_lang(ccr_template_category(p.items[i].t)) == CCR_LANG_ASM, "%s on assembly's palette",
+              ccr_template_label(p.items[i].t));
+        const ccr_node_id r = p.items[i].root, k = r != CCR_NONE ? p.ast.nodes[r].first_child : CCR_NONE;
+        att |= k != CCR_NONE && strcmp(ccr_ast_str(&p.ast, p.ast.nodes[k].name), "movq") == 0;
+    }
+    CHECK(att, "AT&T by default: movq");
+    CHECK(ccr_palette_set_asm_syntax(&p, CCR_ASM_NASM), "NASM");
+    for (uint32_t i = 0; i < p.item_count; ++i) {
+        const ccr_node_id r = p.items[i].root, k = r != CCR_NONE ? p.ast.nodes[r].first_child : CCR_NONE;
+        nasm |= k != CCR_NONE && strcmp(ccr_ast_str(&p.ast, p.ast.nodes[k].name), "global") == 0;
+    }
+    CHECK(nasm, "NASM's: global main");
     check_hits(&p);
     CHECK(ccr_palette_set_lang(&p, CCR_LANG_C) && p.item_count == expected(false), "back to C");
 

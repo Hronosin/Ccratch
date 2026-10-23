@@ -164,3 +164,14 @@ set.mode_debug_hint = Робиться швидко, і «Покроково» �
 set.mode_release = Швидка
 set.mode_release_hint = Готова програма працює швидше, але робиться довше. «Покроково» однаково робить собі звичайну
 set.mode_sanitize_hint = За програмою стежать, поки вона працює: якщо вона полізе в чужу пам’ять чи забуде повернути свою, вона зупиниться, а блок, що це зробив, почервоніє. Потрібні libasan і libubsan
+
+# assembly
+palette.asm = Асемблер
+palette.asm_move = Перенесення даних
+palette.asm_math = Арифметика
+palette.asm_jumps = Стрибки
+palette.asm_data = Секції та дані
+palette.asm_att = GNU as, синтаксис AT&T: спершу звідки, потім куди; регістри починаються зі знака відсотка, числа — з $
+palette.asm_intel = GNU as, синтаксис Intel (.intel_syntax): спершу куди (mov rax, 1)
+palette.asm_nasm = NASM: спершу куди (mov rax, 1); ; починає коментар
+files.name_file = Назва файлу (.c, .h, .s або .asm), Enter — створити

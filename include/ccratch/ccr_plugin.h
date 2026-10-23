@@ -68,6 +68,12 @@ typedef struct ccr_host_api {
 #define CCR_PNODE_ARROW      (1u << 3)   /* p->x, not p.x */
 #define CCR_PNODE_INIT       (1u << 4)   /* the value a Var starts with */
 #define CCR_PNODE_ANGLED     (1u << 5)   /* #include <...> */
+#define CCR_PNODE_ASM        (1u << 6)   /* assembly: an instruction ("Call", its
+                                            mnemonic in name, operands its "Text"
+                                            children), a directive, a "Label", a
+                                            jump ("Goto": mnemonic in op, target in
+                                            name). In C inside an "Asm" node, the
+                                            asm(...) statement */
 
 typedef struct ccr_plugin_node {
     const char *kind;     /* as --dump-ast says it: "Function", "Var", "If",
@@ -90,10 +96,30 @@ typedef enum ccr_finding_level {
     CCR_FINDING_ERROR      /* wrong. NAK */
 } ccr_finding_level;
 
+/* ------------------------------------------------------- settings
+ * A plugin may have settings. Settings > Plugins shows them under it, and
+ * the config remembers them as plugin.NAME.KEY = VALUE. It reads them while
+ * it checks, through ccr_plugin_file.setting.
+ */
+typedef enum ccr_setting_kind {
+    CCR_SETTING_TOGGLE,   /* "on" or "off" */
+    CCR_SETTING_CHOICE    /* one of `choices` */
+} ccr_setting_kind;
+
+typedef struct ccr_plugin_setting {
+    const char        *key;            /* "brutality": letters, digits and _ */
+    ccr_setting_kind   kind;
+    const char        *title;          /* in English: "How brutal" */
+    const char        *hint;           /* in English, a line or two; may be NULL */
+    const char *const *choices;        /* CHOICE: the values, NULL after the last */
+    const char *const *choice_titles;  /* their names in English, as many; NULL: the values */
+    const char        *def;            /* the value until changed: "on", "off" or a choice */
+} ccr_plugin_setting;
+
 typedef struct ccr_plugin_file {
     uint32_t               struct_size;
     const char            *path;        /* the file, absolute */
-    const char            *language;    /* "c", "c++" or "cmake" */
+    const char            *language;    /* "c", "c++", "cmake" or "asm" */
     const char            *ui_language; /* the interface's: "en", "ru", "ja"... */
     bool                   plain;       /* ...in human words (no jargon) */
     const ccr_plugin_node *nodes;
@@ -106,6 +132,15 @@ typedef struct ccr_plugin_file {
     void                 (*report)(const struct ccr_plugin_file *file, uint32_t node, ccr_finding_level level,
                                    const char *title, const char *message);
     void                  *host_data;   /* the host's; leave it alone */
+
+    /* -- since the settings: there when struct_size says so -- */
+    /* The value of this plugin's setting `key` ("on", "mother_cat"): never
+     * NULL ("" for a key it does not have). */
+    const char           *(*setting)(const struct ccr_plugin_file *file, const char *key);
+    /* Rubs the user's nose in node `node`: when they save or build, the
+     * host flies there and makes a scene of it, shouting `say` (short).
+     * For what is really wrong; the user can turn it off. Copied. */
+    void                  (*poke)(const struct ccr_plugin_file *file, uint32_t node, const char *say);
 } ccr_plugin_file;
 
 /* What a plugin gives to the host. Grows only at the end. */
@@ -131,6 +166,13 @@ typedef struct ccr_plugin {
      * through file->report. Fast, please: it runs on the UI's thread. */
     void (*check)(const ccr_plugin_file *file);
     uint32_t    color;          /* its badges' colour, 0xRRGGBBAA; 0: the host's */
+
+    /* -- since the settings (still ABI 1) -- */
+    const ccr_plugin_setting *settings;
+    uint32_t                  setting_count;
+    /* A setting's words in the interface's language: `what` is "KEY" (its
+     * title), "KEY.hint", or "KEY=VALUE" (a choice's name). NULL: English. */
+    const char *(*setting_text)(const char *ui_language, const char *what);
 } ccr_plugin;
 
 typedef const ccr_plugin *(*ccr_plugin_entry_fn)(void);

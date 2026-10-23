@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 
 #include "ccr_parse.h"
+#include "ccr_asm.h"
 
 #include <clang-c/Index.h>
 
@@ -271,6 +272,7 @@ static node_policy classify(enum CXCursorKind k, ccr_node_kind *out)
     case CXCursor_GotoStmt:     *out = CCR_NODE_GOTO;     return POLICY_NODE;
     case CXCursor_LabelStmt:    *out = CCR_NODE_LABEL;    return POLICY_NODE;
     case CXCursor_NullStmt:     *out = CCR_NODE_EMPTY;    return POLICY_NODE;
+    case CXCursor_GCCAsmStmt:   *out = CCR_NODE_ASM;      return POLICY_NODE;
 
     /* --- expressions --- */
     case CXCursor_CallExpr:               *out = CCR_NODE_CALL;       return POLICY_NODE;
@@ -1246,6 +1248,7 @@ static bool parse_any(const char *path, const char *text, size_t text_len, const
         cpp_cleanup(out);
     ccr_ast_wrap_bodies(out);
     ccr_ast_finish_ranges(out);
+    ccr_asm_split_inline(out);   /* asm("..."): its instructions, as blocks */
     collect_diags(tu, out);
 
     clang_disposeTranslationUnit(tu);

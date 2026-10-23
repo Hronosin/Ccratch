@@ -6,8 +6,12 @@
  * what is wrong: pointers to dead stack frames, use after free, double
  * free, leaks, realloc into the same pointer, gets(), strcpy(), void main,
  * VLAs, four levels of nesting, unchecked malloc... and anything that
- * smells of Rust. Every rant ends with how to fix it: it hates the code,
- * not you. Mostly.
+ * smells of Rust; in assembly, registers trashed behind the compiler's
+ * back, stacks that don't balance, callee-saved registers not saved.
+ * Every rant ends with how to fix it: it hates the code, not you. Mostly.
+ *
+ * How brutal is a setting: grumpy, Linus on a bad day, or the mother cat,
+ * who rubs your nose in it (ccr_plugin_file.poke) when you save.
  *
  * Plain C, no libraries, nothing kept between calls: a model plugin.
  */
@@ -16,6 +20,7 @@
 #include <ctype.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -30,8 +35,13 @@ enum {
     R_DANGLING, R_RETURN_ARRAY, R_UAF, R_DOUBLE_FREE, R_LEAK, R_REALLOC, R_GETS, R_STRCPY, R_SPRINTF,
     R_ATOI, R_ALLOCA, R_ASSIGN_COND, R_NESTING, R_LONG_FN, R_LOCALS, R_VOID_MAIN, R_UNCHECKED, R_VLA,
     R_RUST_NAME, R_RUST_TEXT, R_GOTO, R_GOTO_BACK, R_MALLOC_CAST, R_SIZEOF_TYPE, R_EMPTY_PARAMS,
-    R_RAW_NEW, R_USING_HEADER, R_SELF, R_RUST_MENTION, R_COUNT
+    R_RAW_NEW, R_USING_HEADER, R_SELF, R_RUST_MENTION,
+    /* assembly: asm() in C, and .s/.asm files */
+    R_ASM_CLOBBER, R_ASM_MEMORY, R_ASM_INTRINSIC, R_ASM_STACK, R_ASM_FALLTHROUGH, R_ASM_CALLEE, R_ASM_ZERO,
+    R_ASM_NOSTACK, R_ASM_DEAD, R_COUNT
 };
+
+#define R_FIRST_ASM R_ASM_CLOBBER
 
 typedef struct rant {
     ccr_finding_level level;
@@ -286,7 +296,337 @@ static const rant g_rants[R_COUNT] = {
             "the compiler won't check them'. Write (void). This isn't C++.", NULL },
           { "{x}() объявлена с (). В C это значит не «без аргументов», а «с любыми, и компилятор не "
             "проверит». Пиши (void). Это не C++.", NULL } } },
+
+    [R_ASM_CLOBBER] = { CCR_FINDING_ERROR,
+        { "NAK: {x} trashed behind the compiler's back", "NAK: {x} испорчен за спиной компилятора" },
+        { { "This asm writes {x}, and nobody told the compiler. It thinks {x} still holds whatever it put there: "
+            "a loop counter, a pointer, your hopes. And it will keep using it after this line. Add \"{x}\" to the "
+            "clobbers (after the third colon), or better, let the compiler pick: an output like \"=r\"(var) and "
+            "%0 instead of {x}.",
+            "Writing {x} without a clobber. The compiler had plans for {x}. You just ate them. This is the kind "
+            "of bug that only shows up at -O2, on a Tuesday, in somebody else's function. Clobber it, or use an "
+            "operand." },
+          { "Этот asm пишет в {x}, а компилятору никто не сказал. Он думает, что в {x} всё ещё лежит его счётчик "
+            "цикла, указатель или твои надежды, и продолжит этим пользоваться после этой строки. Допиши \"{x}\" "
+            "в clobbers (после третьего двоеточия), а лучше дай компилятору выбрать регистр самому: выход "
+            "\"=r\"(переменная) и %0 вместо {x}.",
+            "Пишешь в {x} без clobber. У компилятора были на {x} планы. Ты их только что съел. Такой баг "
+            "вылезает только на -O2, во вторник и в чужой функции. Объяви clobber или возьми операнд." } } },
+    [R_ASM_MEMORY] = { CCR_FINDING_WARNING,
+        { "asm writes memory, says nothing", "asm пишет в память молча" },
+        { { "This asm stores to memory ({x}), but the clobbers don't say \"memory\" and no output is \"=m\". "
+            "The compiler may keep a copy of that memory in a register and never look at it again. Add "
+            "\"memory\" to the clobbers, or make that place an \"=m\" output.", NULL },
+          { "Этот asm пишет в память ({x}), но в clobbers нет \"memory\", и ни один выход не \"=m\". Компилятор "
+            "вправе держать копию этой памяти в регистре и больше туда не смотреть. Допиши \"memory\" в clobbers "
+            "или сделай это место выходом \"=m\".", NULL } } },
+    [R_ASM_INTRINSIC] = { CCR_FINDING_NIT,
+        { "{x}: there is a builtin", "{x}: есть встроенная функция" },
+        { { "{x} in asm() works, but {y} does the same, and the compiler understands it: it can move code "
+            "around it, and it reads as C. Inline asm is for what the compiler cannot say.", NULL },
+          { "{x} в asm() работает, но {y} делает то же самое, и компилятор его понимает: может переставлять "
+            "код вокруг, и читается это как C. Ассемблерные вставки — для того, чего компилятор сказать не "
+            "может.", NULL } } },
+    [R_ASM_STACK] = { CCR_FINDING_ERROR,
+        { "NAK: the stack is off by {n} at ret", "NAK: стек съехал на {n} к ret" },
+        { { "ret, with the pushes and pops {n} apart. ret takes the return address off the top of the stack, "
+            "and the top is now whatever you pushed last. The CPU will happily jump into your saved rbx. Pop "
+            "what you push, in reverse order, before every ret.",
+            "Count the pushes. Now count the pops. Different numbers, {n} apart. ret doesn't count anything: "
+            "it takes whatever is on top and jumps there. Balance the stack." },
+          { "ret, а push и pop расходятся на {n}. ret снимает адрес возврата с вершины стека, а на вершине "
+            "сейчас то, что ты положил последним. Процессор с радостью прыгнет в твой сохранённый rbx. Снимай "
+            "всё, что положил, в обратном порядке, перед каждым ret.",
+            "Посчитай push. Теперь посчитай pop. Разные числа, разница {n}. ret ничего не считает: он берёт то, "
+            "что сверху, и прыгает туда. Выровняй стек." } } },
+    [R_ASM_FALLTHROUGH] = { CCR_FINDING_WARNING,
+        { "{x} falls into whatever comes next", "{x} проваливается в следующее" },
+        { { "{x} ends without ret or jmp. The CPU doesn't know where your function ends: it just keeps going, "
+            "straight into whatever bytes come next. Another function, data, the abyss. End it with ret.", NULL },
+          { "{x} кончается без ret и jmp. Процессор не знает, где кончается твоя функция: он просто едет "
+            "дальше, прямо в следующие байты. В другую функцию, в данные, в бездну. Закончи её ret.", NULL } } },
+    [R_ASM_CALLEE] = { CCR_FINDING_ERROR,
+        { "NAK: {x} is not yours", "NAK: {x} — не твой" },
+        { { "{x} is callee-saved: whoever called you expects it back exactly as it was. You write it without "
+            "saving it first. Push it at the start, pop it before ret, or use rax, rcx, rdx, rsi, rdi, r8-r11, "
+            "which are yours to trash.", NULL },
+          { "{x} сохраняется вызываемым: тот, кто тебя позвал, ждёт его обратно ровно таким, каким дал. А ты "
+            "пишешь в него, ничего не сохранив. push в начале, pop перед ret, или бери rax, rcx, rdx, rsi, rdi, "
+            "r8–r11: их портить можно.", NULL } } },
+    [R_ASM_ZERO] = { CCR_FINDING_NIT,
+        { "mov 0 into {x}", "mov нуля в {x}" },
+        { { "Moving 0 into {x}. xor {x}, {x} is shorter (no four zero bytes in the instruction), and every CPU "
+            "since the Pentium Pro knows it means zero. Unless the flags must stay as they are: then keep the "
+            "mov and say so in a comment.", NULL },
+          { "mov нуля в {x}. xor {x}, {x} короче (в инструкции нет четырёх нулевых байт), и любой процессор со "
+            "времён Pentium Pro знает, что это ноль. Если флаги трогать нельзя — оставь mov и напиши об этом "
+            "комментарий.", NULL } } },
+    [R_ASM_NOSTACK] = { CCR_FINDING_NIT,
+        { "no .note.GNU-stack", "нет .note.GNU-stack" },
+        { { "This file never says .section .note.GNU-stack,\"\",@progbits. Without it the linker assumes your "
+            "code needs an executable stack, and makes the whole program's stack executable. One line at the "
+            "end of the file.", NULL },
+          { "В файле нет .section .note.GNU-stack,\"\",@progbits. Без неё компоновщик решит, что твоему коду "
+            "нужен исполняемый стек, и сделает стек исполняемым всей программе. Одна строка в конце файла.",
+            NULL } } },
+    [R_ASM_DEAD] = { CCR_FINDING_WARNING,
+        { "nothing ever gets here", "сюда никто не попадёт" },
+        { { "{x} comes right after a jmp or ret, with no label in between. Nothing can ever jump here, so it "
+            "never runs. Either a label went missing, or this is dead code.", NULL },
+          { "{x} стоит сразу после jmp или ret, и между ними нет метки. Сюда никто никогда не прыгнет, значит, "
+            "это не выполнится никогда. Либо потерялась метка, либо это мёртвый код.", NULL } } },
 };
+
+/* More ways to say the same thing: picked by the block, so it never
+ * flickers, but two files rarely get the same words. */
+static const char *const g_extra[R_COUNT][2][3] = {
+    [R_DANGLING] = {
+        { "&{x} escapes the function that owns {x}. That's like handing someone the key to a hotel room after "
+          "you've checked out. The next guest has moved in already." },
+        { "&{x} убегает из функции, которой принадлежит {x}. Это как отдать кому-то ключ от номера в отеле, "
+          "когда ты уже выехал. Там уже новый жилец." } },
+    [R_UAF] = {
+        { "{x} is dead. You freed it. And now you're poking the corpse to see if it still answers. Sometimes it "
+          "does, which is exactly why this bug survives code review. Not this one. Stop using {x} after free().",
+          "Here's {x} again, back from the dead. In a horror film this is where everyone screams. In C it's where "
+          "the allocator hands that memory to someone else and your data quietly becomes theirs. Free it last, "
+          "not first." },
+        { "{x} мёртв. Ты его освободил. А теперь тычешь палкой в труп — вдруг отзовётся. Иногда отзывается, "
+          "поэтому этот баг и проходит ревью. Только не это. Не трогай {x} после free().",
+          "И снова {x}, восставший из мёртвых. В фильме ужасов тут все кричат. В C тут аллокатор отдаёт эту "
+          "память кому-то другому, и твои данные тихо становятся чужими. Освобождай последним, а не первым." } },
+    [R_DOUBLE_FREE] = {
+        { "{x}, freed twice. The first free() was the funeral; the second digs it up to bury it again. The "
+          "heap's bookkeeping does not survive that. Set it to NULL after the first one.",
+          "Double free of {x}. A classic exploit primitive: attackers love it, allocators hate it. {x} = NULL "
+          "right after free(), and the second call does nothing." },
+        { "{x} освобождён дважды. Первый free() был похоронами, второй его выкапывает, чтобы похоронить снова. "
+          "Учёт кучи такого не переживает. Обнули после первого.",
+          "Двойной free {x}. Классический примитив для эксплойтов: атакующие его обожают, аллокаторы "
+          "ненавидят. {x} = NULL сразу после free() — и второй вызов ничего не сделает." } },
+    [R_LEAK] = {
+        { "{x}: allocated, used, abandoned. Like a gym membership in February. The OS cleans up when the "
+          "program exits, but a program that runs for weeks never exits, it just grows. free({x}).",
+          "Every call leaks {x}. Small? Run it a million times. Valgrind would be screaming right now, if anyone "
+          "ever ran valgrind. Every malloc gets its free, on every path out." },
+        { "{x}: выделили, попользовались, бросили. Как абонемент в спортзал в феврале. ОС приберёт, когда "
+          "программа выйдет, но программа, которая работает неделями, не выходит — она пухнет. free({x}).",
+          "Каждый вызов теряет {x}. Мелочь? Запусти миллион раз. Valgrind бы сейчас орал, если бы его кто-нибудь "
+          "когда-нибудь запускал. У каждого malloc — свой free, на каждом пути выхода." } },
+    [R_REALLOC] = {
+        { "{x} = realloc({x}, ...): the one-line memory leak. When it fails, the old block is still alive, and "
+          "you just lost its only address. A temporary pointer, a check, then the assignment." },
+        { "{x} = realloc({x}, ...): утечка памяти в одну строку. Если не вышло, старый блок ещё жив, а ты только "
+          "что потерял его единственный адрес. Временный указатель, проверка, потом присваивание." } },
+    [R_GETS] = {
+        { "gets(). In this century. The manual page for gets() literally says \"Never use this function.\" It's "
+          "the only advice on the page. Take it." },
+        { "gets(). В этом веке. В man-странице gets() прямо написано: «Никогда не используйте эту функцию». Это "
+          "единственный совет на странице. Послушай его." } },
+    [R_STRCPY] = {
+        { "{x}(). The function that put the overflow into buffer overflow. It doesn't know how big the "
+          "destination is, and it doesn't want to know. You have to. Use one that takes a length.",
+          "{x}() into a buffer of fixed size, from a source of whatever size the outside world felt like "
+          "sending. What could possibly go wrong. Everything. Everything could." },
+        { "{x}(). Функция, благодаря которой в «переполнении буфера» есть «переполнение». Размер приёмника она "
+          "не знает и знать не хочет. Знать должен ты. Бери функцию с длиной.",
+          "{x}() в буфер фиксированного размера, из источника того размера, какой внешнему миру захотелось "
+          "прислать. Что может пойти не так. Всё. Всё может." } },
+    [R_SPRINTF] = {
+        { "{x}() with no size: a buffer overflow waiting for a long enough name. snprintf with sizeof, and look "
+          "at what it returns." },
+        { "{x}() без размера: переполнение буфера, которое ждёт достаточно длинного имени. snprintf с sizeof — "
+          "и посмотри, что он вернул." } },
+    [R_ATOI] = {
+        { "{x}() returns 0 for garbage and has undefined behaviour on overflow. Two bugs for the price of one "
+          "call. strtol, and check where it stopped." },
+        { "{x}() возвращает 0 на мусор и даёт неопределённое поведение при переполнении. Два бага по цене "
+          "одного вызова. strtol — и проверь, где он остановился." } },
+    [R_ASSIGN_COND] = {
+        { "= where == should be. The oldest typo in C, the one that made people write if (0 == x) for thirty "
+          "years. {x} gets overwritten here, every single time. Fix the operator.",
+          "Assignment inside a condition. The compiler would have warned you, if you had -Wall on. You don't, "
+          "do you. Comparing {x} is ==." },
+        { "= там, где должно быть ==. Самая старая опечатка в C, из-за неё тридцать лет писали if (0 == x). "
+          "{x} здесь перезаписывается, каждый раз. Исправь оператор.",
+          "Присваивание внутри условия. Компилятор бы предупредил, будь у тебя -Wall. А его нет, да? Для "
+          "сравнения {x} — ==." } },
+    [R_NESTING] = {
+        { "Four levels deep. At this depth the code needs a submarine. Return early, continue early, and pull "
+          "the inside out into a function with a name that says what it does.",
+          "I had to scroll right to read this. Four nested blocks: the arrow anti-pattern, and the arrow points "
+          "straight at the next bug. Flatten it." },
+        { "Четыре этажа вложенности. На такой глубине коду нужна подводная лодка. Выходи раньше через return "
+          "и continue, вынеси внутренности в функцию с именем, которое говорит, что она делает.",
+          "Чтобы это прочитать, пришлось листать вправо. Четыре вложенных блока: антипаттерн «стрелка», и "
+          "стрелка указывает прямо на следующий баг. Распрями." } },
+    [R_LONG_FN] = {
+        { "{x}(): {n} lines. That's not a function, that's a novella. Chapters were invented for a reason: give "
+          "each part a function and a name." },
+        { "{x}(): {n} строк. Это не функция, это повесть. Главы придумали не зря: дай каждой части свою функцию "
+          "и имя." } },
+    [R_LOCALS] = {
+        { "{n} locals in {x}(). That's not a function, that's a crowd. Group what belongs together into a "
+          "struct, or split it." },
+        { "{n} локальных переменных в {x}(). Это не функция, это толпа. Сгруппируй связанное в struct или "
+          "разбей её." } },
+    [R_VOID_MAIN] = {
+        { "void main(). The C standard says int main. The shell says $? is garbage now. Everyone says int main. "
+          "Except you.",
+          "main returns void here. Your program ends, the shell asks \"did it work?\", and gets random noise "
+          "back. int main, and return 0." },
+        { "void main(). Стандарт C говорит int main. Оболочка говорит, что в $? теперь мусор. Все говорят int "
+          "main. Кроме тебя.",
+          "main тут возвращает void. Программа завершается, оболочка спрашивает «получилось?» — а в ответ "
+          "случайный шум. int main и return 0." } },
+    [R_UNCHECKED] = {
+        { "No NULL check on {x}. \"malloc never fails\", said everyone, right up until the container got a "
+          "64 MB memory limit. if (!{x}), and deal with it.",
+          "You trust malloc. That's sweet. malloc doesn't trust you back. Check {x} for NULL before the first "
+          "use, every time." },
+        { "{x} не проверен на NULL. «malloc никогда не падает», — говорили все, ровно до того дня, когда "
+          "контейнеру дали лимит в 64 МБ. if (!{x}) — и разбирайся.",
+          "Ты доверяешь malloc. Мило. malloc тебе — нет. Проверяй {x} на NULL перед первым использованием, "
+          "каждый раз." } },
+    [R_VLA] = {
+        { "{x}: a VLA. A stack allocation of unknown size, with no way to fail gracefully. It's a stack "
+          "overflow with a time fuse. malloc it, or cap the size." },
+        { "{x}: VLA. Выделение на стеке неизвестного размера, без возможности красиво упасть. Это переполнение "
+          "стека с часовым механизмом. malloc или ограничь размер." } },
+    [R_GOTO_BACK] = {
+        { "A goto that goes up is spaghetti with extra steps. The arrow on the canvas loops back on itself for "
+          "a reason: it's a loop. Say so, with while." },
+        { "goto вверх — это спагетти с дополнительными шагами. Стрелка на холсте не зря закручивается назад: "
+          "это цикл. Так и напиши: while." } },
+    [R_MALLOC_CAST] = {
+        { "Casting what {x}() gives you. In C, void * converts by itself; the cast is noise, and noise hides "
+          "real mistakes. Remove it." },
+        { "Каст того, что вернул {x}(). В C void * преобразуется сам; каст — это шум, а за шумом прячутся "
+          "настоящие ошибки. Убери." } },
+    [R_SIZEOF_TYPE] = {
+        { "sizeof(type) for {x}: two places to keep in step, and one of them will drift. sizeof *{x} keeps "
+          "itself right." },
+        { "sizeof(тип) для {x}: два места, которые надо держать в согласии, и одно из них уплывёт. sizeof *{x} "
+          "сам за собой следит." } },
+};
+
+/* ----------------------------------------------------------- the tone
+ *
+ * How brutal (Settings > Plugins > Code Hater): grumpy says what is wrong;
+ * Linus says it the way the old lists did, before and after; the mother
+ * cat grabs you by the scruff, and when you save or build, rubs your nose
+ * in it (the host flies there and makes a scene).
+ */
+static const char *const g_linus_open[2][17] = {
+    { "No. Just no.", "What the hell is this?", "I'm not even angry. I'm disappointed. No, wait, I'm angry.",
+      "This is the kind of code that makes me want to take up gardening.",
+      "Who taught you this? Give me their name. I just want to talk.",
+      "I've seen better code come out of a random number generator.",
+      "Stop. Put the keyboard down. Step away from the keyboard.",
+      "This isn't just wrong, it's wrong in an interesting way, which is worse.",
+      "Did you read what you wrote, or did the cat walk across the keyboard?",
+      "I would NAK this twice if the protocol allowed it.", "Christ, what a mess.",
+      "Let me be very clear, since subtlety clearly doesn't work on you:",
+      "Somewhere, a compiler engineer just started crying.", "This is why we can't have nice things.",
+      "Oh good. Another one.", "Brace yourself.", NULL },
+    { "Нет. Просто нет.", "Это что вообще такое?", "Я даже не злюсь. Я разочарован. А нет, всё-таки злюсь.",
+      "От такого кода хочется бросить всё и уехать сажать картошку.",
+      "Кто тебя этому научил? Дай мне его имя. Я просто поговорить.",
+      "Генератор случайных чисел пишет код лучше.", "Стоп. Положи клавиатуру. Отойди от клавиатуры.",
+      "Это не просто неправильно, это неправильно интересно. Что хуже.",
+      "Ты вообще читал, что написал, или это кот прошёлся по клавиатуре?",
+      "Я бы поставил NAK дважды, если бы протокол разрешал.", "Господи, ну и бардак.",
+      "Скажу очень прямо, раз намёки на тебя не действуют:", "Где-то сейчас заплакал разработчик компилятора.",
+      "Вот поэтому у нас и не может быть ничего хорошего.", "О, отлично. Ещё один.", "Держись.", NULL },
+};
+
+static const char *const g_linus_close[2][13] = {
+    { "Fix it. Then fix it again, properly.",
+      "And no, \"it works on my machine\" is not a defence. Your machine is not the world.",
+      "Don't send me this again until it's fixed.", "I'll pretend I didn't see this. For about five minutes.",
+      "Next time, think first. Then type.", "Consider this the polite version.",
+      "This is not a review comment, this is a cry for help.", "Go read K&R. The whole thing. I'll wait.",
+      "The code doesn't care about your feelings, and neither do I. Fix it.",
+      "If this goes into a release, I'm changing my name.", "I hope you have backups. Of your dignity.",
+      "Fix it before anyone sees it. Too late, I saw it.", NULL },
+    { "Исправь. Потом исправь ещё раз, нормально.",
+      "И нет, «у меня работает» — не оправдание. Твоя машина — не весь мир.",
+      "Не присылай мне это, пока не исправишь.", "Сделаю вид, что не видел. Минут на пять.",
+      "В следующий раз сначала думай. Потом печатай.", "Считай, что это я ещё вежливо.",
+      "Это не комментарий к ревью, это крик о помощи.", "Иди перечитай K&R. Целиком. Я подожду.",
+      "Коду плевать на твои чувства, и мне тоже. Исправляй.", "Если это попадёт в релиз, я сменю фамилию.",
+      "Надеюсь, у тебя есть бэкапы. Твоего достоинства.", "Исправь, пока никто не увидел. Поздно, я увидел.",
+      NULL },
+};
+
+static const char *const g_cat_open[2][16] = {
+    { "*grabs you by the scruff of the neck*", "*hisses* Come here. Come HERE.",
+      "Look. LOOK at it. No, don't look away.", "*picks you up by the scruff and carries you to the bug*",
+      "Mrrrow. Who did this? Who did this on MY canvas?", "*ears flat, tail twitching*",
+      "Sit. Sit. Now look down. That's yours.", "*drags you across the canvas by the scruff* Here. Right here.",
+      "You did this. Don't give me those big eyes.", "*slow blink, and not the nice kind*",
+      "Kitten. Kitten, what is THIS.", "*pushes your face toward the block* Smell it. That's what a bug smells like.",
+      "I raised you better than this. I'm sure I did.",
+      "*sits on your keyboard so you can't type any more of this*",
+      "Hhhhhhh. *the hiss of a mother who has seen this before*", NULL },
+    { "*хватает тебя за шкирку*", "*шипит* Иди сюда. Иди СЮДА.", "Смотри. СМОТРИ. Не отворачивайся.",
+      "*берёт за шкирку и несёт прямо к багу*", "Мрррау. Кто это сделал? Кто это сделал на МОЁМ холсте?",
+      "*уши прижаты, хвост дёргается*", "Сидеть. Сидеть. А теперь смотри вниз. Это твоё.",
+      "*тащит тебя за шкирку через весь холст* Вот. Прямо вот тут.",
+      "Это ты сделал. Не делай мне тут большие глаза.", "*медленно моргает, но не по-доброму*",
+      "Котёнок. Котёнок, это ЧТО.", "*тычет мордой в блок* Нюхай. Вот так пахнет баг.",
+      "Я тебя не так воспитывала. Я уверена, что не так.",
+      "*садится на клавиатуру, чтобы ты больше такого не напечатал*",
+      "Хххххх. *шипение матери, которая всё это уже видела*", NULL },
+};
+
+static const char *const g_cat_close[2][13] = {
+    { "Now clean it up. Properly. With your tongue if you have to.", "We don't do that in this house.",
+      "*licks the top of your head, aggressively* There. Now fix it.",
+      "I'll be watching. I'm always watching. From the top of the fridge.",
+      "Do it again and your monitor goes off the desk.", "*knocks your coffee off the desk, to make the point*",
+      "You'll understand when you have kittens of your own.",
+      "Next time I bring you a dead mouse and you bring me working code. Deal?",
+      "*turns around and sits with her back to you*", "Again? AGAIN? *the nose goes back in*",
+      "Fix it, and maybe you get a treat.", "Every time you save this, I'll be back. With the paw.", NULL },
+    { "А теперь прибери за собой. Как следует. Языком, если придётся.", "В этом доме так не делают.",
+      "*яростно вылизывает тебе макушку* Вот. Теперь исправляй.",
+      "Я буду следить. Я всегда слежу. С холодильника.", "Ещё раз — и твой монитор полетит со стола.",
+      "*сталкивает твою кружку со стола, для наглядности*", "Вот будут у тебя свои котята — поймёшь.",
+      "В следующий раз я тебе мышку, а ты мне рабочий код. Договорились?",
+      "*разворачивается и садится к тебе спиной*", "Опять? ОПЯТЬ? *мордой обратно в баг*",
+      "Исправишь — может, дам вкусняшку.", "Каждый раз, как ты это сохранишь, я буду возвращаться. С лапой.",
+      NULL },
+};
+
+/* What it shouts while your nose is in it. Short: it is a bubble. */
+static const char *const g_pokes[2][13] = {
+    { "LOOK. AT. IT.", "This. Is. Yours.", "Smell it. That's a bug.", "Here. HERE.", "No. Bad. BAD.",
+      "What is this? WHAT IS THIS?", "Nose. In. It.", "Again with this?!", "Don't you look away!",
+      "Mrrraow! Fix it!", "Who did this?!", "*poke* *poke* *POKE*", NULL },
+    { "СМОТРИ. НА. ЭТО.", "Это. Твоё.", "Нюхай. Это баг.", "Вот. ВОТ ТУТ.", "Нельзя. Фу. ФУ.",
+      "Это что? ЭТО ЧТО?", "Мордой. В него.", "Опять?!", "Не отворачивайся!", "Мрррау! Исправляй!",
+      "Кто это сделал?!", "*тык* *тык* *ТЫК*", NULL },
+};
+
+/* Praise, from someone who does not do praise. */
+static const char *const g_praise_open[3][2][6] = {
+    { { "Hm.", "Well.", NULL }, { "Хм.", "Ну.", NULL } },
+    { { "Hm. Fine.", "Well, look at that.", "Don't let it go to your head.", "I'll allow it.", NULL },
+      { "Хм. Ладно.", "Ну надо же.", "Только не зазнавайся.", "Так и быть, разрешаю.", NULL } },
+    { { "*purrs, reluctantly*", "*a slow blink. The nice kind. Once.*", "*brings you a dead mouse*",
+        "Good kitten. GOOD kitten.", NULL },
+      { "*мурлычет, нехотя*", "*медленно моргает. По-доброму. Один раз.*", "*приносит тебе дохлую мышь*",
+        "Хороший котёнок. ХОРОШИЙ котёнок.", NULL } },
+};
+
+static const char *pick(const char *const *list, unsigned h)
+{
+    unsigned n = 0;
+    while (list[n])
+        ++n;
+    return n ? list[h % n] : "";
+}
 
 /* ------------------------------------------------------------ the tree */
 
@@ -296,13 +636,18 @@ static bool g_cpp;                 /* the file is C++: f() means f(void), casts 
 static int g_said[R_COUNT];        /* per rant, this file */
 static int g_total;
 static bool g_self;                /* the file is Code Hater itself: its Rust is rants about Rust */
+/* its settings, for this file */
+static int  g_brutal;              /* 0 grumpy, 1 Linus, 2 the mother cat */
+static bool g_opt_praise, g_opt_rust, g_opt_asm, g_opt_nits;
+static const char *g_y = "";       /* {y}, for the rant being said */
 
 /* What it will say, held until the file is read: the same thing about the
  * same block, said once ("and 11 more like it here"), not 12 times. */
 typedef struct pending {
     uint32_t node;
     int      r, more;
-    char     title[128], msg[1200];
+    char     title[128], msg[1380];
+    const char *poke;   /* the mother cat's shout, or NULL */
 } pending;
 static pending g_pend[96];
 static int     g_npend;
@@ -443,6 +788,8 @@ static void fill(char *out, size_t cap, const char *tmpl, const char *x, int n)
         const char *put = NULL;
         if (strncmp(p, "{x}", 3) == 0)
             put = x;
+        else if (strncmp(p, "{y}", 3) == 0)
+            put = g_y;
         else if (strncmp(p, "{n}", 3) == 0)
             put = num;
         if (put) {
@@ -456,10 +803,36 @@ static void fill(char *out, size_t cap, const char *tmpl, const char *x, int n)
     out[o] = '\0';
 }
 
+static bool is_rust_rant(int r) { return r == R_RUST_NAME || r == R_RUST_TEXT || r == R_RUST_MENTION; }
+
+/* Its words in the tone the settings ask for. */
+static void toned(char *out, size_t cap, const char *body, ccr_finding_level level, unsigned h)
+{
+    const char *open = NULL, *close = NULL;
+    if (level == CCR_FINDING_PRAISE) {
+        if (g_brutal > 0 || (h & 3u) == 0)
+            open = pick(g_praise_open[g_brutal][g_lang], h >> 3);
+    } else if (g_brutal == 1) {
+        if (level >= CCR_FINDING_WARNING)
+            open = pick(g_linus_open[g_lang], h >> 2);
+        close = pick(g_linus_close[g_lang], h >> 7);
+    } else if (g_brutal == 2) {
+        if (level >= CCR_FINDING_WARNING)
+            open = pick(g_cat_open[g_lang], h >> 2);
+        close = pick(level >= CCR_FINDING_WARNING ? g_cat_close[g_lang] : g_linus_close[g_lang], h >> 7);
+    }
+    snprintf(out, cap, "%s%s%s%s%s", open ? open : "", open ? "\n\n" : "", body, close ? "\n\n" : "",
+             close ? close : "");
+}
+
 static void say(uint32_t node, int r, const char *x, int n)
 {
     if (node == NONE || outside(node))
         return;
+    const rant *ra = &g_rants[r];
+    if ((ra->level == CCR_FINDING_NIT && !g_opt_nits) || (ra->level == CCR_FINDING_PRAISE && !g_opt_praise) ||
+        (is_rust_rant(r) && !g_opt_rust) || (r >= R_FIRST_ASM && !g_opt_asm))
+        return;   /* switched off in the settings */
     for (int i = 0; i < g_npend; ++i)   /* this again, about the same block: counted, not repeated */
         if (g_pend[i].node == node && g_pend[i].r == r) {
             ++g_pend[i].more;
@@ -469,36 +842,65 @@ static void say(uint32_t node, int r, const char *x, int n)
         return;
     ++g_said[r];
     ++g_total;
-    const rant *ra = &g_rants[r];
     /* the same block gets the same words every time: no flicker */
-    const unsigned h = hash(x ? x : "", (unsigned)N(node)->line * 131u + (unsigned)r);
-    const char *tmpl = ra->say[g_lang][1] && (h & 1u) ? ra->say[g_lang][1] : ra->say[g_lang][0];
+    const unsigned h = hash(x ? x : "", (unsigned)N(node)->line * 131u + (unsigned)r) * 2654435761u;
+    const char *ways[6];
+    int nw = 0;
+    for (int k = 0; k < 2; ++k)
+        if (ra->say[g_lang][k])
+            ways[nw++] = ra->say[g_lang][k];
+    for (int k = 0; k < 3; ++k)
+        if (g_extra[r][g_lang][k])
+            ways[nw++] = g_extra[r][g_lang][k];
+    const char *tmpl = ways[(h >> 5) % (unsigned)nw];
     pending *p = &g_pend[g_npend++];
     p->node = node;
     p->r = r;
     p->more = 0;
     fill(p->title, sizeof p->title, ra->title[g_lang], x ? x : "", n);
-    fill(p->msg, sizeof p->msg, tmpl, x ? x : "", n);
+    char body[1100];
+    fill(body, sizeof body, tmpl, x ? x : "", n);
+    toned(p->msg, sizeof p->msg, body, ra->level, h);
+    /* the mother cat: what is really wrong gets your nose rubbed in it */
+    p->poke = g_brutal == 2 && ra->level >= CCR_FINDING_WARNING ? pick(g_pokes[g_lang], h >> 11) : NULL;
 }
 
-/* Everything held, said. */
+/* Has the host this field of ccr_plugin_file? (An older one stops before it.) */
+#define FILE_HAS(f, field) ((f)->struct_size >= offsetof(ccr_plugin_file, field) + sizeof((f)->field))
+
 static void say_all(void)
 {
+    static const char *const more[3][2] = {
+        { "\n\n(And %d more like it in this block. Once is enough to get the idea.)",
+          "\n\n(И ещё %d таких же в этом блоке. Одного раза хватит, чтобы понять.)" },
+        { "\n\n(And %d more like it in this block. Yes, I counted. Every single one.)",
+          "\n\n(И ещё %d таких же в этом блоке. Да, я посчитал. Каждый.)" },
+        { "\n\n(And %d more like it in this block. *counts them on her claws*)",
+          "\n\n(И ещё %d таких же в этом блоке. *пересчитывает когтями*)" },
+    };
     for (int i = 0; i < g_npend; ++i) {
         pending *p = &g_pend[i];
         if (p->more) {
             const size_t l = strlen(p->msg);
-            snprintf(p->msg + l, sizeof p->msg - l,
-                     g_lang ? "\n\n(И ещё %d таких же в этом блоке. Одного раза хватит, чтобы понять.)"
-                            : "\n\n(And %d more like it in this block. Once is enough to get the idea.)",
-                     p->more);
+            snprintf(p->msg + l, sizeof p->msg - l, more[g_brutal][g_lang], p->more);
         }
         F->report(F, p->node, g_rants[p->r].level, p->title, p->msg);
+        if (p->poke && FILE_HAS(F, poke) && F->poke)
+            F->poke(F, p->node, p->poke);
     }
     g_npend = 0;
 }
 
-/* --------------------------------------------------------------- checks */
+/* A setting's value, or `def` from a host that has none. */
+static const char *opt(const char *key, const char *def)
+{
+    if (FILE_HAS(F, setting) && F->setting) {
+        const char *v = F->setting(F, key);
+        if (v && *v)
+            return v;
+    }
+    return def;
+}
 
 static bool is_control(uint32_t i)
 {
@@ -1081,17 +1483,391 @@ static bool says(const char *s, size_t n, const char *what)
     return false;
 }
 
+/* ------------------------------------------------------------ assembly */
+
+static const char *const g_reg64[16] = { "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+                                         "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15" };
+
+/* Which register an operand is (%rax, %%eax, al, r12d...): 0..15, or -1. */
+static int reg_family(const char *op)
+{
+    while (*op == '%' || *op == '*' || *op == ' ')
+        ++op;
+    char w[8];
+    size_t n = 0;
+    while (n < sizeof w - 1 && isalnum((unsigned char)op[n])) {
+        w[n] = (char)tolower((unsigned char)op[n]);
+        ++n;
+    }
+    w[n] = '\0';
+    if (op[n] && op[n] != ' ')
+        return -1;   /* (%rax), 8(%rbp): memory, not the register */
+    static const char *const names[8][5] = {
+        { "rax", "eax", "ax", "al", "ah" }, { "rbx", "ebx", "bx", "bl", "bh" }, { "rcx", "ecx", "cx", "cl", "ch" },
+        { "rdx", "edx", "dx", "dl", "dh" }, { "rsi", "esi", "si", "sil", NULL }, { "rdi", "edi", "di", "dil", NULL },
+        { "rbp", "ebp", "bp", "bpl", NULL }, { "rsp", "esp", "sp", "spl", NULL },
+    };
+    for (int f = 0; f < 8; ++f)
+        for (int k = 0; k < 5 && names[f][k]; ++k)
+            if (strcmp(w, names[f][k]) == 0)
+                return f;
+    if (w[0] == 'r' && isdigit((unsigned char)w[1])) {
+        const int num = atoi(w + 1);
+        size_t d = 1;
+        while (isdigit((unsigned char)w[d]))
+            ++d;
+        if (num >= 8 && num <= 15 && (!w[d] || ((w[d] == 'd' || w[d] == 'w' || w[d] == 'b') && !w[d + 1])))
+            return num;
+    }
+    return -1;
+}
+
+/* The mnemonic without AT&T's size letter, lower case: movq -> mov. */
+static void base_op(const char *m, char *out, size_t cap)
+{
+    const char *sp = strrchr(m, ' ');   /* rep movsb: movsb */
+    if (sp)
+        m = sp + 1;
+    size_t n = 0;
+    for (; m[n] && n + 1 < cap; ++n)
+        out[n] = (char)tolower((unsigned char)m[n]);
+    out[n] = '\0';
+}
+
+static bool op_is(const char *m, const char *const *bases)
+{
+    char b[24];
+    base_op(m, b, sizeof b);
+    if (in_list(b, bases))
+        return true;
+    const size_t n = strlen(b);
+    if (n > 2 && strchr("bwlq", b[n - 1])) {
+        b[n - 1] = '\0';
+        return in_list(b, bases);
+    }
+    return false;
+}
+
+/* Does this instruction write its destination operand? */
+static bool writes_dest(const char *m)
+{
+    static const char *const w[] = { "mov", "movabs", "movzx", "movsx", "movsxd", "lea", "add", "sub", "adc", "sbb",
+                                     "and", "or", "xor", "not", "neg", "inc", "dec", "shl", "shr", "sal", "sar",
+                                     "rol", "ror", "rcl", "rcr", "imul", "pop", "xchg", "bswap", "popcnt", "lzcnt",
+                                     "tzcnt", "bsf", "bsr", "xadd", "cmpxchg", "movd", "movq", "andn", NULL };
+    char b[24];
+    base_op(m, b, sizeof b);
+    return op_is(m, w) || strncmp(b, "cmov", 4) == 0 || (strncmp(b, "set", 3) == 0 && b[3]) ||
+           strncmp(b, "movz", 4) == 0 || strncmp(b, "movs", 4) == 0;
+}
+
+/* Registers it writes without naming them: rdtsc, cpuid... (bits by family). */
+static unsigned implicit_writes(const char *m, int nops)
+{
+    char b[24];
+    base_op(m, b, sizeof b);
+    const unsigned A = 1u << 0, B = 1u << 1, C = 1u << 2, D = 1u << 3;
+    if (strcmp(b, "rdtsc") == 0) return A | D;
+    if (strcmp(b, "rdtscp") == 0) return A | C | D;
+    if (strcmp(b, "cpuid") == 0) return A | B | C | D;
+    if (strcmp(b, "syscall") == 0) return A | C | (1u << 11);
+    if (strcmp(b, "cqo") == 0 || strcmp(b, "cdq") == 0 || strcmp(b, "cltd") == 0 || strcmp(b, "cqto") == 0 ||
+        strcmp(b, "cwd") == 0)
+        return D;
+    static const char *const muldiv[] = { "mul", "div", "idiv", NULL };
+    if (nops == 1 && op_is(m, muldiv))
+        return A | D;
+    if (nops == 1 && op_is(m, (const char *const[]){ "imul", NULL }))
+        return A | D;
+    return 0;
+}
+
+static int operand_count(uint32_t insn)
+{
+    int n = 0;
+    for (uint32_t c = N(insn)->first_child; c != NONE; c = N(c)->next_sibling)
+        ++n;
+    return n;
+}
+
+/* The destination: AT&T writes it last, Intel and NASM first. */
+static uint32_t dest_of(uint32_t insn, bool att)
+{
+    const int n = operand_count(insn);
+    return n == 0 ? NONE : child(insn, att ? n - 1 : 0);
+}
+
+static bool is_insn(uint32_t k)
+{
+    return (N(k)->flags & CCR_PNODE_ASM) && is(k, "Call") && N(k)->name[0] != '.' && N(k)->name[0] != '#' &&
+           N(k)->name[0] != '%' && N(k)->name[0] != '[' && !*N(k)->type;
+}
+
+/* --- asm("...") in C --------------------------------------------------- */
+
+/* The constraints of the outputs and the clobbers of asm(...), from its text. */
+static void asm_operands(uint32_t a, unsigned *out_regs, bool *mem_out, unsigned *clobbered, bool *memory)
+{
+    *out_regs = *clobbered = 0;
+    *mem_out = *memory = false;
+    const ccr_plugin_node *n = N(a);
+    if (n->src_end <= n->src_begin || n->src_end > F->source_len)
+        return;
+    const char *s = F->source + n->src_begin, *e = F->source + n->src_end;
+    const char *p = memchr(s, '(', (size_t)(e - s));
+    if (!p)
+        return;
+    int depth = 0, section = -1;
+    for (++p; p < e; ++p) {
+        if (*p == '"') {
+            const char *q = p + 1;
+            while (q < e && *q != '"') {
+                if (*q == '\\' && q + 1 < e)
+                    ++q;
+                ++q;
+            }
+            if (depth == 0 && (section == 0 || section == 2)) {
+                char w[32];
+                const size_t len = (size_t)(q - p - 1) < sizeof w - 1 ? (size_t)(q - p - 1) : sizeof w - 1;
+                memcpy(w, p + 1, len);
+                w[len] = '\0';
+                if (section == 0) {   /* "=a", "+r", "=m", "=&d" */
+                    for (const char *c = w; *c; ++c) {
+                        static const char letters[] = "abcdSD";
+                        const char *at = strchr(letters, *c);
+                        if (at && *c)
+                            *out_regs |= 1u << (at - letters == 4 ? 4 : at - letters == 5 ? 5 : at - letters);
+                        if (*c == 'm')
+                            *mem_out = true;
+                    }
+                } else if (strcmp(w, "memory") == 0) {
+                    *memory = true;
+                } else {
+                    const int f = reg_family(w);
+                    if (f >= 0)
+                        *clobbered |= 1u << f;
+                }
+            }
+            p = q;
+            continue;
+        }
+        if (*p == '(')
+            ++depth;
+        else if (*p == ')' && depth-- == 0)
+            break;
+        else if (*p == ':' && depth == 0)
+            ++section;
+    }
+}
+
+static void check_inline_asm(uint32_t a)
+{
+    const uint32_t blk = N(a)->first_child;
+    if (blk == NONE || !is(blk, "Block"))
+        return;
+    unsigned outs, clob;
+    bool mem_out, memory;
+    asm_operands(a, &outs, &mem_out, &clob, &memory);
+    for (uint32_t k = N(blk)->first_child; k != NONE; k = N(k)->next_sibling) {
+        if (!is_insn(k))
+            continue;
+        const char *m = N(k)->name;
+        char b[24];
+        base_op(m, b, sizeof b);
+        /* there is a builtin for that */
+        static const struct { const char *op, *use; } builtins[] = {
+            { "rdtsc", "__rdtsc() (<x86intrin.h>)" }, { "pause", "__builtin_ia32_pause()" },
+            { "cpuid", "__get_cpuid() (<cpuid.h>)" }, { "bswap", "__builtin_bswap32() / __builtin_bswap64()" },
+            { "popcnt", "__builtin_popcount()" }, { "lzcnt", "__builtin_clz()" }, { "tzcnt", "__builtin_ctz()" },
+            { "bsr", "__builtin_clz()" }, { "bsf", "__builtin_ctz()" }, { "mfence", "__atomic_thread_fence()" },
+        };
+        for (size_t i = 0; i < sizeof builtins / sizeof builtins[0]; ++i)
+            if (strncmp(b, builtins[i].op, strlen(builtins[i].op)) == 0 &&
+                (!b[strlen(builtins[i].op)] || strchr("lqw", b[strlen(builtins[i].op)]))) {
+                g_y = builtins[i].use;
+                say(k, R_ASM_INTRINSIC, builtins[i].op, 0);
+                g_y = "";
+            }
+        /* a register written that the compiler was not told about */
+        unsigned wrote = implicit_writes(m, operand_count(k));
+        const uint32_t d = dest_of(k, true);
+        if (d != NONE && writes_dest(m)) {
+            const int f = reg_family(N(d)->name);
+            if (f >= 0 && f != 7)
+                wrote |= 1u << f;
+            if (strchr(N(d)->name, '(') && !memory && !mem_out)
+                say(k, R_ASM_MEMORY, N(d)->name, 0);
+        }
+        if (op_is(m, (const char *const[]){ "xchg", "xadd", NULL }) && operand_count(k) == 2) {
+            const int f = reg_family(N(child(k, 0))->name);   /* both are written */
+            if (f >= 0 && f != 7)
+                wrote |= 1u << f;
+        }
+        wrote &= ~(outs | clob);
+        for (int f = 0; f < 16 && wrote; ++f)
+            if (wrote & (1u << f)) {
+                say(k, R_ASM_CLOBBER, g_reg64[f], 0);
+                break;   /* one is enough to make the point */
+            }
+    }
+}
+
+/* --- .s / .asm files ---------------------------------------------------- */
+
+static bool ends_flow(uint32_t k)
+{
+    char b[24];
+    if (is(k, "Goto"))
+        base_op(N(k)->op, b, sizeof b);
+    else if (is(k, "Call"))
+        base_op(N(k)->name, b, sizeof b);
+    else
+        return false;
+    return strcmp(b, "jmp") == 0 || strcmp(b, "jmpq") == 0 || strncmp(b, "ret", 3) == 0 || strcmp(b, "ud2") == 0 ||
+           strcmp(b, "hlt") == 0 || strncmp(b, "iret", 4) == 0;
+}
+
+/* A label's depth, as the jumps to it left the stack. */
+typedef struct label_depth {
+    const char *name;
+    int         depth;
+} label_depth;
+
+static void check_asm_function(uint32_t fn, bool att)
+{
+    uint32_t blk = NONE;
+    for (uint32_t c = N(fn)->first_child; c != NONE; c = N(c)->next_sibling)
+        if (is(c, "Block"))
+            blk = c;
+    if (blk == NONE)
+        return;
+    label_depth labels[64];
+    int nl = 0, depth = 0;
+    bool known = true, after_end = false, dead_said = false, code = false;
+    unsigned saved = 0, said_callee = 0;
+    if (strcmp(N(fn)->name, "_start") == 0)
+        said_callee = ~0u;   /* the entry point: nobody called it, nothing to give back */
+    uint32_t last = NONE;
+    const unsigned callee = (1u << 1) | (1u << 6) | (1u << 12) | (1u << 13) | (1u << 14) | (1u << 15);
+    for (uint32_t k = N(blk)->first_child; k != NONE; k = N(k)->next_sibling) {
+        if (outside(k))
+            continue;
+        if (is(k, "Label")) {
+            after_end = false;
+            known = false;   /* where jumps to it left the stack, if any said */
+            for (int i = 0; i < nl; ++i)
+                if (strcmp(labels[i].name, N(k)->name) == 0) {
+                    depth = labels[i].depth;
+                    known = true;
+                }
+            if (!known && last != NONE && !ends_flow(last))
+                known = true;   /* fell into it: the same depth */
+            continue;
+        }
+        const bool directive = is(k, "Call") && !is_insn(k);
+        if (directive)
+            continue;   /* .size, .cfi_...: not code */
+        if (after_end && !dead_said) {
+            say(k, R_ASM_DEAD, is(k, "Goto") ? N(k)->op : N(k)->name, 0);
+            dead_said = true;
+        }
+        code = true;
+        last = k;
+        if (is(k, "Goto")) {
+            if (known && nl < 64) {
+                bool there = false;
+                for (int i = 0; i < nl; ++i)
+                    there |= strcmp(labels[i].name, N(k)->name) == 0;
+                if (!there)
+                    labels[nl++] = (label_depth){ N(k)->name, depth };
+            }
+            after_end = ends_flow(k);
+            continue;
+        }
+        if (!is(k, "Call"))
+            continue;
+        const char *m = N(k)->name;
+        char b[24];
+        base_op(m, b, sizeof b);
+        const uint32_t d = dest_of(k, att);
+        const int f = d != NONE ? reg_family(N(d)->name) : -1;
+        if (op_is(m, (const char *const[]){ "push", NULL })) {
+            ++depth;
+            if (f >= 0)
+                saved |= 1u << f;
+        } else if (op_is(m, (const char *const[]){ "pop", NULL })) {
+            --depth;
+        } else if (strncmp(b, "ret", 3) == 0 && known && depth != 0) {
+            say(k, R_ASM_STACK, "", depth > 0 ? depth : -depth);
+        } else if (f >= 0 && ((1u << f) & callee) && writes_dest(m) && !((1u << f) & saved) &&
+                   !((1u << f) & said_callee)) {
+            said_callee |= 1u << f;
+            say(k, R_ASM_CALLEE, g_reg64[f], 0);
+        }
+        /* mov $0, %eax: xor is shorter */
+        if (operand_count(k) == 2 && op_is(m, (const char *const[]){ "mov", NULL }) && f >= 0) {
+            const char *src = N(child(k, att ? 0 : 1))->name;
+            if (strcmp(src, att ? "$0" : "0") == 0)
+                say(k, R_ASM_ZERO, N(d)->name[0] == '%' ? N(d)->name + 1 : N(d)->name, 0);
+        }
+        after_end = ends_flow(k);
+    }
+    /* the end: ret, jmp, or into the next function */
+    /* (a syscall last: exit, most likely; a program without the C library ends so) */
+    if (code && last != NONE && !ends_flow(last) && !(is(last, "Call") && strcmp(N(last)->name, "syscall") == 0) &&
+        !(is(last, "Call") && strcmp(N(last)->name, "call") == 0 && N(last)->first_child != NONE &&
+          (strstr(N(N(last)->first_child)->name, "exit") || strstr(N(N(last)->first_child)->name, "abort"))))
+        say(fn, R_ASM_FALLTHROUGH, N(fn)->name, 0);
+}
+
+static void check_asm_file(void)
+{
+    const size_t pl = strlen(F->path);
+    const bool nasm = (pl > 4 && strcasecmp(F->path + pl - 4, ".asm") == 0) ||
+                      (pl > 5 && strcasecmp(F->path + pl - 5, ".nasm") == 0);
+    /* AT&T unless it says otherwise: registers with %, the destination last */
+    const bool att = !nasm && !says(F->source, F->source_len, ".intel_syntax");
+    bool any_code = false, note = false;
+    for (uint32_t h = N(F->root)->first_child; h != NONE; h = N(h)->next_sibling) {
+        if (!is(h, "Function") || outside(h))
+            continue;
+        if (strcmp(N(h)->type, "label") == 0) {
+            check_asm_function(h, att);
+            any_code = true;
+        }
+    }
+    for (uint32_t k = 0; k < F->node_count; ++k)
+        note |= is(k, "Call") && strcmp(N(k)->name, ".section") == 0 && N(k)->first_child != NONE &&
+                strcmp(N(N(k)->first_child)->name, ".note.GNU-stack") == 0;
+    if (!nasm && any_code && !note) {
+        uint32_t first = N(F->root)->first_child;
+        say(first, R_ASM_NOSTACK, "", 0);
+    }
+}
+
 static void check(const ccr_plugin_file *file)
 {
-    const bool cpp = strcmp(file->language, "c++") == 0;
+    const bool cpp = strcmp(file->language, "c++") == 0, assembly = strcmp(file->language, "asm") == 0;
     g_cpp = cpp;
-    if ((strcmp(file->language, "c") != 0 && !cpp) || file->root == NONE)
+    if ((strcmp(file->language, "c") != 0 && !cpp && !assembly) || file->root == NONE)
         return;   /* CMake: somebody else's problem */
     F = file;
     g_lang = strncmp(file->ui_language, "ru", 2) == 0 ? 1 : 0;
     memset(g_said, 0, sizeof g_said);
     g_total = 0;
     g_npend = 0;
+    const char *b = opt("brutality", "mother_cat");
+    g_brutal = strcmp(b, "grumpy") == 0 ? 0 : strcmp(b, "linus") == 0 ? 1 : 2;
+    g_opt_praise = strcmp(opt("praise", "on"), "off") != 0;
+    g_opt_rust = strcmp(opt("rust", "on"), "off") != 0;
+    g_opt_asm = strcmp(opt("asm", "on"), "off") != 0;
+    g_opt_nits = strcmp(opt("nits", "on"), "off") != 0;
+    if (assembly) {
+        check_asm_file();
+        say_all();
+        F = NULL;
+        return;
+    }
     /* context: is this file Code Hater itself? (a plugin, its name, its rants) */
     g_self = says(F->source, F->source_len, "ccr_plugin.h") && says(F->source, F->source_len, "\"code_hater\"") &&
              says(F->source, F->source_len, "R_RUST_TEXT");
@@ -1111,6 +1887,8 @@ static void check(const ccr_plugin_file *file)
             check_condition(k);
         else if (strcmp(kind, "BinaryOp") == 0)
             check_assign(k);
+        else if (strcmp(kind, "Asm") == 0)
+            check_inline_asm(k);
         else if (cpp && strcmp(kind, "New") == 0)
             say(statement_of(k), R_RAW_NEW, *N(k)->type ? N(k)->type : "T", 0);
         else if (cpp && strcmp(kind, "Using") == 0 && is_header(F->path) && N(k)->parent == F->root && N(k)->src_end > N(k)->src_begin &&
@@ -1173,11 +1951,60 @@ static void hater_shutdown(void)
 static const char *hater_describe(const char *lang)
 {
     if (strncmp(lang, "ru", 2) == 0)
-        return "Ревьюит твой C так, как это делали в старых рассылках: громко. Висячие указатели, обращение "
-               "после free, утечки, gets(), вложенность в четыре этажа и всё, что пахнет Rust. Злится на код, "
-               "а не на тебя. В основном.";
-    return "Reviews your C the way the old mailing lists did: loudly. Dangling pointers, use after free, leaks, "
-           "gets(), four levels of nesting, and anything that smells of Rust. Hates the code, not you. Mostly.";
+        return "Ревьюит твой C и ассемблер так, как это делали в старых рассылках: громко. Висячие указатели, "
+               "обращение после free, утечки, gets(), регистры, испорченные за спиной компилятора, кривой стек и "
+               "всё, что пахнет Rust. На уровне «мама-кошка» тычет мордой в баг. Злится на код, а не на тебя. "
+               "В основном.";
+    return "Reviews your C and assembly the way the old mailing lists did: loudly. Dangling pointers, use after "
+           "free, leaks, gets(), registers trashed behind the compiler's back, unbalanced stacks, and anything "
+           "that smells of Rust. At \"mother cat\" it rubs your nose in the bug. Hates the code, not you. Mostly.";
+}
+
+/* ------------------------------------------------------------- settings */
+
+static const char *const g_brutal_values[] = { "grumpy", "linus", "mother_cat", NULL };
+static const char *const g_brutal_titles[] = { "Grumpy", "Linus on a bad day", "Mother cat", NULL };
+
+static const ccr_plugin_setting g_settings[] = {
+    { "brutality", CCR_SETTING_CHOICE, "How brutal",
+      "Grumpy says what is wrong. Linus says it the way the old mailing lists did. The mother cat grabs you by "
+      "the scruff and, when you save or build, rubs your nose in every bug.",
+      g_brutal_values, g_brutal_titles, "mother_cat" },
+    { "praise", CCR_SETTING_TOGGLE, "Praise", "Says so when something is done right. It happens.", NULL, NULL,
+      "on" },
+    { "nits", CCR_SETTING_TOGGLE, "Nits", "The small stuff: style and taste, not bugs.", NULL, NULL, "on" },
+    { "rust", CCR_SETTING_TOGGLE, "Rust patrol", "Anything that smells of Rust: names, strings, propaganda.", NULL,
+      NULL, "on" },
+    { "asm", CCR_SETTING_TOGGLE, "Assembly",
+      "asm() in C and .s/.asm files: registers trashed behind the compiler's back, unbalanced stacks, "
+      "callee-saved registers, functions that fall off their end.", NULL, NULL, "on" },
+};
+
+static const char *hater_setting_text(const char *lang, const char *what)
+{
+    if (strncmp(lang, "ru", 2) != 0)
+        return NULL;
+    static const struct { const char *what, *ru; } t[] = {
+        { "brutality", "Насколько жёстко" },
+        { "brutality.hint", "Ворчун говорит, что не так. Линус говорит это так, как в старых рассылках. Мама-кошка "
+                            "хватает за шкирку и, когда сохраняешь или собираешь, тычет мордой в каждый баг." },
+        { "brutality=grumpy", "Ворчун" },
+        { "brutality=linus", "Линус в плохой день" },
+        { "brutality=mother_cat", "Мама-кошка" },
+        { "praise", "Похвала" },
+        { "praise.hint", "Говорит, когда что-то сделано правильно. Бывает и такое." },
+        { "nits", "Придирки" },
+        { "nits.hint", "Мелочи: стиль и вкус, а не баги." },
+        { "rust", "Rust-патруль" },
+        { "rust.hint", "Всё, что пахнет Rust: имена, строки, пропаганда." },
+        { "asm", "Ассемблер" },
+        { "asm.hint", "asm() в C и файлы .s/.asm: регистры, испорченные за спиной компилятора, кривой стек, "
+                      "чужие регистры, функции, которые проваливаются в следующую." },
+    };
+    for (size_t i = 0; i < sizeof t / sizeof t[0]; ++i)
+        if (strcmp(t[i].what, what) == 0)
+            return t[i].ru;
+    return NULL;
 }
 
 static const ccr_plugin g_plugin = {
@@ -1185,7 +2012,7 @@ static const ccr_plugin g_plugin = {
     .struct_size = sizeof(ccr_plugin),
     .kinds       = CCR_PLUGIN_CHECKER | CCR_PLUGIN_PERSONALITY,
     .name        = "code_hater",
-    .version     = "1.0.0",
+    .version     = "1.1.0",
     .description = "Reviews your C the way the old mailing lists did: loudly.",
     .init        = hater_init,
     .shutdown    = hater_shutdown,
@@ -1194,6 +2021,9 @@ static const ccr_plugin g_plugin = {
     .describe    = hater_describe,
     .check       = check,
     .color       = 0xD7263DFFu,
+    .settings    = g_settings,
+    .setting_count = sizeof g_settings / sizeof g_settings[0],
+    .setting_text  = hater_setting_text,
 };
 
 CCR_PLUGIN_EXPORT const ccr_plugin *ccr_plugin_entry(void);

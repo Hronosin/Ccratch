@@ -84,6 +84,8 @@ typedef uint32_t ccr_str;   /* offset into the string arena; 0 is "" */
     X(STRING_LIT,       "String")             \
     X(NEW,              "New")                \
     X(DELETE,           "Delete")             \
+    /* C: asm("..." : outputs : inputs : clobbers); its instructions a Block */ \
+    X(ASM,              "Asm")                \
     /* code typed into a block from the palette, kept as text */ \
     X(TEXT,             "Text")               \
     /* anything we do not model yet ("here be dragons") */ \
@@ -177,6 +179,9 @@ typedef struct ccr_node {
 #define CCR_FLAG_ARRAY_FORM  (1u << 21)  /* new T[n], delete[] p */
 #define CCR_FLAG_CTOR_CALL   (1u << 22)  /* a Call that is a constructor: parser
                                             bookkeeping, the implicit ones go */
+#define CCR_FLAG_ASM         (1u << 23)  /* an assembly statement (an instruction,
+                                            a directive, a label, a jump): drawn
+                                            and saved as assembly, wherever it is */
 #define CCR_FLAG_TOPLEVEL    (1u << 17)  /* loose root holding one declaration
                                             for the file itself (a function,
                                             a struct, an #include...) */
@@ -219,11 +224,16 @@ typedef struct ccr_journal {
 } ccr_journal;
 
 /* What the tree was read from: saving and drawing speak its language. */
-typedef enum ccr_lang_kind { CCR_LANG_C, CCR_LANG_CMAKE } ccr_lang_kind;
+typedef enum ccr_lang_kind { CCR_LANG_C, CCR_LANG_CMAKE, CCR_LANG_ASM } ccr_lang_kind;
+
+/* Which assembly: GNU as with AT&T operands (`movq $1, %rax`, what gcc
+ * writes and asm() in C speaks), GNU as after .intel_syntax, or NASM. */
+typedef enum ccr_asm_syntax { CCR_ASM_ATT, CCR_ASM_INTEL, CCR_ASM_NASM } ccr_asm_syntax;
 
 typedef struct ccr_ast {
     ccr_lang_kind lang;
     bool          cpp;      /* C read as C++ (.cpp, .hpp, .cc...) */
+    ccr_asm_syntax asm_syntax;   /* an assembly file's, or asm()'s in C */
     ccr_node *nodes;
     uint32_t  node_count, node_cap;
 

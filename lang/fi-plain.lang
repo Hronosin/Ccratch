@@ -164,3 +164,14 @@ set.mode_debug_hint = Valmistuu nopeasti, ja Askel kerrallaan voi katsoa sen sis
 set.mode_release = Nopea
 set.mode_release_hint = Valmis ohjelma toimii nopeammin, mutta sen tekeminen kestää kauemmin. Askel kerrallaan tekee silti oman tavallisen
 set.mode_sanitize_hint = Ohjelmaa vahditaan sen ajon aikana: jos se koskee muistiin, johon ei saa, tai unohtaa palauttaa muistia, se pysähtyy ja syyllinen palikka muuttuu punaiseksi. Tarvitsee libasanin ja libubsanin
+
+# assembly
+palette.asm = Assembly
+palette.asm_move = Datan siirto
+palette.asm_math = Laskutoimitukset
+palette.asm_jumps = Hypyt
+palette.asm_data = Osiot ja data
+palette.asm_att = GNU as, AT&T-syntaksi: ensin lähde, sitten kohde; rekisterit alkavat prosenttimerkillä, luvut $-merkillä
+palette.asm_intel = GNU as, Intel-syntaksi (.intel_syntax): kohde ensin (mov rax, 1)
+palette.asm_nasm = NASM: kohde ensin (mov rax, 1); ; aloittaa kommentin
+files.name_file = Tiedoston nimi (.c, .h, .s tai .asm), Enter luo

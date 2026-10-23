@@ -38,6 +38,7 @@ dim_text      = #9C8792
 lang_c        = #DB6A98
 lang_cpp      = #A8467A
 lang_cmake    = #8C7AB8
+lang_asm      = #6E9E6A
 
 # blocks: pastels, dark ink
 control       = #FFD9A8

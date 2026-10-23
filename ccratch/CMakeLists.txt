@@ -44,6 +44,7 @@ endforeach()
 # tests, which need the internals the .so keeps hidden.
 add_library(ccratch_core OBJECT
     src/ccr_api.c
+    src/ccr_asm.c
     src/ccr_cmake.c
     src/ccr_build.c
     src/ccr_proc.c

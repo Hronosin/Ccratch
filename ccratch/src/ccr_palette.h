@@ -56,6 +56,7 @@ typedef struct ccr_palette {
     float             zoom;                /* how big its blocks are drawn (0: CCR_PALETTE_ZOOM) */
     ccr_lang_kind     lang;                /* C's blocks, or CMake's */
     bool              cpp;                 /* C's: those for C, or for C++ */
+    ccr_asm_syntax    asm_syntax;          /* assembly's: AT&T, Intel or NASM (asm() in C: AT&T) */
     float             lang_scroll[2];      /* where each of C and C++ was left: back there on return */
     bool              no_std;              /* without the standard library's sections */
     bool              ready;
@@ -72,6 +73,8 @@ bool ccr_palette_set_includes(ccr_palette *p, const char *const *includes, int c
 
 /* C or CMake: the blocks for the file on screen. */
 bool ccr_palette_set_lang(ccr_palette *p, ccr_lang_kind lang);
+/* Assembly's blocks spelled the file's way. */
+bool ccr_palette_set_asm_syntax(ccr_palette *p, ccr_asm_syntax syntax);
 /* C's blocks for C, or for C++ (the flags above the palette). */
 bool ccr_palette_set_cpp(ccr_palette *p, bool cpp);
 /* The standard library's sections shown, or not (programming without it). */

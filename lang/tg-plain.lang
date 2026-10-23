@@ -164,3 +164,14 @@ set.mode_debug_hint = Зуд сохта мешавад ва «Қадам ба қ
 set.mode_release = Тез
 set.mode_release_hint = Барномаи тайёр тезтар кор мекунад, вале дарозтар сохта мешавад. «Қадам ба қадам» ба ҳар ҳол барои худ оддиашро месозад
 set.mode_sanitize_hint = Ҳангоми кори барнома онро назорат мекунанд: агар ба хотираи бегона даст расонад ё баргардондани хотираашро фаромӯш кунад, меистад ва блоке, ки ин корро кард, сурх мешавад. libasan ва libubsan лозиманд
+
+# assembly
+palette.asm = Ассемблер
+palette.asm_move = Интиқоли маълумот
+palette.asm_math = Арифметика
+palette.asm_jumps = Ҷаҳишҳо
+palette.asm_data = Бахшҳо ва маълумот
+palette.asm_att = GNU as, синтаксиси AT&T: аввал аз куҷо, баъд ба куҷо; регистрҳо бо аломати фоиз, ададҳо бо $ сар мешаванд
+palette.asm_intel = GNU as, синтаксиси Intel (.intel_syntax): аввал ба куҷо (mov rax, 1)
+palette.asm_nasm = NASM: аввал ба куҷо (mov rax, 1); ; шарҳро сар мекунад
+files.name_file = Номи файл (.c, .h, .s ё .asm), Enter: сохтан

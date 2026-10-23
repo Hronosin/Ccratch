@@ -4,6 +4,7 @@
 #include "ccr_canvas.h"
 #include "ccr_ccdb.h"
 #include "ccr_choice.h"
+#include "ccr_asm.h"
 #include "ccr_cmake.h"
 #include "ccr_codegen.h"
 #include "ccr_config.h"
@@ -285,7 +286,7 @@ static void print_usage(const char *argv0)
            "  --check-lang FILE      check a language pack for missing or broken text\n"
            "  --check-explain FILE   check a block explanation file (lang/CODE.explain);\n"
            "                         --complete after it: every block must be there\n"
-           "  --check-code FILE      what the plugins (Code Hater...) say about a file;\n"
+           "  --check-code FILE...   what the plugins (Code Hater...) say about files;\n"
            "                         exit 1 if a warning or worse\n"
            "  --list-plugins         the plugins found, and where\n"
            "  --make-blocks HEADER   print a draft block pack for a library's header\n"
@@ -369,6 +370,10 @@ static bool parse_any(const char *path, const char *const *args, int nargs, ccr_
         ccr_cmake_parse_file(path, out);   /* its problems are in out->diags */
         return out->source != NULL;
     }
+    if (ccr_asm_is_asm(path)) {
+        ccr_asm_parse_file(path, out);
+        return out->source != NULL;
+    }
     return ccr_parse_file(path, args, nargs, out);
 }
 
@@ -403,7 +408,8 @@ static int run_roundtrip(const ccr_options *opt)
     if (!ccr_ast_init(&ast))
         return 2;
     if (!parse_any(opt->roundtrip, opt->clang_args, opt->clang_arg_count, &ast) ||
-        ccr_ast_count_diags(&ast, CCR_DIAG_ERROR) > (ccr_cmake_is_cmake(opt->roundtrip) ? 0u : ~0u)) {
+        ccr_ast_count_diags(&ast, CCR_DIAG_ERROR) >
+            (ccr_cmake_is_cmake(opt->roundtrip) || ccr_asm_is_asm(opt->roundtrip) ? 0u : ~0u)) {
         ccr_ast_dump_diags(&ast, stderr);
         fprintf(stderr, "ccratch: clang could not read '%s'\n", opt->roundtrip);
         ccr_ast_free(&ast);
@@ -412,16 +418,18 @@ static int run_roundtrip(const ccr_options *opt)
     char *text = NULL, err[256];
     size_t len = 0;
     int code = 2;
+    /* the file's own text: asm("...") puts its instructions after it */
+    const uint32_t file_len = ast.node_count ? ast.nodes[0].src_e : ast.source_len;
     if (!ccr_codegen(&ast, &text, &len, err, sizeof err)) {
         fprintf(stderr, "ccratch: %s\n", err);
-    } else if (len == ast.source_len && memcmp(text, ast.source, len) == 0) {
+    } else if (len == file_len && memcmp(text, ast.source, len) == 0) {
         printf("%s: identical (%zu bytes)\n", opt->roundtrip, len);
         code = 0;
     } else {
         size_t i = 0;
-        while (i < len && i < ast.source_len && text[i] == ast.source[i])
+        while (i < len && i < file_len && text[i] == ast.source[i])
             ++i;
-        printf("%s: differs at byte %zu (%zu vs %u bytes)\n", opt->roundtrip, i, len, ast.source_len);
+        printf("%s: differs at byte %zu (%zu vs %u bytes)\n", opt->roundtrip, i, len, file_len);
         code = 1;
     }
     free(text);
@@ -508,10 +516,14 @@ static int parse_args(int argc, char **argv, ccr_options *opt)
         } else if (strcmp(a, "--check-code") == 0 && i + 1 < argc) {
             ccr_lang_pick(opt->lang, NULL);
             ccr_plugins_load(stderr);
-            const int bad = ccr_plugins_check_file(argv[++i], ccr_lang_code(), stdout);
+            int bad = 0;
+            while (i + 1 < argc && argv[i + 1][0] != '-') {   /* one file, or several */
+                const int b = ccr_plugins_check_file(argv[++i], ccr_lang_code(), stdout);
+                if (b < 0)
+                    fprintf(stderr, "ccratch: could not read '%s'\n", argv[i]);
+                bad = b < 0 || bad < 0 ? -1 : bad + b;
+            }
             ccr_plugins_unload();
-            if (bad < 0)
-                fprintf(stderr, "ccratch: could not read '%s'\n", argv[i]);
             return bad == 0 ? 0 : bad < 0 ? 2 : 1;
         } else if (strcmp(a, "--list-plugins") == 0) {
             ccr_plugins_load(stderr);
@@ -788,7 +800,7 @@ static bool document_open(ccr_document *doc, const char *path, const ccr_options
     const int nargs = clang_args_for(path, opt, args);
 
     if (!parse_any(path, args, nargs, &ast) ||
-        (ast.lang == CCR_LANG_CMAKE && ccr_ast_count_diags(&ast, CCR_DIAG_ERROR))) {
+        (ast.lang != CCR_LANG_C && ccr_ast_count_diags(&ast, CCR_DIAG_ERROR))) {
         if (ast.diag_count)
             ccr_ast_dump_diags(&ast, stderr);
         ccr_ast_free(&ast);
@@ -1025,6 +1037,9 @@ static void palette_follow(const ccr_document *doc)
         if (!header && g_palette.ready && !ccr_palette_set_cpp(&g_palette, doc->ed.ast.cpp))
             fprintf(stderr, "ccratch: out of memory laying out the palette\n");
     }
+    if (g_palette.ready && doc->loaded && doc->ed.ast.lang == CCR_LANG_ASM &&
+        !ccr_palette_set_asm_syntax(&g_palette, doc->ed.ast.asm_syntax))
+        fprintf(stderr, "ccratch: out of memory laying out the palette\n");
     if (g_palette.ready &&
         !ccr_palette_set_lang(&g_palette, doc->loaded ? doc->ed.ast.lang : CCR_LANG_C))
         fprintf(stderr, "ccratch: out of memory laying out the palette\n");
@@ -2238,12 +2253,15 @@ static void marks_follow(ccr_document *doc)
  * project has none, and starts the build. */
 static ccr_build_mode g_build_mode;   /* the build button builds so (Settings > Building) */
 
+static void rub_ask(void);
+
 static void build_start(ccr_document *doc, bool run, const ccr_options *opt)
 {
     if (ccr_job_busy(&g_job)) {
         ccr_job_stop(&g_job);   /* a second press: stop; the next one builds */
         return;
     }
+    rub_ask();
     g_bp.open = true;
     g_bp.follow = true;
     char project[CCR_FILES_PATH];
@@ -4193,6 +4211,268 @@ static void source_line(const ccr_ast *ast, uint32_t line, char *out, size_t cap
 }
 
 /* The card: a reply from the plugin, quoting the line. */
+/*
+ * The mother cat. A checker that pokes (Code Hater at its most brutal)
+ * gets the user's nose rubbed in what it found, when they save or build:
+ * the view flies to the block, the rest goes dark, a ginger paw comes in
+ * from the corner and pushes the camera into it, three times, with the
+ * plugin shouting in a bubble. Then back to where they were. A click or
+ * a key ends it at once.
+ */
+#define RUB_FLY   0.5f
+#define RUB_POKE  0.53f
+#define RUB_EACH  (RUB_FLY + 3.0f * RUB_POKE + 0.5f)
+#define RUB_HOME  0.45f
+#define RUB_MAX   3
+
+static struct {
+    bool        asked;      /* saved or built: rub, once the checkers have read it */
+    bool        active, going_home;
+    ccr_node_id nodes[RUB_MAX];
+    int         plugin[RUB_MAX];
+    char        say[RUB_MAX][160];
+    char        title[RUB_MAX][96];
+    int         count, cur;
+    float       t;          /* within the current one (or the way home) */
+    ccr_canvas  home, from, base;
+    float       push;       /* 0..1: how far the paw is in, now */
+    unsigned    seed;
+} g_rub;
+
+static void rub_ask(void)
+{
+    g_rub.asked = true;
+}
+
+static float rub_ease(float k)
+{
+    k = k < 0.0f ? 0.0f : k > 1.0f ? 1.0f : k;
+    return k < 0.5f ? 4.0f * k * k * k : 1.0f - powf(-2.0f * k + 2.0f, 3.0f) * 0.5f;
+}
+
+/* The view with `node` in the middle, close up. False if it is not drawn. */
+static bool rub_base(const ccr_document *doc, ccr_node_id node, ccr_rect view, const ccr_canvas *cv, ccr_canvas *out)
+{
+    ccr_rect r;
+    if (!ccr_editor_node_rect(&doc->ed, node, &r))
+        return false;
+    float z = fminf(view.w * 0.45f / fmaxf(r.w, 1.0f), view.h * 0.32f / fmaxf(r.h, 1.0f));
+    z = fmaxf(1.15f, fminf(2.2f, z));
+    *out = *cv;
+    out->zoom = z;
+    out->offset.x = view.x + view.w * 0.5f - (r.x + r.w * 0.5f) * z;
+    out->offset.y = view.y + view.h * 0.56f - (r.y + r.h * 0.5f) * z;
+    return true;
+}
+
+static void rub_lerp(ccr_canvas *cv, const ccr_canvas *a, const ccr_canvas *b, float e)
+{
+    cv->zoom = a->zoom + (b->zoom - a->zoom) * e;
+    cv->offset.x = a->offset.x + (b->offset.x - a->offset.x) * e;
+    cv->offset.y = a->offset.y + (b->offset.y - a->offset.y) * e;
+}
+
+static void rub_end(ccr_canvas *cv)
+{
+    if (!g_rub.active || g_rub.going_home)
+        return;
+    g_rub.going_home = true;
+    g_rub.t = 0.0f;
+    g_rub.from = *cv;
+}
+
+/* Every frame, before the canvas takes the wheel. True while it has the
+ * camera (the user does not, then). */
+static bool rub_tick(ccr_document *doc, ccr_canvas *cv, ccr_rect view, float dt, bool input)
+{
+    if (g_rub.asked && doc->loaded && !g_pf.dirty && !g_pf.again) {
+        g_rub.asked = false;
+        if (!g_rub.active && g_animate) {
+            g_rub.count = 0;
+            /* the worst first, each block once */
+            for (int level = CCR_FIND_ERROR; level >= CCR_FIND_PRAISE && g_rub.count < RUB_MAX; --level)
+                for (int i = 0; i < g_pf.n && g_rub.count < RUB_MAX; ++i) {
+                    const ccr_finding *f = &g_pf.list[i];
+                    bool seen = false;
+                    for (int k = 0; k < g_rub.count; ++k)
+                        seen |= g_rub.nodes[k] == f->node;
+                    ccr_rect r;
+                    if (!f->poke || (int)f->level != level || seen || !ccr_editor_node_rect(&doc->ed, f->node, &r))
+                        continue;
+                    const int k = g_rub.count++;
+                    g_rub.nodes[k] = f->node;
+                    g_rub.plugin[k] = f->plugin;
+                    snprintf(g_rub.say[k], sizeof g_rub.say[k], "%s", f->say);
+                    snprintf(g_rub.title[k], sizeof g_rub.title[k], "%s", f->title);
+                }
+            if (g_rub.count) {
+                g_glide.active = false;
+                g_rub.active = true;
+                g_rub.going_home = false;
+                g_rub.cur = 0;
+                g_rub.t = 0.0f;
+                g_rub.home = g_rub.from = *cv;
+                g_rub.seed = (unsigned)(ccr_gui_time() * 1000.0);
+                if (!rub_base(doc, g_rub.nodes[0], view, cv, &g_rub.base))
+                    g_rub.active = false;
+            }
+        }
+    }
+    if (!g_rub.active)
+        return false;
+    if (!doc->loaded) {
+        g_rub.active = false;
+        return false;
+    }
+    if (input && !g_rub.going_home &&
+        (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) || ccr_gui_mouse_pressed(CCR_MOUSE_RIGHT) ||
+         ccr_gui_key_pressed(CCR_KEY_ESCAPE) || ccr_gui_key_pressed(CCR_KEY_ENTER)))
+        rub_end(cv);   /* had enough */
+    g_rub.t += dt;
+    g_rub.push = 0.0f;
+    if (g_rub.going_home) {
+        const float k = g_rub.t / RUB_HOME;
+        rub_lerp(cv, &g_rub.from, &g_rub.home, rub_ease(k));
+        if (k >= 1.0f) {
+            *cv = g_rub.home;
+            g_rub.active = false;
+        }
+        return true;
+    }
+    const float t = g_rub.t;
+    if (t < RUB_FLY) {
+        rub_lerp(cv, &g_rub.from, &g_rub.base, rub_ease(t / RUB_FLY));
+    } else if (t < RUB_FLY + 3.0f * RUB_POKE) {
+        /* a poke: in fast, out slower; the camera goes in with the nose */
+        const float p = fmodf(t - RUB_FLY, RUB_POKE) / RUB_POKE;
+        const float push = p < 0.3f ? rub_ease(p / 0.3f) : 1.0f - rub_ease((p - 0.3f) / 0.7f);
+        g_rub.push = push;
+        ccr_rect r;
+        *cv = g_rub.base;
+        if (ccr_editor_node_rect(&doc->ed, g_rub.nodes[g_rub.cur], &r)) {
+            const ccr_vec2 c = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x + r.w * 0.5f, r.y + r.h * 0.5f });
+            const float z = g_rub.base.zoom * (1.0f + 0.24f * push);
+            cv->offset.x = c.x - (r.x + r.w * 0.5f) * z;
+            cv->offset.y = c.y - (r.y + r.h * 0.5f) * z;
+            cv->zoom = z;
+        }
+        const unsigned s = g_rub.seed + (unsigned)(t * 60.0f) * 2654435761u;   /* a shake, while it is in */
+        cv->offset.x += ((float)((s >> 8) & 255u) / 255.0f - 0.5f) * 12.0f * push;
+        cv->offset.y += ((float)((s >> 16) & 255u) / 255.0f - 0.5f) * 12.0f * push;
+    } else {
+        *cv = g_rub.base;
+    }
+    if (t >= RUB_EACH) {
+        if (++g_rub.cur < g_rub.count && rub_base(doc, g_rub.nodes[g_rub.cur], view, cv, &g_rub.base)) {
+            g_rub.t = 0.0f;
+            g_rub.from = *cv;
+        } else {
+            g_rub.cur = g_rub.count - 1;
+            rub_end(cv);
+        }
+    }
+    return true;
+}
+
+/* A ginger paw, pads toward `dir`, at `c`. */
+static void draw_paw(ccr_vec2 c, ccr_vec2 dir, float s)
+{
+    const ccr_color fur = 0xF0A04BFFu, edge = 0xA85E1EFFu, bean = 0xF6A3B5FFu, stripe = 0xD9822FFFu;
+    const ccr_vec2 side = { -dir.y, dir.x };
+    /* the arm, from off the screen */
+    const ccr_vec2 far = { c.x - dir.x * 900.0f, c.y - dir.y * 900.0f };
+    ccr_gui_line(far, c, 64.0f * s, edge);
+    ccr_gui_line(far, c, 58.0f * s, fur);
+    for (int k = 1; k <= 3; ++k) {   /* stripes, a tabby's */
+        const ccr_vec2 m = { c.x - dir.x * (70.0f + 46.0f * (float)k) * s, c.y - dir.y * (70.0f + 46.0f * (float)k) * s };
+        ccr_gui_line((ccr_vec2){ m.x + side.x * 26.0f * s, m.y + side.y * 26.0f * s },
+                     (ccr_vec2){ m.x - side.x * 14.0f * s - dir.x * 10.0f * s, m.y - side.y * 14.0f * s - dir.y * 10.0f * s },
+                     7.0f * s, stripe);
+    }
+    ccr_gui_circle(c, 46.0f * s, edge);
+    ccr_gui_circle(c, 43.0f * s, fur);
+    /* the big pad, then four toes in an arc */
+    const ccr_vec2 pad = { c.x - dir.x * 6.0f * s, c.y - dir.y * 6.0f * s };
+    ccr_gui_circle(pad, 17.0f * s, bean);
+    ccr_gui_circle((ccr_vec2){ pad.x + side.x * 11.0f * s, pad.y + side.y * 11.0f * s }, 12.0f * s, bean);
+    ccr_gui_circle((ccr_vec2){ pad.x - side.x * 11.0f * s, pad.y - side.y * 11.0f * s }, 12.0f * s, bean);
+    static const float across[4] = { -1.5f, -0.5f, 0.5f, 1.5f }, ahead[4] = { 20.0f, 27.0f, 27.0f, 20.0f };
+    for (int k = 0; k < 4; ++k) {
+        const ccr_vec2 toe = { c.x + dir.x * ahead[k] * s + side.x * across[k] * 16.0f * s,
+                               c.y + dir.y * ahead[k] * s + side.y * across[k] * 16.0f * s };
+        ccr_gui_circle(toe, 9.5f * s, edge);
+        ccr_gui_circle(toe, 8.0f * s, fur);
+        ccr_gui_circle(toe, 5.5f * s, bean);
+    }
+}
+
+static void rub_draw(const ccr_document *doc, const ccr_canvas *cv, ccr_rect view)
+{
+    if (!g_rub.active || !doc->loaded)
+        return;
+    ccr_rect r;
+    if (!ccr_editor_node_rect(&doc->ed, g_rub.nodes[g_rub.cur], &r))
+        return;
+    const ccr_vec2 a = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x, r.y });
+    const ccr_vec2 b = ccr_canvas_to_screen(cv, (ccr_vec2){ r.x + r.w, r.y + r.h });
+    const ccr_rect s = { a.x - 10.0f, a.y - 10.0f, b.x - a.x + 20.0f, b.y - a.y + 20.0f };
+    /* how much of it shows: in on the way there, out on the way home */
+    float show = g_rub.going_home ? 1.0f - fminf(1.0f, g_rub.t / RUB_HOME)
+                                  : (g_rub.cur == 0 ? fminf(1.0f, g_rub.t / RUB_FLY) : 1.0f);
+    show = rub_ease(show);
+    ccr_gui_clip_begin(view);
+    /* the rest goes dark: only the guilty block in the light */
+    const ccr_color dark = (0x14080AFFu & 0xFFFFFF00u) | (uint32_t)(170.0f * show);
+    ccr_gui_rect((ccr_rect){ view.x, view.y, view.w, fmaxf(0.0f, s.y - view.y) }, dark);
+    ccr_gui_rect((ccr_rect){ view.x, s.y + s.h, view.w, fmaxf(0.0f, view.y + view.h - s.y - s.h) }, dark);
+    ccr_gui_rect((ccr_rect){ view.x, s.y, fmaxf(0.0f, s.x - view.x), s.h }, dark);
+    ccr_gui_rect((ccr_rect){ s.x + s.w, s.y, fmaxf(0.0f, view.x + view.w - s.x - s.w), s.h }, dark);
+    /* a red ring, beating */
+    const uint32_t pc = ccr_plugins_color(g_rub.plugin[g_rub.cur]);
+    const ccr_color red = pc ? pc : ccr_th(CCR_C_ERROR);
+    const float beat = 0.5f + 0.5f * sinf((float)ccr_gui_time() * 14.0f);
+    const ccr_color ring = (red & 0xFFFFFF00u) | (uint32_t)((150.0f + 105.0f * beat) * show);
+    for (int k = 0; k < 2; ++k) {
+        const float g = 3.0f + (float)k * 3.0f + 4.0f * g_rub.push;
+        const ccr_rect o = { s.x - g, s.y - g, s.w + 2.0f * g, s.h + 2.0f * g };
+        ccr_gui_line((ccr_vec2){ o.x, o.y }, (ccr_vec2){ o.x + o.w, o.y }, 3.0f, ring);
+        ccr_gui_line((ccr_vec2){ o.x + o.w, o.y }, (ccr_vec2){ o.x + o.w, o.y + o.h }, 3.0f, ring);
+        ccr_gui_line((ccr_vec2){ o.x + o.w, o.y + o.h }, (ccr_vec2){ o.x, o.y + o.h }, 3.0f, ring);
+        ccr_gui_line((ccr_vec2){ o.x, o.y + o.h }, (ccr_vec2){ o.x, o.y }, 3.0f, ring);
+    }
+    /* the paw: from the bottom right corner, onto the block's right end */
+    const ccr_vec2 target = { s.x + s.w - fminf(s.w * 0.35f, 90.0f), s.y + s.h * 0.72f };
+    ccr_vec2 dir = { -0.62f, -0.78f };
+    const ccr_vec2 rest = { target.x - dir.x * 230.0f, target.y - dir.y * 230.0f };
+    const float in = g_rub.going_home ? 0.0f : g_rub.push;
+    const float away = g_rub.going_home ? rub_ease(fminf(1.0f, g_rub.t / RUB_HOME)) * 400.0f
+                     : (g_rub.cur == 0 && g_rub.t < RUB_FLY ? (1.0f - rub_ease(g_rub.t / RUB_FLY)) * 400.0f : 0.0f);
+    const ccr_vec2 at = { rest.x + (target.x - rest.x) * in - dir.x * away,
+                          rest.y + (target.y - rest.y) * in - dir.y * away };
+    draw_paw(at, dir, 1.25f);
+    /* what it shouts, over the block */
+    const char *say = g_rub.say[g_rub.cur];
+    const float fs = 28.0f, ts = 14.0f;
+    const float sw = ccr_gui_text_width(say, fs), tw = ccr_gui_text_width(g_rub.title[g_rub.cur], ts);
+    const float bw = fmaxf(sw, tw) + 40.0f, bh = 76.0f;
+    float bx = (a.x + b.x) * 0.5f - bw * 0.5f, by = s.y - bh - 34.0f;
+    bx = fmaxf(view.x + 12.0f, fminf(bx, view.x + view.w - bw - 12.0f));
+    by = fmaxf(view.y + 12.0f, by);
+    const float wob = sinf((float)ccr_gui_time() * 23.0f) * 3.0f * g_rub.push;
+    const ccr_rect bub = { bx + wob, by, bw, bh };
+    const ccr_color paper = (0xFFF8F0FFu & 0xFFFFFF00u) | (uint32_t)(255.0f * show);
+    const ccr_color ink = (0x2A1A12FFu & 0xFFFFFF00u) | (uint32_t)(255.0f * show);
+    ccr_gui_rect_rounded((ccr_rect){ bub.x - 3, bub.y - 3, bub.w + 6, bub.h + 6 }, 0.3f, (red & 0xFFFFFF00u) | (uint32_t)(255.0f * show));
+    ccr_gui_rect_rounded(bub, 0.3f, paper);
+    const float tail_x = fmaxf(bub.x + 30.0f, fminf((a.x + b.x) * 0.5f, bub.x + bub.w - 30.0f));
+    ccr_gui_triangle((ccr_vec2){ tail_x - 14.0f, bub.y + bub.h - 1.0f }, (ccr_vec2){ tail_x + 14.0f, bub.y + bub.h - 1.0f },
+                     (ccr_vec2){ tail_x, bub.y + bub.h + 22.0f }, paper);
+    for (int k = 0; k < 2; ++k)   /* bold: it is shouting */
+        ccr_gui_text(say, bub.x + 20.0f + (float)k * 1.1f, bub.y + 9.0f, fs, (red & 0xFFFFFF00u) | (uint32_t)(255.0f * show));
+    ccr_gui_text(g_rub.title[g_rub.cur], bub.x + 20.0f, bub.y + 50.0f, ts, ink);
+    ccr_gui_clip_end();
+}
+
 static void pf_card(ccr_document *doc, const ccr_canvas *cv, ccr_rect viewport, bool interactive, float dt)
 {
     if (!doc->loaded || g_pf.n == 0) {
@@ -7295,6 +7575,24 @@ static void langbar_frame(const ccr_document *doc, bool input)
         ccr_gui_clip_end();
         return;
     }
+    if (doc->loaded && doc->ed.ast.lang == CCR_LANG_ASM) {
+        /* one tab, and the syntax its blocks are spelled in beside it */
+        const float tw = fminf(150.0f, bar.w - 120.0f);
+        const ccr_rect r = { bar.x + 10.0f, base - th, tw, th };
+        ccr_gui_rect((ccr_rect){ bar.x, base - 1.0f, bar.w, 1.0f }, ccr_th(CCR_C_PANEL_EDGE));
+        lang_tab(r, ccr_th(CCR_C_LANG_ASM), true, false, "asm", NULL, base_name(doc->path), false);
+        static const char *const names[] = { "AT&T", "Intel", "NASM" };
+        const char *syn = names[doc->ed.ast.asm_syntax];
+        const float fs = 15.0f, sw = ccr_gui_text_width(syn, fs);
+        const ccr_rect pill = { r.x + r.w + 12.0f, base - th + 8.0f, sw + 18.0f, 24.0f };
+        ccr_gui_rect_rounded(pill, 0.45f, mix_color(ccr_th(CCR_C_LANG_ASM), pal, 0.75f));
+        ccr_gui_text(syn, pill.x + 9.0f, pill.y + 3.0f, fs, ccr_th(CCR_C_PALETTE_TEXT));
+        ccr_gui_clip_end();
+        if (input && point_in(m, pill))
+            tip(pill, ccr_tr(doc->ed.ast.asm_syntax == CCR_ASM_NASM ? CCR_T_PAL_ASM_NASM
+                             : doc->ed.ast.asm_syntax == CCR_ASM_INTEL ? CCR_T_PAL_ASM_INTEL : CCR_T_PAL_ASM_ATT));
+        return;
+    }
     /* the std switch, on the right */
     const float sw = 46.0f;
     const ccr_rect sr = { bar.x + bar.w - sw - 10.0f, base - th + 7.0f, sw, 24.0f };
@@ -7302,7 +7600,7 @@ static void langbar_frame(const ccr_document *doc, bool input)
     const float gap = 4.0f, tw = fminf(132.0f, (sr.x - bar.x - 18.0f - gap) * 0.5f);
     const size_t pl = strlen(doc->path);
     const bool header = pl > 2 && (strcmp(doc->path + pl - 2, ".h") == 0);
-    const int file_lang = doc->loaded && doc->ed.ast.lang != CCR_LANG_CMAKE ? (doc->ed.ast.cpp ? 1 : 0) : -1;
+    const int file_lang = doc->loaded && doc->ed.ast.lang == CCR_LANG_C ? (doc->ed.ast.cpp ? 1 : 0) : -1;
     static float lift[2];
     static double last;
     const double now = ccr_gui_time();
@@ -9480,6 +9778,40 @@ static bool settings_frame(int w, int h, ccr_document *doc, float dt)
                 ccr_plugins_set_enabled(i, !on, true);
                 g_pf.again = true;   /* read the file again, with it or without it */
             }
+            /* its own settings, under it, a step in (while it is on) */
+            const int ns = on ? ccr_plugins_setting_count(i) : 0;
+            const float top = y;
+            const ccr_rect sub = { area.x + 28.0f, area.y, area.w - 28.0f, area.h };
+            for (int k = 0; k < ns; ++k) {
+                const char *lang = ccr_lang_code();
+                const char *value = ccr_plugins_setting_value(i, k);
+                if (ccr_plugins_setting_is_toggle(i, k)) {
+                    const bool is_on = strcmp(value, "on") == 0;
+                    if (set_row(sub, &y, ccr_plugins_setting_title(i, k, lang), ccr_plugins_setting_hint(i, k, lang),
+                                ROW_SWITCH, "", is_on, input)) {
+                        ccr_plugins_set_setting(i, k, is_on ? "off" : "on", true);
+                        g_pf.again = true;
+                    }
+                    continue;
+                }
+                const int nc = ccr_plugins_setting_choice_count(i, k);
+                int cur = 0;
+                for (int c = 0; c < nc; ++c)
+                    if (strcmp(ccr_plugins_setting_choice(i, k, c), value) == 0)
+                        cur = c;
+                const int d = set_row(sub, &y, ccr_plugins_setting_title(i, k, lang),
+                                      ccr_plugins_setting_hint(i, k, lang), ROW_CHOICE,
+                                      ccr_plugins_setting_choice_title(i, k, cur, lang), false, input);
+                if (d && nc > 0) {
+                    ccr_plugins_set_setting(i, k, ccr_plugins_setting_choice(i, k, wrap_index(cur + d, nc)), true);
+                    g_pf.again = true;
+                }
+            }
+            if (ns > 0) {   /* a line in the plugin's colour: these are its */
+                const uint32_t pc = ccr_plugins_color(i);
+                ccr_gui_rect_rounded((ccr_rect){ area.x + 16.0f, top, 4.0f, y - top - 4.0f }, 1.0f,
+                                     pc ? pc : ccr_th(CCR_C_ACCENT));
+            }
         }
         if (ccr_plugins_count() == 0) {
             y += wrap_text(ccr_tr(CCR_T_SET_PLUGINS_NONE), area.x + 14.0f, y + 8.0f, area.w - 28.0f, 15.0f,
@@ -10042,7 +10374,7 @@ static void run_action(ccr_action a, const ccr_context *ctx, ccr_vec2 world,
 {
     ccr_editor *ed = &doc->ed;
     switch (a) {
-    case CCR_ACTION_SAVE:      document_save(doc, opt); break;
+    case CCR_ACTION_SAVE:      document_save(doc, opt); rub_ask(); break;
     case CCR_ACTION_UNDO:      ccr_editor_undo(ed); break;
     case CCR_ACTION_REDO:      ccr_editor_redo(ed); break;
     case CCR_ACTION_FIT_VIEW:   /* over a block that folds, that slice folds it */
@@ -10387,8 +10719,10 @@ int ccr_run(int argc, char **argv)
             g_psearch.focused = false;
         }
         if (can_act && !pie.open && !was_open && ccr_gui_ctrl_down()) {
-            if (ccr_gui_key_pressed(CCR_KEY_S))
+            if (ccr_gui_key_pressed(CCR_KEY_S)) {
                 document_save(&doc, &opt);
+                rub_ask();   /* the mother cat looks at what you saved */
+            }
             if (ccr_gui_key_pressed(CCR_KEY_B) || ccr_gui_key_pressed(CCR_KEY_R))
                 build_start(&doc, ccr_gui_key_pressed(CCR_KEY_R), &opt);
             if (!typing && ccr_gui_key_pressed(CCR_KEY_C))
@@ -10489,7 +10823,8 @@ int ccr_run(int argc, char **argv)
         }
 
         const bool gliding = glide_step(&canvas, dt);
-        if (!pie.open && !was_open && !modal && !(te.node != CCR_NONE && drop_has_mouse())) {
+        const bool rubbing = rub_tick(&doc, &canvas, visible_view(viewport, w, h), dt, !modal && !pie.open);
+        if (!rubbing && !pie.open && !was_open && !modal && !(te.node != CCR_NONE && drop_has_mouse())) {
             const ccr_canvas before = canvas;
             /* only where the canvas shows: the wheel over a panel on top of it scrolls the panel */
             if (!refs_has_mouse(viewport))
@@ -10599,6 +10934,7 @@ int ccr_run(int argc, char **argv)
             ccr_editor_draw(&doc.ed, &canvas, viewport);
             blame_draw(&doc, &canvas);
             pf_draw(&doc, &canvas);
+            rub_draw(&doc, &canvas, visible_view(viewport, w, h));
         } else
             start_screen(&doc, &canvas, viewport, &opt, !modal);
         ccr_palette_draw(&g_palette, palette_area(h),

@@ -41,12 +41,12 @@
     X(PALETTE_DROP,     "palette.drop",          0, "drop to delete")                    \
     X(TEMPLATE_CODE,    "palette.code_line",     0, "code line")                         \
     X(FILES_TITLE,      "files.title",           0, "Files")                             \
-    X(FILES_EMPTY,      "files.empty",           0, "no .c or .h files here")            \
+    X(FILES_EMPTY,      "files.empty",           0, "no .c, .h or .s files here")            \
     X(FILES_UNSAVED,    "files.unsaved",         0, "Not saved! Click x again to close anyway") \
     X(FILES_TOO_MANY,   "files.too_many",        0, "Too many files open: close one first") \
     X(FILES_NEW_FILE,   "files.new_file",        0, "+ file")                            \
     X(FILES_NEW_DIR,    "files.new_dir",         0, "+ folder")                          \
-    X(FILES_NAME_FILE,  "files.name_file",       0, "File name (.c or .h), Enter to create") \
+    X(FILES_NAME_FILE,  "files.name_file",       0, "File name (.c, .h, .s or .asm), Enter to create") \
     X(FILES_NAME_DIR,   "files.name_dir",        0, "Folder name, Enter to create")      \
     X(FILES_EXISTS,     "files.exists",          0, "%s is already there")               \
     X(FILES_CREATED,    "files.created",         0, "%s created")                        \
@@ -395,12 +395,20 @@
     X(PAL_LANG_TIP,     "palette.lang_tip",      0, "Blocks for %s (a .cpp file picks C++ by itself)") \
     X(PAL_LANG_OTHER,   "palette.lang_other",    0, "C++ blocks, and %s is C: the C compiler will not take them") \
     X(PAL_DROP_OTHER,   "palette.drop_other",    0, "That is a C++ block, and %s is C: it will not compile there") \
+    X(PAL_ASM_ATT,      "palette.asm_att",       0, "GNU as, AT&T syntax: the source first, the destination last; registers start with a percent sign, numbers with $") \
+    X(PAL_ASM_INTEL,    "palette.asm_intel",     0, "GNU as, Intel syntax (.intel_syntax): destination first (mov rax, 1)") \
+    X(PAL_ASM_NASM,     "palette.asm_nasm",      0, "NASM: destination first (mov rax, 1); ; starts a comment") \
     X(PAL_STD_ON,       "palette.std_on",        0, "The standard library's blocks (printf, malloc, std::cout...): shown. A click hides them: only the language and your own functions") \
     X(PAL_STD_OFF,      "palette.std_off",       0, "No standard library: only the language and your own functions. A click brings printf and the rest back") \
     X(SET_STD,          "set.std",               0, "Standard library blocks")           \
     X(SET_STD_HINT,     "set.std_hint",          0, "printf, malloc, std::cout... in a section of their own. Off: only the language itself and your own functions") \
     X(CAT_CM_PROJECT,   "palette.cm_project",    0, "Project")                           \
     X(CAT_CM_TARGETS,   "palette.cm_targets",    0, "Targets")                           \
+    X(CAT_ASM,          "palette.asm",           0, "Assembly")                          \
+    X(CAT_ASM_MOVE,     "palette.asm_move",      0, "Moving data")                       \
+    X(CAT_ASM_MATH,     "palette.asm_math",      0, "Arithmetic")                        \
+    X(CAT_ASM_JUMPS,    "palette.asm_jumps",     0, "Jumps")                             \
+    X(CAT_ASM_DATA,     "palette.asm_data",      0, "Sections and data")                 \
     X(EMPTY_TITLE,      "empty.title",           0, "Drop a .c file here")               \
     X(EMPTY_HINT,       "empty.hint",            0, "(or: ccratch file.c)")              \
     /* status bar, left: what just happened */                                           \
