@@ -303,6 +303,13 @@ endforeach()
 add_executable(test_job test_job.c)
 target_link_libraries(test_job PRIVATE ccratch_core)
 add_test(NAME build_job COMMAND test_job)
+
+# Other machines: one project of C and assembly, built for every target
+# there are tools for here (a cross gcc, zig, the NDK), run in qemu
+add_executable(test_target test_target.c)
+target_link_libraries(test_target PRIVATE ccratch_core)
+add_test(NAME build_targets COMMAND test_target ${PROJECT_SOURCE_DIR}/examples)
+set_tests_properties(build_targets PROPERTIES TIMEOUT 600)
 set_tests_properties(build_job PROPERTIES TIMEOUT 240)
 
 # The flags of the project's own build, from compile_commands.json.

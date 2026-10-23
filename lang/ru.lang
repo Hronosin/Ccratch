@@ -543,3 +543,24 @@ palette.asm_nasm = NASM: сначала куда (mov rax, 1); ; начинае�
 # ARM assembly
 palette.asm_arm64 = 64-битный ARM (AArch64: телефоны, Apple M, Raspberry Pi 4 и 5), GNU as: сначала куда (mov x0, #1); числа с #, // начинает комментарий
 palette.asm_arm32 = 32-битный ARM и Thumb (32-битная Raspberry Pi OS, старые телефоны), GNU as: сначала куда (mov r0, #1); числа с #, @ начинает комментарий
+
+# Build targets
+set.target = Для какой машины
+set.target_hint = Один проект — много машин: у каждой своя папка сборки и свой ассемблер. Ccratch сам ищет, чем собирать под каждую
+target.native = Этот компьютер (%s)
+target.native_hint = Собирается и запускается прямо здесь
+target.linux_arm64 = Linux на 64-битном ARM
+target.linux_arm64_hint = Raspberry Pi 4 и 5, ARM-платы и серверы
+target.linux_arm32 = Linux на 32-битном ARM
+target.linux_arm32_hint = 32-битная Raspberry Pi OS, платы постарше
+target.android_arm64 = Android, 64 бита
+target.android_arm64_hint = Телефоны и планшеты последних десяти лет
+target.android_arm32 = Android, 32 бита
+target.android_arm32_hint = Телефоны постарше
+target.with = собирается через %s
+target.runs_in = запускается здесь в %s
+target.runs_phone = запускается на подключённом телефоне (с отладкой по USB)
+target.no_run = запускается на самом устройстве: скопируй туда
+target.need_linux = не найдено: кросс-gcc со своей библиотекой C (Debian/Ubuntu: %s) или zig (ziglang.org, любой дистрибутив)
+target.need_ndk = не найдено: Android NDK (Android Studio > SDK Manager > NDK или ANDROID_NDK_HOME)
+tip.build_for = Собрать (Ctrl+B), для: %s

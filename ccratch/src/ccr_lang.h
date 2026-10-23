@@ -509,6 +509,25 @@
     X(SET_MODE_RELEASE_HINT, "set.mode_release_hint", 0, "Optimised (-O2): a faster program, a slower build. The bug button still builds for debugging") \
     X(SET_MODE_SANITIZE, "set.mode_sanitize", 0, "Bug hunt") \
     X(SET_MODE_SANITIZE_HINT, "set.mode_sanitize_hint", 0, "AddressSanitizer and UBSan: a bad pointer, an overflow or a leak stops the program and says where. Needs libasan and libubsan") \
+    X(SET_TARGET,       "set.target",            0, "Builds for")                        \
+    X(SET_TARGET_HINT,  "set.target_hint",       0, "One project, many machines: each gets its own build folder, and the assembly written for it. Ccratch looks for the tools each one needs") \
+    X(TARGET_NATIVE,    "target.native",         0, "This computer (%s)")                \
+    X(TARGET_NATIVE_HINT, "target.native_hint",  0, "Built and run right here")          \
+    X(TARGET_LINUX64,   "target.linux_arm64",    0, "Linux on 64-bit ARM")               \
+    X(TARGET_LINUX64_HINT, "target.linux_arm64_hint", 0, "Raspberry Pi 4 and 5, ARM boards and servers") \
+    X(TARGET_LINUX32,   "target.linux_arm32",    0, "Linux on 32-bit ARM")               \
+    X(TARGET_LINUX32_HINT, "target.linux_arm32_hint", 0, "Raspberry Pi OS 32-bit, older boards") \
+    X(TARGET_ANDROID64, "target.android_arm64",  0, "Android, 64-bit")                   \
+    X(TARGET_ANDROID64_HINT, "target.android_arm64_hint", 0, "Phones and tablets of the last ten years") \
+    X(TARGET_ANDROID32, "target.android_arm32",  0, "Android, 32-bit")                   \
+    X(TARGET_ANDROID32_HINT, "target.android_arm32_hint", 0, "Older phones")             \
+    X(TARGET_WITH,      "target.with",           0, "builds with %s")                    \
+    X(TARGET_RUNS_IN,   "target.runs_in",        0, "runs here in %s")                   \
+    X(TARGET_RUNS_PHONE, "target.runs_phone",    0, "runs on a phone plugged in (USB debugging on)") \
+    X(TARGET_NO_RUN,    "target.no_run",         0, "runs on the device itself: copy it there") \
+    X(TARGET_NEED_LINUX, "target.need_linux",    0, "not found: a cross gcc with its C library (Debian/Ubuntu: %s) or zig (ziglang.org, any distribution)") \
+    X(TARGET_NEED_NDK,  "target.need_ndk",       0, "not found: the Android NDK (Android Studio > SDK Manager > NDK, or ANDROID_NDK_HOME)") \
+    X(TIP_BUILD_FOR,    "tip.build_for",         0, "Build (Ctrl+B), for: %s")           \
     X(SET_RESET_LAYOUT, "set.reset_layout", 0, "Reset panel sizes") \
     X(SET_RESET_LAYOUT_HINT, "set.reset_layout_hint", 0, "The palette, the file list and the build panel as they were at first") \
     X(SET_CLEAR_RECENT, "set.clear_recent", 0, "Forget recent files") \

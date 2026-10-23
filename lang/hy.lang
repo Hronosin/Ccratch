@@ -552,3 +552,24 @@ palette.asm_nasm = NASM. նախ՝ ուր (mov rax, 1)։ ; նշանը սկսու�
 # ARM assembly
 palette.asm_arm64 = 64-բիթանոց ARM (AArch64՝ հեռախոսներ, Apple M, Raspberry Pi 4 և 5), GNU as. նախ՝ ուր (mov x0, #1)։ Թվերը՝ #-ով, // նշանը սկսում է մեկնաբանություն
 palette.asm_arm32 = 32-բիթանոց ARM և Thumb (32-բիթանոց Raspberry Pi OS, հին հեռախոսներ), GNU as. նախ՝ ուր (mov r0, #1)։ Թվերը՝ #-ով, @ նշանը սկսում է մեկնաբանություն
+
+# Build targets
+set.target = Որ մեքենայի համար
+set.target_hint = Մեկ նախագիծ, շատ մեքենաներ. ամեն մեկն ունի իր կառուցման թղթապանակը և իր համար գրված ասեմբլերը։ Ccratch-ը ինքն է փնտրում ամեն մեկի համար պետք գործիքները
+target.native = Այս համակարգիչը (%s)
+target.native_hint = Կառուցվում և աշխատում է հենց այստեղ
+target.linux_arm64 = Linux 64-բիթանոց ARM-ի վրա
+target.linux_arm64_hint = Raspberry Pi 4 և 5, ARM տախտակներ և սերվերներ
+target.linux_arm32 = Linux 32-բիթանոց ARM-ի վրա
+target.linux_arm32_hint = 32-բիթանոց Raspberry Pi OS, ավելի հին տախտակներ
+target.android_arm64 = Android, 64 բիթ
+target.android_arm64_hint = Վերջին տասը տարվա հեռախոսներ և պլանշետներ
+target.android_arm32 = Android, 32 բիթ
+target.android_arm32_hint = Ավելի հին հեռախոսներ
+target.with = կառուցվում է %s-ով
+target.runs_in = աշխատում է այստեղ՝ %s-ում
+target.runs_phone = աշխատում է միացված հեռախոսում (USB վրիպազերծումը միացված)
+target.no_run = աշխատում է հենց սարքի վրա. պատճենիր այնտեղ
+target.need_linux = չգտնվեց. խաչաձև gcc իր C գրադարանով (Debian/Ubuntu՝ %s) կամ zig (ziglang.org, ցանկացած բաշխում)
+target.need_ndk = չգտնվեց. Android NDK (Android Studio > SDK Manager > NDK կամ ANDROID_NDK_HOME)
+tip.build_for = Կառուցել (Ctrl+B), համար՝ %s

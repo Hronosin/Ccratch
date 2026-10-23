@@ -551,3 +551,24 @@ palette.asm_nasm = NASM: kohde ensin (mov rax, 1); ; aloittaa kommentin
 # ARM assembly
 palette.asm_arm64 = 64-bittinen ARM (AArch64: puhelimet, Apple M, Raspberry Pi 4 ja 5), GNU as: kohde ensin (mov x0, #1); luvut #-merkillä, // aloittaa kommentin
 palette.asm_arm32 = 32-bittinen ARM ja Thumb (32-bittinen Raspberry Pi OS, vanhat puhelimet), GNU as: kohde ensin (mov r0, #1); luvut #-merkillä, @ aloittaa kommentin
+
+# Build targets
+set.target = Mille koneelle
+set.target_hint = Yksi projekti, monta konetta: kullakin oma käännöskansio ja sille kirjoitettu assembly. Ccratch etsii kunkin tarvitsemat työkalut
+target.native = Tämä tietokone (%s)
+target.native_hint = Käännetään ja ajetaan tässä
+target.linux_arm64 = Linux 64-bittisellä ARMilla
+target.linux_arm64_hint = Raspberry Pi 4 ja 5, ARM-kortit ja -palvelimet
+target.linux_arm32 = Linux 32-bittisellä ARMilla
+target.linux_arm32_hint = 32-bittinen Raspberry Pi OS, vanhemmat kortit
+target.android_arm64 = Android, 64-bittinen
+target.android_arm64_hint = Viimeisen kymmenen vuoden puhelimet ja tabletit
+target.android_arm32 = Android, 32-bittinen
+target.android_arm32_hint = Vanhemmat puhelimet
+target.with = kääntäjä: %s
+target.runs_in = ajetaan täällä: %s
+target.runs_phone = ajetaan kytketyssä puhelimessa (USB-virheenkorjaus päällä)
+target.no_run = ajetaan itse laitteessa: kopioi se sinne
+target.need_linux = ei löytynyt: ristikääntäjä gcc ja sen C-kirjasto (Debian/Ubuntu: %s) tai zig (ziglang.org, mikä tahansa jakelu)
+target.need_ndk = ei löytynyt: Android NDK (Android Studio > SDK Manager > NDK tai ANDROID_NDK_HOME)
+tip.build_for = Käännä (Ctrl+B), kohde: %s

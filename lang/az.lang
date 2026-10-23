@@ -551,3 +551,24 @@ palette.asm_nasm = NASM: əvvəl haraya (mov rax, 1); ; şərh başladır
 # ARM assembly
 palette.asm_arm64 = 64 bitlik ARM (AArch64: telefonlar, Apple M, Raspberry Pi 4 və 5), GNU as: əvvəl haraya (mov x0, #1); ədədlər # ilə, // şərh başladır
 palette.asm_arm32 = 32 bitlik ARM və Thumb (32 bitlik Raspberry Pi OS, köhnə telefonlar), GNU as: əvvəl haraya (mov r0, #1); ədədlər # ilə, @ şərh başladır
+
+# Build targets
+set.target = Hansı maşın üçün
+set.target_hint = Bir layihə, çox maşın: hər birinin öz yığım qovluğu və onun üçün yazılmış assembleri var. Ccratch hər biri üçün lazım olan alətləri özü axtarır
+target.native = Bu kompüter (%s)
+target.native_hint = Elə burada yığılır və işə düşür
+target.linux_arm64 = 64 bitlik ARM-da Linux
+target.linux_arm64_hint = Raspberry Pi 4 və 5, ARM lövhələri və serverlər
+target.linux_arm32 = 32 bitlik ARM-da Linux
+target.linux_arm32_hint = 32 bitlik Raspberry Pi OS, köhnə lövhələr
+target.android_arm64 = Android, 64 bit
+target.android_arm64_hint = Son on ilin telefon və planşetləri
+target.android_arm32 = Android, 32 bit
+target.android_arm32_hint = Köhnə telefonlar
+target.with = %s ilə yığılır
+target.runs_in = burada %s içində işə düşür
+target.runs_phone = qoşulmuş telefonda işə düşür (USB sazlaması açıq)
+target.no_run = cihazın özündə işə düşür: ora köçür
+target.need_linux = tapılmadı: öz C kitabxanası ilə çarpaz gcc (Debian/Ubuntu: %s) və ya zig (ziglang.org, istənilən paylanma)
+target.need_ndk = tapılmadı: Android NDK (Android Studio > SDK Manager > NDK və ya ANDROID_NDK_HOME)
+tip.build_for = Yığ (Ctrl+B), hədəf: %s

@@ -551,3 +551,24 @@ palette.asm_nasm = NASM: avval qayerga (mov rax, 1); ; izohni boshlaydi
 # ARM assembly
 palette.asm_arm64 = 64 bitli ARM (AArch64: telefonlar, Apple M, Raspberry Pi 4 va 5), GNU as: avval qayerga (mov x0, #1); sonlar # bilan, // izohni boshlaydi
 palette.asm_arm32 = 32 bitli ARM va Thumb (32 bitli Raspberry Pi OS, eski telefonlar), GNU as: avval qayerga (mov r0, #1); sonlar # bilan, @ izohni boshlaydi
+
+# Build targets
+set.target = Qaysi mashina uchun
+set.target_hint = Bitta loyiha, ko'p mashina: har birining o'z yig'ish jildi va o'zi uchun yozilgan assembleri bor. Ccratch har biriga kerakli vositalarni o'zi qidiradi
+target.native = Shu kompyuter (%s)
+target.native_hint = Shu yerning o'zida yig'iladi va ishga tushadi
+target.linux_arm64 = 64 bitli ARM'dagi Linux
+target.linux_arm64_hint = Raspberry Pi 4 va 5, ARM platalari va serverlar
+target.linux_arm32 = 32 bitli ARM'dagi Linux
+target.linux_arm32_hint = 32 bitli Raspberry Pi OS, eskiroq platalar
+target.android_arm64 = Android, 64 bit
+target.android_arm64_hint = So'nggi o'n yillik telefon va planshetlar
+target.android_arm32 = Android, 32 bit
+target.android_arm32_hint = Eskiroq telefonlar
+target.with = %s bilan yig'iladi
+target.runs_in = bu yerda %s ichida ishga tushadi
+target.runs_phone = ulangan telefonda ishga tushadi (USB orqali sozlash yoqilgan)
+target.no_run = qurilmaning o'zida ishga tushadi: u yerga nusxala
+target.need_linux = topilmadi: o'z C kutubxonasi bilan kross-gcc (Debian/Ubuntu: %s) yoki zig (ziglang.org, istalgan distributiv)
+target.need_ndk = topilmadi: Android NDK (Android Studio > SDK Manager > NDK yoki ANDROID_NDK_HOME)
+tip.build_for = Yig'ish (Ctrl+B), maqsad: %s

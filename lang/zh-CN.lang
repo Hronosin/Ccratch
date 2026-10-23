@@ -552,3 +552,24 @@ palette.asm_nasm = NASM：目标在前 (mov rax, 1)；; 开始注释
 # ARM assembly
 palette.asm_arm64 = 64 位 ARM（AArch64：手机、Apple M、树莓派 4 和 5），GNU as：目标在前 (mov x0, #1)；数字以 # 开头，// 开始注释
 palette.asm_arm32 = 32 位 ARM 与 Thumb（32 位 Raspberry Pi OS、旧手机），GNU as：目标在前 (mov r0, #1)；数字以 # 开头，@ 开始注释
+
+# Build targets
+set.target = 构建目标
+set.target_hint = 一个项目，多种机器：每种都有自己的构建文件夹和为它写的汇编。Ccratch 会自己找每种需要的工具
+target.native = 这台电脑 (%s)
+target.native_hint = 就在这里构建并运行
+target.linux_arm64 = 64 位 ARM 上的 Linux
+target.linux_arm64_hint = 树莓派 4 和 5、ARM 开发板和服务器
+target.linux_arm32 = 32 位 ARM 上的 Linux
+target.linux_arm32_hint = 32 位树莓派系统、较旧的开发板
+target.android_arm64 = Android 64 位
+target.android_arm64_hint = 近十年的手机和平板
+target.android_arm32 = Android 32 位
+target.android_arm32_hint = 较旧的手机
+target.with = 用 %s 构建
+target.runs_in = 在这里用 %s 运行
+target.runs_phone = 在连接的手机上运行（打开 USB 调试）
+target.no_run = 在设备本身上运行：复制过去
+target.need_linux = 未找到：带 C 库的交叉 gcc（Debian/Ubuntu：%s）或 zig（ziglang.org，任何发行版）
+target.need_ndk = 未找到：Android NDK（Android Studio > SDK Manager > NDK，或 ANDROID_NDK_HOME）
+tip.build_for = 构建 (Ctrl+B)，目标：%s

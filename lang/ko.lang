@@ -552,3 +552,24 @@ palette.asm_nasm = NASM: 대상이 먼저 (mov rax, 1); ; 는 주석의 시작
 # ARM assembly
 palette.asm_arm64 = 64비트 ARM (AArch64: 휴대폰, Apple M, Raspberry Pi 4·5), GNU as: 대상이 먼저 (mov x0, #1); 숫자는 #, // 는 주석의 시작
 palette.asm_arm32 = 32비트 ARM과 Thumb (32비트 Raspberry Pi OS, 오래된 휴대폰), GNU as: 대상이 먼저 (mov r0, #1); 숫자는 #, @ 는 주석의 시작
+
+# Build targets
+set.target = 빌드 대상
+set.target_hint = 하나의 프로젝트, 여러 기계: 기계마다 빌드 폴더와 그 기계용 어셈블리가 따로 있습니다. 필요한 도구는 Ccratch가 찾습니다
+target.native = 이 컴퓨터 (%s)
+target.native_hint = 여기서 빌드하고 여기서 실행
+target.linux_arm64 = 64비트 ARM의 Linux
+target.linux_arm64_hint = Raspberry Pi 4·5, ARM 보드와 서버
+target.linux_arm32 = 32비트 ARM의 Linux
+target.linux_arm32_hint = 32비트 Raspberry Pi OS, 오래된 보드
+target.android_arm64 = Android 64비트
+target.android_arm64_hint = 지난 10년간의 휴대폰과 태블릿
+target.android_arm32 = Android 32비트
+target.android_arm32_hint = 오래된 휴대폰
+target.with = %s(으)로 빌드
+target.runs_in = 여기서 %s(으)로 실행
+target.runs_phone = 연결된 휴대폰에서 실행 (USB 디버깅 켜기)
+target.no_run = 기기 자체에서 실행: 그쪽으로 복사하세요
+target.need_linux = 찾을 수 없음: C 라이브러리가 있는 크로스 gcc (Debian/Ubuntu: %s) 또는 zig (ziglang.org, 어느 배포판이든)
+target.need_ndk = 찾을 수 없음: Android NDK (Android Studio > SDK Manager > NDK 또는 ANDROID_NDK_HOME)
+tip.build_for = 빌드 (Ctrl+B), 대상: %s

@@ -5,6 +5,7 @@
 #include "ccr_ccdb.h"
 #include "ccr_choice.h"
 #include "ccr_asm.h"
+#include "ccr_target.h"
 #include "ccr_cmake.h"
 #include "ccr_codegen.h"
 #include "ccr_config.h"
@@ -2277,6 +2278,18 @@ static void marks_follow(ccr_document *doc)
 /* Saves what changed (every open file), makes a CMakeLists.txt if the
  * project has none, and starts the build. */
 static ccr_build_mode g_build_mode;   /* the build button builds so (Settings > Building) */
+static ccr_target_kind g_build_target;   /* ...for this machine (Settings > Building) */
+
+/* A target's name, in the interface's language. */
+static void target_name(ccr_target_kind k, char *out, size_t cap)
+{
+    static const ccr_text names[CCR_TARGET_COUNT] = { CCR_T_TARGET_NATIVE, CCR_T_TARGET_LINUX64, CCR_T_TARGET_LINUX32,
+                                                      CCR_T_TARGET_ANDROID64, CCR_T_TARGET_ANDROID32 };
+    if (k == CCR_TARGET_NATIVE)
+        ccr_trf(out, cap, names[k], ccr_target_host_machine());
+    else
+        snprintf(out, cap, "%s", ccr_tr(names[(unsigned)k < CCR_TARGET_COUNT ? k : 0]));
+}
 
 static void rub_ask(void);
 
@@ -2333,6 +2346,7 @@ static void build_start(ccr_document *doc, bool run, const ccr_options *opt)
         remember_places(all[i]);   /* the files as the compiler will see them */
     /* the bug button wants something to debug: an optimised build would not do */
     g_job.mode = g_dbg.pending && g_build_mode == CCR_BUILD_RELEASE ? CCR_BUILD_DEBUG : g_build_mode;
+    g_job.target = g_dbg.pending ? CCR_TARGET_NATIVE : g_build_target;   /* gdb debugs it here */
     ccr_job_build(&g_job, project, run);
     g_bp.last = CCR_JOB_RUNNING;
 }
@@ -9428,6 +9442,7 @@ static struct {
     int            n_themes;
     ccr_lang_info  langs[64];
     int            n_langs;
+    ccr_target_info targets[CCR_TARGET_COUNT];   /* what was found for each, when it opened */
 } g_set;
 
 static const float g_delays[] = { 0.5f, 1.0f, 1.5f, 3.0f, 5.0f, 10.0f };
@@ -9449,6 +9464,8 @@ static void settings_load(void)
     g_grid = !(ccr_config_get("grid", v, sizeof v) && strcmp(v, "off") == 0);
     g_palette_std = !(ccr_config_get("palette_std", v, sizeof v) && strcmp(v, "off") == 0);
     g_git.blame_on = ccr_config_get("git_authors", v, sizeof v) && strcmp(v, "on") == 0;
+    if (ccr_config_get("build_target", v, sizeof v) && ccr_target_from_key(v) >= 0)
+        g_build_target = (ccr_target_kind)ccr_target_from_key(v);
 }
 
 static void settings_remember(const char *key, const char *value)
@@ -9466,6 +9483,8 @@ static void settings_toggle(void)
     g_set.scroll = 0.0f;
     g_set.n_themes = ccr_theme_scan(g_set.themes, 32);
     g_set.n_langs = ccr_lang_scan(g_set.langs, 64);
+    for (int k = 0; k < CCR_TARGET_COUNT; ++k)
+        ccr_target_probe((ccr_target_kind)k, &g_set.targets[k]);
 }
 
 /* A switch, drawn: on is the accent with the knob on the right. */
@@ -9787,8 +9806,63 @@ static bool settings_frame(int w, int h, ccr_document *doc, float dt)
         y += ch + 10.0f;
         static const char *const dirs[CCR_BUILD_MODE_COUNT] = { ".ccratch/build", ".ccratch/build-release",
                                                                 ".ccratch/build-sanitize" };
-        ccr_gui_text(dirs[g_build_mode], area.x + 14.0f, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
-        y += 24.0f;
+        char folder[96];
+        snprintf(folder, sizeof folder, "%s%s", dirs[g_build_mode], ccr_target_suffix(g_build_target));
+        ccr_gui_text(folder, area.x + 14.0f, y, 13.0f, ccr_th(CCR_C_PANEL_HINT));
+        y += 34.0f;
+
+        /* what for: this computer, a Pi, a phone; each with what was found for it */
+        ccr_gui_text(ccr_tr(CCR_T_SET_TARGET), area.x + 14.0f, y, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+        y += 22.0f;
+        y += wrap_text(ccr_tr(CCR_T_SET_TARGET_HINT), area.x + 14.0f, y, area.w - 28.0f, 13.0f,
+                       ccr_th(CCR_C_PANEL_HINT), true) + 8.0f;
+        static const ccr_text hints[CCR_TARGET_COUNT] = { CCR_T_TARGET_NATIVE_HINT, CCR_T_TARGET_LINUX64_HINT,
+                                                          CCR_T_TARGET_LINUX32_HINT, CCR_T_TARGET_ANDROID64_HINT,
+                                                          CCR_T_TARGET_ANDROID32_HINT };
+        for (int k = 0; k < CCR_TARGET_COUNT; ++k) {
+            const ccr_target_info *t = &g_set.targets[k];
+            const ccr_rect c = { area.x + 14.0f, y, area.w - 28.0f, 56.0f };
+            const bool cur = (int)g_build_target == k, over = input && point_in(m, c) && point_in(m, area);
+            ccr_gui_rect_rounded(c, 0.14f, cur ? COL_ACCENT : over ? ccr_th(CCR_C_HOT) : ccr_th(CCR_C_PANEL_EDGE));
+            ccr_gui_rect_rounded((ccr_rect){ c.x + 2, c.y + 2, c.w - 4, c.h - 4 }, 0.14f, ccr_th(CCR_C_BG));
+            const ccr_vec2 dot = { c.x + 18.0f, c.y + 19.0f };   /* a radio button */
+            ccr_gui_circle(dot, 7.0f, cur ? COL_ACCENT : ccr_th(CCR_C_FIELD_EDGE));
+            ccr_gui_circle(dot, 5.0f, ccr_th(CCR_C_BG));
+            if (cur)
+                ccr_gui_circle(dot, 3.5f, COL_ACCENT);
+            char name[160];
+            target_name((ccr_target_kind)k, name, sizeof name);
+            ccr_gui_clip_begin((ccr_rect){ c.x, c.y, c.w - 4.0f, c.h });
+            ccr_gui_text(name, c.x + 34.0f, c.y + 9.0f, 16.0f, ccr_th(CCR_C_PANEL_TEXT));
+            ccr_gui_text(ccr_tr(hints[k]), c.x + 44.0f + ccr_gui_text_width(name, 16.0f), c.y + 12.0f, 12.5f,
+                         ccr_th(CCR_C_PANEL_HINT));
+            /* what was found: green, or what it wants: orange */
+            char st[700], with[300], run[300];
+            if (t->how == CCR_HOW_NONE) {
+                if (k >= CCR_TARGET_ANDROID_ARM64)
+                    snprintf(st, sizeof st, "%s", ccr_tr(CCR_T_TARGET_NEED_NDK));
+                else
+                    ccr_trf(st, sizeof st, CCR_T_TARGET_NEED_LINUX,
+                            k == CCR_TARGET_LINUX_ARM32 ? "gcc-arm-linux-gnueabihf" : "gcc-aarch64-linux-gnu");
+            } else {
+                ccr_trf(with, sizeof with, CCR_T_TARGET_WITH, t->compiler);
+                if (t->how == CCR_HOW_NDK)
+                    snprintf(run, sizeof run, "%s", ccr_tr(t->can_run ? CCR_T_TARGET_RUNS_PHONE : CCR_T_TARGET_NO_RUN));
+                else if (k != CCR_TARGET_NATIVE && t->can_run && t->runner[0])
+                    ccr_trf(run, sizeof run, CCR_T_TARGET_RUNS_IN, base_name(t->runner));
+                else
+                    snprintf(run, sizeof run, "%s", k == CCR_TARGET_NATIVE || t->can_run ? "" : ccr_tr(CCR_T_TARGET_NO_RUN));
+                snprintf(st, sizeof st, "%s%s%s", with, run[0] ? "; " : "", run);
+            }
+            ccr_gui_text(st, c.x + 34.0f, c.y + 32.0f, 12.5f, t->how == CCR_HOW_NONE ? 0xE8912DFFu : 0x3FAE5AFFu);
+            ccr_gui_clip_end();
+            if (over && ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) && !cur) {
+                g_build_target = (ccr_target_kind)k;
+                settings_remember("build_target", ccr_target_key(g_build_target));
+            }
+            y += 62.0f;
+        }
+        y += 6.0f;
         break;
     }
     case SET_PLUGINS: {
@@ -9988,11 +10062,20 @@ static int draw_topbar(int width, ccr_document *doc, eula_view *ev)
     float x = (float)width - 10.0f;
 
     /* build, run, stop: what makes the program go */
-    const char *bl = ccr_tr(CCR_T_BUILD);
+    char bl[96];   /* for another machine: it says which */
+    snprintf(bl, sizeof bl, "%s%s%s", ccr_tr(CCR_T_BUILD), g_build_target ? " \xC2\xB7 " : "",
+             ccr_target_short(g_build_target));
     const float bw = ccr_gui_text_width(bl, 16.0f) + 28.0f;
     x -= bw;
-    if (ccr_gui_button((ccr_rect){ x, y, bw, bh }, bl, busy ? bs : &main_) && !modal)
+    const ccr_rect build_r = { x, y, bw, bh };
+    if (ccr_gui_button(build_r, bl, busy ? bs : &main_) && !modal)
         clicked |= busy ? TOP_STOP : TOP_BUILD;
+    if (!modal && point_in(ccr_gui_mouse(), build_r)) {
+        char tn[160], tt[240];
+        target_name(g_build_target, tn, sizeof tn);
+        ccr_trf(tt, sizeof tt, CCR_T_TIP_BUILD_FOR, tn);
+        tip(build_r, tt);
+    }
     x -= gap + 36.0f;
     const ccr_rect flag = { x, y, 36.0f, bh };
     if (ccr_gui_button(flag, "", bs) && !modal)

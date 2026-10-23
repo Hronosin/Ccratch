@@ -180,3 +180,10 @@ files.name_file = Имя файла (.c, .h, .s или .asm), Enter — созд
 # ARM assembly
 palette.asm_arm64 = 64-битный ARM (AArch64: телефоны, Apple M, Raspberry Pi 4 и 5), GNU as: сначала куда (mov x0, #1); числа с #, // начинает комментарий
 palette.asm_arm32 = 32-битный ARM и Thumb (32-битная Raspberry Pi OS, старые телефоны), GNU as: сначала куда (mov r0, #1); числа с #, @ начинает комментарий
+
+# Build targets
+set.target = Для какого устройства
+set.target_hint = Одна программа — для разных устройств: этого компьютера, Raspberry Pi или телефона. Для каждого Ccratch делает свою копию и сам ищет, чем её сделать
+target.with = делается через %s
+target.need_linux = не хватает инструментов: в Debian/Ubuntu поставь пакет %s, в любом другом Linux — zig с ziglang.org
+tip.build_for = Сделать программу (Ctrl+B), для: %s

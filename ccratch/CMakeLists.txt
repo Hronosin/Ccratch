@@ -45,6 +45,7 @@ endforeach()
 add_library(ccratch_core OBJECT
     src/ccr_api.c
     src/ccr_asm.c
+    src/ccr_target.c
     src/ccr_cmake.c
     src/ccr_build.c
     src/ccr_proc.c

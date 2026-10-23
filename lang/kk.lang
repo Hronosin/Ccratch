@@ -551,3 +551,24 @@ palette.asm_nasm = NASM: алдымен қайда (mov rax, 1); ; түсіні�
 # ARM assembly
 palette.asm_arm64 = 64 биттік ARM (AArch64: телефондар, Apple M, Raspberry Pi 4 және 5), GNU as: алдымен қайда (mov x0, #1); сандар # белгісімен, // түсініктеме бастайды
 palette.asm_arm32 = 32 биттік ARM және Thumb (32 биттік Raspberry Pi OS, ескі телефондар), GNU as: алдымен қайда (mov r0, #1); сандар # белгісімен, @ түсініктеме бастайды
+
+# Build targets
+set.target = Қай машина үшін
+set.target_hint = Бір жоба, көп машина: әрқайсысының өз жинау қалтасы және өзіне жазылған ассемблері бар. Ccratch әрқайсысына керек құралдарды өзі іздейді
+target.native = Осы компьютер (%s)
+target.native_hint = Дәл осында жиналады және іске қосылады
+target.linux_arm64 = 64 биттік ARM-дағы Linux
+target.linux_arm64_hint = Raspberry Pi 4 және 5, ARM тақталары мен серверлер
+target.linux_arm32 = 32 биттік ARM-дағы Linux
+target.linux_arm32_hint = 32 биттік Raspberry Pi OS, ескірек тақталар
+target.android_arm64 = Android, 64 бит
+target.android_arm64_hint = Соңғы он жылдың телефондары мен планшеттері
+target.android_arm32 = Android, 32 бит
+target.android_arm32_hint = Ескірек телефондар
+target.with = %s арқылы жиналады
+target.runs_in = мұнда %s ішінде іске қосылады
+target.runs_phone = қосылған телефонда іске қосылады (USB арқылы жөндеу қосулы)
+target.no_run = құрылғының өзінде іске қосылады: соған көшір
+target.need_linux = табылмады: өз C кітапханасы бар кросс-gcc (Debian/Ubuntu: %s) немесе zig (ziglang.org, кез келген дистрибутив)
+target.need_ndk = табылмады: Android NDK (Android Studio > SDK Manager > NDK немесе ANDROID_NDK_HOME)
+tip.build_for = Жинау (Ctrl+B), мақсат: %s

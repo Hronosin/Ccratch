@@ -19,7 +19,8 @@ main:
         mov     r4, #1                  @ i = 1
 
 .Lagain:
-        ldr     r0, =fmt                @ printf(fmt, i)
+        ldr     r0, .Lfmt               @ printf(fmt, i): how far fmt is from .Lhere...
+.Lhere: add     r0, pc, r0              @ ...plus where we are (pc reads 8 ahead)
         mov     r1, r4
         bl      printf
         add     r4, r4, #1              @ i++
@@ -28,6 +29,8 @@ main:
 
         mov     r0, #0                  @ return 0
         pop     {r4, pc}                @ and back, through the saved lr
+
+.Lfmt:  .word   fmt - (.Lhere + 8)      @ an address relative to the code: works wherever it loads
         .size   main, .-main
 
         .section .note.GNU-stack,"",%progbits

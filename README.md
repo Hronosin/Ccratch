@@ -39,6 +39,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 28: arrangements of your own (a builder, and files to write by hand), one of them for files opening for the first time; Code Hater reads context.
 - Step 29: assembly as blocks: `.s`/`.S`/`.asm` files (GNU as, AT&T or Intel, and NASM) and `asm()` inside C; plugins with settings of their own; Code Hater learns assembly, a hundred new ways to say it, and a mother cat who rubs your nose in the bug.
 - Step 30: ARM assembly too: 64-bit (AArch64: phones, Apple M chips, Raspberry Pi 4/5) and 32-bit ARM/Thumb, told from x86 by what the file says; Code Hater learns ARM's ways back (`bl` and the link register).
+- Step 31: builds for other machines: Linux on 64-bit and 32-bit ARM (a Raspberry Pi) and Android, with a cross gcc, zig, clang or the NDK, run in qemu or on a phone over adb; one CMakeLists picks each machine's assembly.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -467,10 +468,12 @@ beside the tab says what it decided: **AArch64** or **ARM**.
 The tests have clang write the same C for AArch64, ARM and Thumb (clang
 can, for any machine, with no cross compiler installed), read it, save
 it untouched and rebuilt and with every instruction printed anew, then
-have clang assemble both and compare the bytes. The Build button builds
-the assembly for the machine it runs on and leaves the rest out with a
-note in the CMakeLists (an ARM file on a PC needs a cross compiler, or a
-Raspberry Pi).
+have clang assemble both and compare the bytes. The CMakeLists.txt
+Ccratch makes builds each machine's assembly on that machine: the x86
+files on a PC, the AArch64 ones for a Raspberry Pi 4 or a phone, and so
+on (by `CMAKE_SYSTEM_PROCESSOR`), so one project with a `hello.s` and a
+`hello_arm64.s` builds everywhere. To build the ARM one on a PC, pick the
+machine in Settings ([For another machine](#for-another-machine)).
 
 ![examples/hello_arm64.s as blocks: stp x29, x30, [sp, #-32]!, adrp and add :lo12:, bl printf, b.le .Lagain with its arrow back to the label](docs/asm_arm.png)
 
@@ -702,6 +705,45 @@ The bug button always builds something it can debug: in Release it
 builds Debug for that run.
 
 ![a build that failed: the log at the bottom, an unused variable outlined in orange, the if with the misspelled name in red, the compiler's message under the mouse](docs/build.png)
+
+### For another machine
+
+**Settings > Building > Builds for** picks the machine the Build button
+builds for: this computer, Linux on 64-bit or 32-bit ARM (a Raspberry Pi,
+an ARM board or server), or Android on either (a phone). Each card says
+what Ccratch found to build it with and where it can run, or, in orange,
+what it is missing. The button says which, when it is not this computer:
+**Build · arm64**.
+
+![Settings, Building: Builds for, five cards: this computer (builds with cc), Linux on 64-bit ARM (aarch64-linux-gnu-gcc, runs here in qemu-aarch64) picked, Linux on 32-bit ARM (arm-linux-gnueabihf-gcc, qemu-arm), and two Android cards wanting the NDK](docs/targets.png)
+
+| For | Built with, in this order | Run with |
+| --- | --- | --- |
+| Linux, 64-bit ARM | `aarch64-linux-gnu-gcc` and its C library; else `zig cc`; else `clang` with a sysroot and `lld` | `qemu-aarch64`, if installed |
+| Linux, 32-bit ARM | `arm-linux-gnueabihf-gcc`; else `zig cc`; else `clang` | `qemu-arm` |
+| Android, 64-bit / 32-bit | the NDK (`$ANDROID_NDK_HOME`, `$ANDROID_NDK_ROOT`, or the newest in `~/Android/Sdk/ndk`), Android 7 and up | `adb`: a phone plugged in, with USB debugging on |
+
+- **Debian, Ubuntu**: `sudo apt install gcc-aarch64-linux-gnu
+  gcc-arm-linux-gnueabihf qemu-user` is all of it.
+- **Anywhere else** (Fedora's cross gcc builds kernels, not programs: it
+  comes with no C library): [zig](https://ziglang.org) is one download
+  that builds for every machine, with its own C library, and the program
+  it makes is static, so it runs on any Linux of that machine (and in
+  `qemu-aarch64` with nothing else). `sudo dnf install qemu-user` to run.
+- `CCRATCH_CROSS=gcc`, `zig` or `clang` picks one of them when several
+  are there.
+
+Each machine gets its own build folder (`.ccratch/build-arm64`,
+`.ccratch/build-release-arm32`, `.ccratch/build-android-arm64`...), so
+switching throws nothing away, and CMake is handed a toolchain file
+(written into that folder, or the NDK's own). **Run** runs it in qemu, or
+pushes it to the phone (`/data/local/tmp`) and runs it there, with its
+output in the log; with nothing to run it, the log says where the program
+is, to copy over. Bug hunt builds Debug for another machine (the
+sanitizers want their own runtime there), and the bug button debugs on
+this computer only.
+
+![the build log: cmake --build .ccratch/build-arm64, then qemu-aarch64 -L /usr/aarch64-linux-gnu running the program: 1 to 5, the program finished (code 0)](docs/target_run.png)
 
 ## Debugging
 
@@ -1129,6 +1171,7 @@ ccratch/    libccratch   - the whole IDE in one library (modular monolith)
   ccr_asm     assembly (.s, .asm, asm() in C; x86 and ARM) into the same tree, as blocks
   ccr_build   the project as something to build: a first CMakeLists.txt
   ccr_job     the Build button: configure, build, run; output read for errors
+  ccr_target  machines to build for: tools found, toolchain files, qemu and adb
   ccr_proc    a program in the background, its output read line by line
   ccr_yaml    the bit of YAML block packs are written in
   ccr_pie     the pie menu: picks an action by direction, knows no editor
@@ -1260,7 +1303,8 @@ in five sections. Every change takes at once and is remembered:
 - **Editor**: autosave and how long after a change it waits, the minimap,
   the dots on the canvas, the standard library's blocks, block
   explanations, Git authors beside blocks;
-- **Building**: Debug, Release or Bug hunt (above);
+- **Building**: Debug, Release or Bug hunt, and the machine to build for
+  (above);
 - **Plugins**: each plugin's switch, and its own settings under it;
 - **Other**: panel sizes back to how they were, forget the recent files,
   the agreement once more. Where the settings file is, at the bottom.
@@ -1284,6 +1328,7 @@ explain = on
 palette_std = on
 git_authors = off
 build_mode = sanitize
+build_target = linux-arm64
 plugin.code_hater = on
 plugin.code_hater.brutality = mother_cat
 plugin.code_hater.nits = off

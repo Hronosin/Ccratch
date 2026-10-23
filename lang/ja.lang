@@ -552,3 +552,24 @@ palette.asm_nasm = NASM: 先に転送先 (mov rax, 1)。; はコメントの始�
 # ARM assembly
 palette.asm_arm64 = 64 ビット ARM (AArch64: スマホ、Apple M、Raspberry Pi 4・5)、GNU as: 先に転送先 (mov x0, #1)。数値は #、// はコメントの始まり
 palette.asm_arm32 = 32 ビット ARM と Thumb (32 ビット版 Raspberry Pi OS、古いスマホ)、GNU as: 先に転送先 (mov r0, #1)。数値は #、@ はコメントの始まり
+
+# Build targets
+set.target = ビルド先
+set.target_hint = ひとつのプロジェクトを複数のマシン向けに。それぞれ専用のビルドフォルダーと、そのマシン用のアセンブリを使います。必要なツールは Ccratch が探します
+target.native = このコンピューター (%s)
+target.native_hint = ここでビルドしてここで実行
+target.linux_arm64 = 64 ビット ARM の Linux
+target.linux_arm64_hint = Raspberry Pi 4・5、ARM ボードやサーバー
+target.linux_arm32 = 32 ビット ARM の Linux
+target.linux_arm32_hint = 32 ビット版 Raspberry Pi OS、古いボード
+target.android_arm64 = Android 64 ビット
+target.android_arm64_hint = ここ十年のスマホとタブレット
+target.android_arm32 = Android 32 ビット
+target.android_arm32_hint = 古いスマホ
+target.with = %s でビルド
+target.runs_in = ここで %s を使って実行
+target.runs_phone = 接続したスマホで実行 (USB デバッグをオンに)
+target.no_run = その機器の上で実行: コピーして持っていく
+target.need_linux = 見つかりません: C ライブラリ付きのクロス gcc (Debian/Ubuntu: %s) か zig (ziglang.org、どのディストリビューションでも)
+target.need_ndk = 見つかりません: Android NDK (Android Studio > SDK Manager > NDK、または ANDROID_NDK_HOME)
+tip.build_for = ビルド (Ctrl+B)、ビルド先: %s

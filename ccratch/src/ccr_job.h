@@ -3,7 +3,8 @@
  * the background, the program runs after, and what the compiler, the
  * linker and CMake say is read for errors that point at code.
  *
- * The build goes into PROJECT/.ccratch/build, out of the way of any build
+ * The build goes into PROJECT/.ccratch/build (build-release..., and
+ * -arm64, -android-arm64... for another machine: ccr_target), out of the way of any build
  * folder of the project's own (Debug, compile_commands.json for tools).
  * Steps: configure (only when that folder has no build yet), build, and,
  * if asked, run.
@@ -14,6 +15,7 @@
 #define CCR_JOB_H
 
 #include "ccr_proc.h"
+#include "ccr_target.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -86,6 +88,8 @@ typedef struct ccr_san_state {
 typedef struct ccr_job {
     ccr_job_step   step;
     ccr_build_mode mode;             /* set before ccr_job_build */
+    ccr_target_kind target;          /* and what it builds for (this computer: 0) */
+    ccr_target_info tinfo;           /* what was found for it */
     ccr_job_result result;
     ccr_proc       proc;
     bool           run_after;

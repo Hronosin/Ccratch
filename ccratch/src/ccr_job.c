@@ -453,7 +453,7 @@ static void make_dirs(const char *dir)
 static bool start_configure(ccr_job *j)
 {
     make_dirs(j->build_dir);
-    const char *argv[16];
+    const char *argv[20];
     int n = 0;
     argv[n++] = "cmake";
     argv[n++] = "-S";
@@ -468,13 +468,18 @@ static bool start_configure(ccr_job *j)
         argv[n++] = "-DCMAKE_BUILD_TYPE=Release";
     } else {
         argv[n++] = "-DCMAKE_BUILD_TYPE=Debug";
-        if (j->mode == CCR_BUILD_SANITIZE) {   /* MSVC would want /fsanitize=address; this is gcc and clang */
+        if (j->mode == CCR_BUILD_SANITIZE && j->target == CCR_TARGET_NATIVE) {   /* MSVC would want /fsanitize=address; this is gcc and clang */
             argv[n++] = "-DCMAKE_C_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer";
             argv[n++] = "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer";
             argv[n++] = "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined";
         }
     }
     argv[n++] = "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON";
+    static char store[4096];
+    if (!ccr_target_cmake_args(&j->tinfo, j->build_dir, argv, &n, 15, store, sizeof store)) {
+        say(j, CCR_LOG_BAD, "could not write the toolchain file into %s", j->build_dir);
+        return false;
+    }
     argv[n] = NULL;
     j->step = CCR_JOB_CONFIGURE;
     return start(j, argv, j->project, true);
@@ -506,8 +511,16 @@ bool ccr_job_build(ccr_job *j, const char *project, bool run_after)
     say(j, CCR_LOG_QUIET, "project: %s", project);
     snprintf(j->project, sizeof j->project, "%s", project);
     static const char *const dirs[CCR_BUILD_MODE_COUNT] = { "build", "build-release", "build-sanitize" };
-    snprintf(j->build_dir, sizeof j->build_dir, "%s/.ccratch/%s", project,
-             dirs[(unsigned)j->mode < CCR_BUILD_MODE_COUNT ? j->mode : 0]);
+    /* another machine: no sanitizers there (they are for this one), its own folder */
+    if (j->target != CCR_TARGET_NATIVE && j->mode == CCR_BUILD_SANITIZE)
+        j->mode = CCR_BUILD_DEBUG;
+    snprintf(j->build_dir, sizeof j->build_dir, "%s/.ccratch/%s%s", project,
+             dirs[(unsigned)j->mode < CCR_BUILD_MODE_COUNT ? j->mode : 0], ccr_target_suffix(j->target));
+    ccr_target_probe(j->target, &j->tinfo);
+    if (j->target != CCR_TARGET_NATIVE)
+        say(j, CCR_LOG_QUIET, "for: %s, with %s%s%s", ccr_target_key(j->target),
+            j->tinfo.how != CCR_HOW_NONE ? j->tinfo.compiler : "nothing found",
+            j->tinfo.can_run && j->tinfo.runner[0] ? "; runs in " : "", j->tinfo.can_run ? j->tinfo.runner : "");
     j->exe[0] = '\0';
     j->run_after = run_after;
     j->ran = false;
@@ -517,6 +530,21 @@ bool ccr_job_build(ccr_job *j, const char *project, bool run_after)
     if (!ccr_proc_in_path("cmake")) {
         say(j, CCR_LOG_BAD, "cmake: not found. Install CMake (dnf install cmake) and try again.");
         done(j, CCR_JOB_NO_CMAKE);
+        return false;
+    }
+    if (j->tinfo.how == CCR_HOW_NONE) {
+        static const char *const need[CCR_TARGET_COUNT] = {
+            "",
+            "aarch64-linux-gnu-gcc with its C library (Debian/Ubuntu: apt install gcc-aarch64-linux-gnu), "
+            "or zig (ziglang.org: one download builds for every machine, on any Linux)",
+            "arm-linux-gnueabihf-gcc with its C library (Debian/Ubuntu: apt install gcc-arm-linux-gnueabihf), "
+            "or zig (ziglang.org: one download builds for every machine, on any Linux)",
+            "the Android NDK (Android Studio > SDK Manager > NDK, or set ANDROID_NDK_HOME)",
+            "the Android NDK (Android Studio > SDK Manager > NDK, or set ANDROID_NDK_HOME)",
+        };
+        say(j, CCR_LOG_BAD, "nothing here builds for %s: it wants %s", ccr_target_key(j->target),
+            need[(unsigned)j->target < CCR_TARGET_COUNT ? j->target : 0]);
+        done(j, CCR_JOB_FAILED);
         return false;
     }
     /* configured already (and the generator wrote its files): straight on;
@@ -541,7 +569,17 @@ bool ccr_job_run(ccr_job *j)
     j->step = CCR_JOB_RUN;
     j->ran = true;
     j->san = (ccr_san_state){ 0 };
-    const char *argv[] = { j->exe, NULL };
+    const char *argv[12];
+    static char store[2048];
+    if (!ccr_target_run_argv(&j->tinfo, j->exe, argv, store, sizeof store)) {
+        /* built for a machine that is not here: that is the end of it */
+        say(j, CCR_LOG_GOOD, "built for %s: %s (to run it here: %s)", ccr_target_key(j->target), j->exe,
+            j->tinfo.how == CCR_HOW_NDK ? "adb and a phone with USB debugging"
+                                        : j->target == CCR_TARGET_LINUX_ARM32 ? "qemu-arm" : "qemu-aarch64");
+        j->ran = false;
+        done(j, CCR_JOB_BUILT);
+        return true;
+    }
     if (!start(j, argv, j->project, false)) {   /* its own language: it is the user's program */
         done(j, CCR_JOB_FAILED);
         return false;

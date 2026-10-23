@@ -164,3 +164,10 @@ set.mode_debug_hint = Quick to make, and Step by step can look inside it. Pick t
 set.mode_release = Fast
 set.mode_release_hint = The finished program runs faster, but making it takes longer. Step by step still makes its own everyday copy
 set.mode_sanitize_hint = The program is watched while it runs: if it touches memory it should not, or forgets to give memory back, it stops and the block that did it turns red. Needs libasan and libubsan
+
+# Build targets
+set.target = Which device
+set.target_hint = One program, for different devices: this computer, a Raspberry Pi or a phone. Ccratch makes a copy for each, and finds what it needs to make it
+target.with = made with %s
+target.need_linux = missing tools: on Debian/Ubuntu install the %s package; on any other Linux, zig from ziglang.org
+tip.build_for = Make the program (Ctrl+B), for: %s

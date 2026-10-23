@@ -551,3 +551,24 @@ palette.asm_nasm = NASM: аввал ба куҷо (mov rax, 1); ; шарҳро �
 # ARM assembly
 palette.asm_arm64 = ARM-и 64-битӣ (AArch64: телефонҳо, Apple M, Raspberry Pi 4 ва 5), GNU as: аввал ба куҷо (mov x0, #1); ададҳо бо #, // шарҳро сар мекунад
 palette.asm_arm32 = ARM ва Thumb-и 32-битӣ (Raspberry Pi OS-и 32-битӣ, телефонҳои кӯҳна), GNU as: аввал ба куҷо (mov r0, #1); ададҳо бо #, @ шарҳро сар мекунад
+
+# Build targets
+set.target = Барои кадом мошин
+set.target_hint = Як лоиҳа, мошинҳои бисёр: ҳар яке ҷузвдони сохтан ва ассемблери барои худ навиштаашро дорад. Ccratch абзорҳои лозимаи ҳар якро худаш меҷӯяд
+target.native = Ҳамин компютер (%s)
+target.native_hint = Худи ҳамин ҷо сохта ва иҷро мешавад
+target.linux_arm64 = Linux дар ARM-и 64-битӣ
+target.linux_arm64_hint = Raspberry Pi 4 ва 5, лавҳаҳо ва серверҳои ARM
+target.linux_arm32 = Linux дар ARM-и 32-битӣ
+target.linux_arm32_hint = Raspberry Pi OS-и 32-битӣ, лавҳаҳои кӯҳнатар
+target.android_arm64 = Android, 64-битӣ
+target.android_arm64_hint = Телефону планшетҳои даҳ соли охир
+target.android_arm32 = Android, 32-битӣ
+target.android_arm32_hint = Телефонҳои кӯҳнатар
+target.with = бо %s сохта мешавад
+target.runs_in = дар ин ҷо дар %s иҷро мешавад
+target.runs_phone = дар телефони пайвастшуда иҷро мешавад (бо ислоҳи USB)
+target.no_run = дар худи дастгоҳ иҷро мешавад: ба он ҷо нусха бардор
+target.need_linux = ёфт нашуд: gcc-и салибӣ бо китобхонаи C-и худ (Debian/Ubuntu: %s) ё zig (ziglang.org, ҳар дистрибутив)
+target.need_ndk = ёфт нашуд: Android NDK (Android Studio > SDK Manager > NDK ё ANDROID_NDK_HOME)
+tip.build_for = Сохтан (Ctrl+B), барои: %s
