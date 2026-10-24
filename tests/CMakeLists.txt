@@ -292,6 +292,12 @@ if(CCR_CLANG AND CCR_LLVM_OBJDUMP)
              --target x86_64-linux-gnu ${CMAKE_CURRENT_SOURCE_DIR}/data/asm/corpus.c)
     set_tests_properties(asm_blocks_arm PROPERTIES TIMEOUT 300)
 endif()
+add_test(NAME code_hater_asm_lines COMMAND ${CCR_BIN} --lang en --check-code
+         ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/inline_lines.c)
+set_tests_properties(code_hater_asm_lines PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "inline_lines\\.c:12:[0-9]+: error: .code_hater. NAK: rbp trashed"
+    FAIL_REGULAR_EXPRESSION "rcx trashed|r11 trashed")
 foreach(f examples/hello.s examples/hello.asm examples/inline.c examples/hello_arm64.s examples/hello_arm.s)
     get_filename_component(stem ${f} NAME)
     add_test(NAME roundtrip_asm_${stem} COMMAND ${CCR_BIN} --roundtrip ${PROJECT_SOURCE_DIR}/${f})
@@ -431,7 +437,7 @@ set_tests_properties(code_hater_self PROPERTIES
     FAIL_REGULAR_EXPRESSION "Rust propaganda|Rust detected|Rust, mentioned")
 # assembly: .s files and asm() in C; clean ones say nothing
 foreach(expect "bad\\.s:7:[0-9]+: nit: .code_hater. mov 0 into eax"
-               "bad\\.s:9:[0-9]+: error: .code_hater. NAK: the stack is off by 1 at ret"
+               "bad\\.s:9:[0-9]+: error: .code_hater. NAK: the stack is off by 8 bytes at ret"
                "bad\\.s:10:[0-9]+: warning: .code_hater. nothing ever gets here"
                "bad\\.s:14:[0-9]+: warning: .code_hater. g falls into whatever comes next"
                "bad\\.s:15:[0-9]+: error: .code_hater. NAK: r12 is not yours"
@@ -449,11 +455,11 @@ foreach(expect "bad\\.s:7:[0-9]+: nit: .code_hater. mov 0 into eax"
 endforeach()
 foreach(expect "bad_arm64\\.s:6:[0-9]+: error: .code_hater. NAK: x19 is not yours"
                "bad_arm64\\.s:7:[0-9]+: error: .code_hater. NAK: bl eats the way back"
-               "bad_arm64\\.s:16:[0-9]+: error: .code_hater. NAK: sp is off by 1"
+               "bad_arm64\\.s:16:[0-9]+: error: .code_hater. NAK: sp is off by 16 bytes"
                "bad_arm64\\.s:17:[0-9]+: warning: .code_hater. nothing ever gets here"
                "bad_arm64\\.s:21:[0-9]+: warning: .code_hater. h falls into"
                "bad_arm\\.s:8:[0-9]+: error: .code_hater. NAK: r4 is not yours"
-               "bad_arm\\.s:17:[0-9]+: error: .code_hater. NAK: sp is off by 1")
+               "bad_arm\\.s:17:[0-9]+: error: .code_hater. NAK: sp is off by 8 bytes")
     string(REGEX REPLACE "[^a-z0-9]+" "_" tag "${expect}")
     string(SUBSTRING "${tag}" 0 50 tag)
     add_test(NAME code_hater_arm_${tag} COMMAND ${CCR_BIN} --lang en --check-code
@@ -495,6 +501,47 @@ set_tests_properties(code_hater_grumpy PROPERTIES
     PASS_REGULAR_EXPRESSION "NAK: use after free"
     FAIL_REGULAR_EXPRESSION "nose rubbed in it|: nit: ")
 
+# what it once got wrong: compiler output, other machines, macros, trees
+# clang lost pieces of (a header not found), Rust's words in C
+add_test(NAME code_hater_quiet_c
+         COMMAND ${CCR_BIN} --lang en --check-code ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/quiet.c)
+set_tests_properties(code_hater_quiet_c PROPERTIES
+    ENVIRONMENT "${CCR_HATER_ENV}"
+    PASS_REGULAR_EXPRESSION "quiet\\.c:[0-9]+:[0-9]+: praise: .code_hater. a goto, finally"
+    FAIL_REGULAR_EXPRESSION "(error|warning|nit): .code_hater.")
+foreach(quiet quiet.s quiet_arm64.s quiet_arm.s quiet_riscv.s)
+    string(REGEX REPLACE "[^a-z0-9]+" "_" tag "${quiet}")
+    add_test(NAME code_hater_${tag}
+             COMMAND ${CCR_BIN} --lang en --check-code ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/${quiet})
+    set_tests_properties(code_hater_${tag} PROPERTIES
+        ENVIRONMENT "${CCR_HATER_ENV}"
+        PASS_REGULAR_EXPRESSION "${quiet}: nothing to say")
+endforeach()
+# what a compiler writes is right by definition: Code Hater must find no
+# error and no warning in it (only nits), for every machine it can build for
+set(CCR_HATER_ORACLE_SRC ${PROJECT_SOURCE_DIR}/ccratch/src/ccr_yaml.c)
+set(CCR_HATER_ORACLE "cc:${CMAKE_C_COMPILER}")
+find_program(CCR_AARCH64_GCC aarch64-linux-gnu-gcc)
+find_program(CCR_ARMHF_GCC arm-linux-gnueabihf-gcc)
+if(CCR_AARCH64_GCC)
+    list(APPEND CCR_HATER_ORACLE "a64:${CCR_AARCH64_GCC}")
+endif()
+if(CCR_ARMHF_GCC)
+    list(APPEND CCR_HATER_ORACLE "arm:${CCR_ARMHF_GCC}" "thumb:${CCR_ARMHF_GCC} -mthumb")
+endif()
+foreach(entry ${CCR_HATER_ORACLE})
+    string(REGEX REPLACE ":.*" "" tag "${entry}")
+    string(REGEX REPLACE "^[^:]*:" "" cc "${entry}")
+    foreach(opt O0 O2)
+        set(out ${CMAKE_CURRENT_BINARY_DIR}/hater_oracle_${tag}_${opt}.s)
+        add_test(NAME code_hater_compiler_${tag}_${opt}
+                 COMMAND sh -c "${cc} -S -w -${opt} -I${PROJECT_SOURCE_DIR}/ccratch/src ${CCR_HATER_ORACLE_SRC} -o ${out} && ${CCR_BIN} --lang en --check-code ${out}")
+        set_tests_properties(code_hater_compiler_${tag}_${opt} PROPERTIES
+            ENVIRONMENT "${CCR_HATER_ENV}"
+            PASS_REGULAR_EXPRESSION "hater_oracle_${tag}_${opt}\\.s"
+            FAIL_REGULAR_EXPRESSION "(error|warning): .code_hater.")
+    endforeach()
+endforeach()
 add_test(NAME code_hater_good
          COMMAND ${CCR_BIN} --lang en --check-code ${CMAKE_CURRENT_SOURCE_DIR}/data/hater/good.c)
 set_tests_properties(code_hater_good PROPERTIES

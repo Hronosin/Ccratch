@@ -1620,12 +1620,31 @@ void ccr_asm_split_inline(ccr_ast *ast)
         b->src_b = b->place_b = b->ext_b = n.src_b + p.tmpl_b;
         b->src_e = b->place_e = b->ext_e = n.src_b + p.tmpl_e;
         b->line = n.line;
-        /* what the instructions say on which line: the asm()'s line, for messages */
+        /* which line each instruction is on, for messages: the line of the
+         * "string" its text came from (comments between them and all) */
+        uint32_t lit_b[256], lit_out[256], nlit = 0, out = 0;
+        for (uint32_t i = n.src_b + p.tmpl_b; i < n.src_b + p.tmpl_e && nlit < 256;) {
+            i = skip_c_space(ast->source, i, n.src_b + p.tmpl_e);
+            if (i >= n.src_b + p.tmpl_e || ast->source[i] != '"')
+                break;
+            const uint32_t e = skip_c_string(ast->source, i, n.src_b + p.tmpl_e);
+            static char piece[65536];
+            const int pl = ccr_asm_decode(ast->source, i, e, piece, sizeof piece);
+            lit_b[nlit] = i;
+            lit_out[nlit++] = out;
+            out += pl > 0 ? (uint32_t)pl : 0;
+            i = e;
+        }
         for (ccr_node_id c = b->first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling) {
+            const uint32_t at = ast->nodes[c].src_b - base;   /* where in the joined text */
+            uint32_t lit = 0;
+            while (lit + 1 < nlit && lit_out[lit + 1] <= at)
+                ++lit;
             uint32_t l = 0;
-            for (uint32_t k = base; k < ast->nodes[c].src_b; ++k)
+            const uint32_t upto = nlit ? lit_b[lit] : n.src_b;
+            for (uint32_t k = n.src_b; k < upto; ++k)
                 l += ast->source[k] == '\n';
-            ast->nodes[c].line = n.line + l;   /* one string per line, mostly */
+            ast->nodes[c].line = n.line + l;
         }
     }
 }

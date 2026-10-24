@@ -40,6 +40,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 29: assembly as blocks: `.s`/`.S`/`.asm` files (GNU as, AT&T or Intel, and NASM) and `asm()` inside C; plugins with settings of their own; Code Hater learns assembly, a hundred new ways to say it, and a mother cat who rubs your nose in the bug.
 - Step 30: ARM assembly too: 64-bit (AArch64: phones, Apple M chips, Raspberry Pi 4/5) and 32-bit ARM/Thumb, told from x86 by what the file says; Code Hater learns ARM's ways back (`bl` and the link register).
 - Step 31: builds for other machines: Linux on 64-bit and 32-bit ARM (a Raspberry Pi) and Android, with a cross gcc, zig, clang or the NDK, run in qemu or on a phone over adb; one CMakeLists picks each machine's assembly.
+- Step 32: Code Hater stops crying wolf: checked against 5,500 C, C++ and assembly files and against what gcc and clang write for x86, AArch64, ARM and Thumb; the stack counted in bytes (`sub`, `leave`, frames, stack probes), the tree checked against the text where a missing header made clang drop a piece, machines it does not know left alone.
 
 ![examples/tour.c as blocks](docs/tour.png)
 
@@ -1385,7 +1386,25 @@ with the fix.
 | **.s / .asm** | `ret` with the pushes and pops out of step (NAK, following the jumps to see what the stack is at each label); writing `rbx`, `rbp`, `r12`-`r15` without saving them first (NAK: they are the caller's); a function that ends with no `ret` or `jmp` and falls into the next (!); code right after a `jmp` or `ret` that no label leads to (!); `mov $0` where `xor` would do, no `.note.GNU-stack` (nits) |
 
 It looks at what is in the program: loose blocks on the canvas and
-commented-out ones are left alone. And it reads context:
+commented-out ones are left alone. A NAK should be right, so it keeps
+quiet where it cannot be sure:
+
+- what gcc and clang write is right by definition, and the tests have them
+  write some for every machine they can and check it says nothing worse
+  than a nit: the stack counted in bytes through `sub`, `leave`, frame
+  pointers, stack probes, `call 1f` / `pop`; a call that never comes back
+  (`__stack_chk_fail`, `abort`, a function of the file with no way out)
+  ends a function; Thumb-2's `push.w` is `push`;
+- when a header is missing, clang drops what it cannot type (`t = gen(&a)`
+  vanishes, `free(h->buf)` comes out as `free(h)`); before it says use
+  after free, double free or a leak, it checks the text says the same;
+- `longjmp`, `swapcontext` and a thread's start load the stack pointer and
+  put back the caller's registers on purpose; `sigreturn` and `exit` never
+  return: nothing to give back;
+- assembly for a machine it does not know (RISC-V, MIPS, PowerPC, SPARC,
+  SuperH...) gets no lecture in x86's rules.
+
+And it reads context:
 
 - Rust **pushed** ("rewrite it in Rust", "TODO: port this", "memory safe")
   is a NAK; Rust only **mentioned** ("Привет, Rust!") is a nit;

@@ -4256,7 +4256,8 @@ static void source_line(const ccr_ast *ast, uint32_t line, char *out, size_t cap
  * the view flies to the block, the rest goes dark, a ginger paw comes in
  * from the corner and pushes the camera into it, three times, with the
  * plugin shouting in a bubble. Then back to where they were. A click or
- * a key ends it at once.
+ * a key ends it at once; another file, or the blocks changing under it,
+ * too (what it pointed at is gone).
  */
 #define RUB_FLY   0.5f
 #define RUB_POKE  0.53f
@@ -4267,10 +4268,11 @@ static void source_line(const ccr_ast *ast, uint32_t line, char *out, size_t cap
 static struct {
     bool        asked;      /* saved or built: rub, once the checkers have read it */
     bool        active, going_home;
+    char        path[PATH_MAX_LEN];   /* the file it is rubbing your nose in */
     ccr_node_id nodes[RUB_MAX];
     int         plugin[RUB_MAX];
     char        say[RUB_MAX][160];
-    char        title[RUB_MAX][96];
+    char        title[RUB_MAX][128];
     int         count, cur;
     float       t;          /* within the current one (or the way home) */
     ccr_canvas  home, from, base;
@@ -4281,6 +4283,15 @@ static struct {
 static void rub_ask(void)
 {
     g_rub.asked = true;
+}
+
+/* Any key at all this frame. */
+static bool any_key_pressed(void)
+{
+    for (int k = CCR_KEY_HOME; k <= CCR_KEY_H; ++k)
+        if (ccr_gui_key_pressed((ccr_key)k))
+            return true;
+    return false;
 }
 
 static float rub_ease(float k)
@@ -4347,6 +4358,7 @@ static bool rub_tick(ccr_document *doc, ccr_canvas *cv, ccr_rect view, float dt,
             if (g_rub.count) {
                 g_glide.active = false;
                 g_rub.active = true;
+                snprintf(g_rub.path, sizeof g_rub.path, "%s", doc->path);
                 g_rub.going_home = false;
                 g_rub.cur = 0;
                 g_rub.t = 0.0f;
@@ -4359,13 +4371,18 @@ static bool rub_tick(ccr_document *doc, ccr_canvas *cv, ccr_rect view, float dt,
     }
     if (!g_rub.active)
         return false;
-    if (!doc->loaded) {
-        g_rub.active = false;
+    if (!doc->loaded || strcmp(doc->path, g_rub.path) != 0) {
+        g_rub.active = false;   /* another file now: its blocks are not those */
         return false;
     }
-    if (input && !g_rub.going_home &&
-        (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) || ccr_gui_mouse_pressed(CCR_MOUSE_RIGHT) ||
-         ccr_gui_key_pressed(CCR_KEY_ESCAPE) || ccr_gui_key_pressed(CCR_KEY_ENTER)))
+    if (g_pf.dirty || g_pf.again) {
+        g_rub.active = false;   /* the blocks changed (undo, a delete): what it pointed at may be gone */
+        *cv = g_rub.home;
+        return false;
+    }
+    /* (not the Ctrl+S that started it, in this very frame) */
+    if (input && !g_rub.going_home && !(g_rub.cur == 0 && g_rub.t == 0.0f) &&
+        (ccr_gui_mouse_pressed(CCR_MOUSE_LEFT) || ccr_gui_mouse_pressed(CCR_MOUSE_RIGHT) || any_key_pressed()))
         rub_end(cv);   /* had enough */
     g_rub.t += dt;
     g_rub.push = 0.0f;
@@ -4493,7 +4510,7 @@ static void rub_draw(const ccr_document *doc, const ccr_canvas *cv, ccr_rect vie
     const char *say = g_rub.say[g_rub.cur];
     const float fs = 28.0f, ts = 14.0f;
     const float sw = ccr_gui_text_width(say, fs), tw = ccr_gui_text_width(g_rub.title[g_rub.cur], ts);
-    const float bw = fmaxf(sw, tw) + 40.0f, bh = 76.0f;
+    const float bw = fminf(fmaxf(sw, tw) + 40.0f, view.w - 24.0f), bh = 76.0f;
     float bx = (a.x + b.x) * 0.5f - bw * 0.5f, by = s.y - bh - 34.0f;
     bx = fmaxf(view.x + 12.0f, fminf(bx, view.x + view.w - bw - 12.0f));
     by = fmaxf(view.y + 12.0f, by);
@@ -4506,9 +4523,11 @@ static void rub_draw(const ccr_document *doc, const ccr_canvas *cv, ccr_rect vie
     const float tail_x = fmaxf(bub.x + 30.0f, fminf((a.x + b.x) * 0.5f, bub.x + bub.w - 30.0f));
     ccr_gui_triangle((ccr_vec2){ tail_x - 14.0f, bub.y + bub.h - 1.0f }, (ccr_vec2){ tail_x + 14.0f, bub.y + bub.h - 1.0f },
                      (ccr_vec2){ tail_x, bub.y + bub.h + 22.0f }, paper);
+    ccr_gui_clip_begin((ccr_rect){ bub.x + 8.0f, bub.y, bub.w - 16.0f, bub.h });   /* a long name: cut, not out */
     for (int k = 0; k < 2; ++k)   /* bold: it is shouting */
         ccr_gui_text(say, bub.x + 20.0f + (float)k * 1.1f, bub.y + 9.0f, fs, (red & 0xFFFFFF00u) | (uint32_t)(255.0f * show));
     ccr_gui_text(g_rub.title[g_rub.cur], bub.x + 20.0f, bub.y + 50.0f, ts, ink);
+    ccr_gui_clip_end();
     ccr_gui_clip_end();
 }
 

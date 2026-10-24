@@ -328,17 +328,19 @@ static const rant g_rants[R_COUNT] = {
             "код вокруг, и читается это как C. Ассемблерные вставки — для того, чего компилятор сказать не "
             "может.", NULL } } },
     [R_ASM_STACK] = { CCR_FINDING_ERROR,
-        { "NAK: the stack is off by {n} at ret", "NAK: стек съехал на {n} к ret" },
-        { { "ret, with the pushes and pops {n} apart. ret takes the return address off the top of the stack, "
-            "and the top is now whatever you pushed last. The CPU will happily jump into your saved rbx. Pop "
-            "what you push, in reverse order, before every ret.",
-            "Count the pushes. Now count the pops. Different numbers, {n} apart. ret doesn't count anything: "
-            "it takes whatever is on top and jumps there. Balance the stack." },
-          { "ret, а push и pop расходятся на {n}. ret снимает адрес возврата с вершины стека, а на вершине "
-            "сейчас то, что ты положил последним. Процессор с радостью прыгнет в твой сохранённый rbx. Снимай "
-            "всё, что положил, в обратном порядке, перед каждым ret.",
-            "Посчитай push. Теперь посчитай pop. Разные числа, разница {n}. ret ничего не считает: он берёт то, "
-            "что сверху, и прыгает туда. Выровняй стек." } } },
+        { "NAK: the stack is off by {N} at ret", "NAK: стек съехал на {N} к ret" },
+        { { "ret, with the stack pointer {N} away from where this function found it. ret takes the return "
+            "address off the top of the stack, and the top is now something else: whatever you pushed last, or "
+            "a local. The CPU will happily jump into your saved rbx. Pop what you push, in reverse order, give "
+            "back what sub took, before every ret.",
+            "Count the pushes and the subs. Now count the pops and the adds. They don't match: {N} apart. ret "
+            "doesn't count anything: it takes whatever is on top and jumps there. Balance the stack." },
+          { "ret, а указатель стека на {N} не там, где эта функция его нашла. ret снимает адрес возврата с "
+            "вершины стека, а на вершине сейчас что-то другое: то, что ты положил последним, или локальная "
+            "переменная. Процессор с радостью прыгнет в твой сохранённый rbx. Снимай всё, что положил, в обратном "
+            "порядке, и отдавай всё, что взял sub, перед каждым ret.",
+            "Посчитай push и sub. Теперь посчитай pop и add. Не сходится: разница {N}. ret ничего не считает: он "
+            "берёт то, что сверху, и прыгает туда. Выровняй стек." } } },
     [R_ASM_FALLTHROUGH] = { CCR_FINDING_WARNING,
         { "{x} falls into whatever comes next", "{x} проваливается в следующее" },
         { { "{x} ends without ret or jmp. The CPU doesn't know where your function ends: it just keeps going, "
@@ -369,12 +371,12 @@ static const rant g_rants[R_COUNT] = {
             "bl {x}, а {y} не сохранён. На ARM дорога назад лежит не на стеке, а в {y}, и bl только что "
             "затёр её своей. Твой возврат теперь — это цикл с дополнительными шагами. Сохрани, вызови, достань." } } },
     [R_ARM_STACK] = { CCR_FINDING_ERROR,
-        { "NAK: sp is off by {n} at the return", "NAK: sp съехал на {n} к возврату" },
-        { { "This returns with sp not where it found it: {n} more down than up. On ARM the return itself still "
+        { "NAK: sp is off by {N} at the return", "NAK: sp съехал на {N} к возврату" },
+        { { "This returns with sp not where it found it: {N} more down than up. On ARM the return itself still "
             "finds its way (it jumps to the link register, not the stack), but the caller's locals now live at "
             "the wrong address, and the next one to touch the stack reads garbage. Every sub sp or stp ...]! has "
             "its add sp or ldp ..., #N; every push its pop.", NULL },
-          { "Это возвращается со sp не там, где нашло: вниз на {n} больше, чем вверх. На ARM сам возврат дорогу "
+          { "Это возвращается со sp не там, где нашло: вниз на {N} больше, чем вверх. На ARM сам возврат дорогу "
             "найдёт (он прыгает по регистру связи, а не по стеку), но локальные переменные вызывающего теперь "
             "живут по чужому адресу, и следующий, кто тронет стек, прочитает мусор. У каждого sub sp и stp ...]! "
             "есть свой add sp или ldp ..., #N; у каждого push — свой pop.", NULL } } },
@@ -795,6 +797,176 @@ static bool derefs(uint32_t i, const char *name)
     return false;
 }
 
+/* ---------------------------------------------------- the tree vs the text
+ *
+ * The tree is what clang understood. When a header is missing, it drops what
+ * it could not type: `t = gen(&a);` with `a` of an unknown struct is simply
+ * not there, and `p->field` of an unknown struct comes out as a bare `p`. So
+ * before saying something is used after free, or never given back, the text
+ * gets a say too.
+ */
+
+static bool has_text(uint32_t i)
+{
+    return i != NONE && N(i)->src_end > N(i)->src_begin && N(i)->src_end <= F->source_len;
+}
+
+/* `name` as a whole word in the source from b to e, comments and literals
+ * skipped: how many times. */
+static int words_in(uint32_t b, uint32_t e, const char *name)
+{
+    const char *s = F->source;
+    const size_t nl = strlen(name);
+    if (e > F->source_len)
+        e = F->source_len;
+    int count = 0;
+    for (uint32_t i = b; i < e;) {
+        const char c = s[i];
+        if (c == '/' && i + 1 < e && s[i + 1] == '/') {
+            while (i < e && s[i] != '\n')
+                ++i;
+        } else if (c == '/' && i + 1 < e && s[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < e && !(s[i] == '*' && s[i + 1] == '/'))
+                ++i;
+            i += 2;
+        } else if (c == '"' || c == '\'') {
+            for (++i; i < e && s[i] != c && s[i] != '\n'; ++i)
+                if (s[i] == '\\')
+                    ++i;
+            ++i;
+        } else if (isalpha((unsigned char)c) || c == '_') {
+            uint32_t j = i;
+            while (j < e && (isalnum((unsigned char)s[j]) || s[j] == '_'))
+                ++j;
+            count += j - i == nl && memcmp(s + i, name, nl) == 0;
+            i = j;
+        } else {
+            ++i;
+        }
+    }
+    return count;
+}
+
+/* Where the subtree at `i` names `name`: its Refs (sizeof or not), and
+ * its declaration. */
+static int count_refs(uint32_t i, const char *name)
+{
+    if (i == NONE)
+        return 0;
+    int n = (is(i, "Ref") || is(i, "Var") || is(i, "Param")) && named(i, name);
+    for (uint32_t c = N(i)->first_child; c != NONE; c = N(c)->next_sibling)
+        n += count_refs(c, name);
+    return n;
+}
+
+/* Does the text of `i` name `name` more often than its tree does? Then
+ * clang lost a piece of it, and nobody can say what that piece does. */
+static bool tree_short(uint32_t i, const char *name)
+{
+    return has_text(i) && words_in(N(i)->src_begin, N(i)->src_end, name) > count_refs(i, name);
+}
+
+/* What f( ... ) has between its parentheses, in the text, is `name` (a
+ * cast in front allowed). A macro, or p->x the tree turned into p: no. */
+static bool call_arg_is(uint32_t call, const char *name)
+{
+    if (!has_text(call))
+        return true;   /* made in the editor: the tree is all there is */
+    const char *s = F->source + N(call)->src_begin;
+    const size_t n = N(call)->src_end - N(call)->src_begin;
+    const char *open = memchr(s, '(', n);
+    if (!open)
+        return false;
+    const char *a = open + 1, *z = a;
+    int depth = 0;
+    for (; z < s + n; ++z) {
+        if (*z == '(')
+            ++depth;
+        else if (*z == ')' && depth-- == 0)
+            break;
+    }
+    for (;;) {
+        while (a < z && isspace((unsigned char)*a))
+            ++a;
+        while (z > a && isspace((unsigned char)z[-1]))
+            --z;
+        if (a < z && *a == '(') {   /* (void *)p */
+            const char *c = memchr(a, ')', (size_t)(z - a));
+            if (!c)
+                return false;
+            a = c + 1;
+            continue;
+        }
+        break;
+    }
+    return (size_t)(z - a) == strlen(name) && memcmp(a, name, (size_t)(z - a)) == 0;
+}
+
+/* The first Ref to `name` in the subtree at `i`, in the order it runs: in
+ * p = ..., the right side first. *write: that touch is p = ..., or &p (the
+ * pointer itself, not what it points to). */
+static uint32_t first_touch(uint32_t i, const char *name, bool *write)
+{
+    if (i == NONE || is(i, "Sizeof"))
+        return NONE;
+    if (is(i, "Ref") && named(i, name)) {
+        uint32_t at = i, p = N(i)->parent;
+        while (is(p, "Cast")) {
+            at = p;
+            p = N(p)->parent;
+        }
+        *write = (is(p, "BinaryOp") && strcmp(N(p)->op, "=") == 0 && N(p)->first_child == at) ||
+                 (is(p, "UnaryOp") && strcmp(N(p)->op, "&") == 0);
+        return i;
+    }
+    if (is(i, "BinaryOp") && strcmp(N(i)->op, "=") == 0) {   /* p = p->next: the read first */
+        const uint32_t r = first_touch(child(i, 1), name, write);
+        return r != NONE ? r : first_touch(child(i, 0), name, write);
+    }
+    for (uint32_t c = N(i)->first_child; c != NONE; c = N(c)->next_sibling) {
+        const uint32_t r = first_touch(c, name, write);
+        if (r != NONE)
+            return r;
+    }
+    return NONE;
+}
+
+/* p && p->x, p ? p->x : 0, !p || ...: checked where it is used. */
+static bool guarded(uint32_t i, const char *name)
+{
+    if (i == NONE)
+        return false;
+    if (((is(i, "BinaryOp") && (strcmp(N(i)->op, "&&") == 0 || strcmp(N(i)->op, "||") == 0)) || is(i, "Ternary")) &&
+        mentions(child(i, 0), name))
+        return true;
+    for (uint32_t c = N(i)->first_child; c != NONE; c = N(c)->next_sibling)
+        if (guarded(c, name))
+            return true;
+    return false;
+}
+
+/* After it, nothing below runs unless a label is jumped to. */
+static bool leaves(uint32_t i)
+{
+    return is(i, "Return") || is(i, "Goto") || is(i, "Break") || is(i, "Continue");
+}
+
+/* static int x; (the text from the start of its declaration) */
+static bool decl_is_static(uint32_t v)
+{
+    if (!has_text(v))
+        return false;
+    uint32_t b = N(v)->src_begin;
+    while (b > 0 && F->source[b - 1] != '\n' && F->source[b - 1] != ';' && F->source[b - 1] != '{' &&
+           F->source[b - 1] != '}')
+        --b;
+    const size_t len = N(v)->src_end - b;
+    char head[160];
+    snprintf(head, sizeof head, "%.*s", (int)(len < sizeof head - 1 ? len : sizeof head - 1), F->source + b);
+    return strstr(head, "static") != NULL;
+}
+
 /* ------------------------------------------------------------- saying it */
 
 static unsigned hash(const char *s, unsigned h)
@@ -804,12 +976,50 @@ static unsigned hash(const char *s, unsigned h)
     return h;
 }
 
+/* A string cut at `len` bytes: a letter cut in two is dropped whole. */
+static void cut_utf8(char *s, size_t len)
+{
+    size_t k = len;
+    while (k > 0 && ((unsigned char)s[k - 1] & 0xC0u) == 0x80u)
+        --k;
+    if (k > 0 && (unsigned char)s[k - 1] >= 0xC0u) {
+        const unsigned char lead = (unsigned char)s[k - 1];
+        const size_t need = lead >= 0xF0u ? 4 : lead >= 0xE0u ? 3 : 2;
+        if (len - (k - 1) < need)
+            len = k - 1;
+    }
+    s[len] = '\0';
+}
+
+/* snprintf, and if it did not fit, no half letter at the end. */
+#define PRINT(out, cap, ...)                                     \
+    do {                                                         \
+        const int pn_ = snprintf((out), (cap), __VA_ARGS__);     \
+        if (pn_ >= (int)(cap))                                   \
+            cut_utf8((out), (cap) - 1);                          \
+    } while (0)
+
+/* "8 bytes", "8 байт", "24 байта" */
+static void bytes(char *out, size_t cap, int n)
+{
+    if (g_lang == 1) {
+        const int m10 = n % 10, m100 = n % 100;
+        const char *w = m10 == 1 && m100 != 11 ? "байт" :
+                        m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? "байта" : "байт";
+        snprintf(out, cap, "%d %s", n, w);
+    } else {
+        snprintf(out, cap, "%d byte%s", n, n == 1 ? "" : "s");
+    }
+}
+
 static void fill(char *out, size_t cap, const char *tmpl, const char *x, int n)
 {
     size_t o = 0;
-    char num[16];
+    char num[16], nb[32];
     snprintf(num, sizeof num, "%d", n);
-    for (const char *p = tmpl; *p && o + 1 < cap;) {
+    bytes(nb, sizeof nb, n);
+    bool cut = false;
+    for (const char *p = tmpl; *p;) {
         const char *put = NULL;
         if (strncmp(p, "{x}", 3) == 0)
             put = x;
@@ -817,15 +1027,31 @@ static void fill(char *out, size_t cap, const char *tmpl, const char *x, int n)
             put = g_y;
         else if (strncmp(p, "{n}", 3) == 0)
             put = num;
+        else if (strncmp(p, "{N}", 3) == 0)
+            put = nb;
         if (put) {
-            for (; *put && o + 1 < cap; ++put)
+            for (; *put; ++put) {
+                if (o + 1 >= cap) {
+                    cut = true;
+                    break;
+                }
                 out[o++] = *put;
+            }
             p += 3;
         } else {
+            if (o + 1 >= cap) {
+                cut = true;
+                break;
+            }
             out[o++] = *p++;
         }
+        if (cut)
+            break;
     }
-    out[o] = '\0';
+    if (cut)
+        cut_utf8(out, o);
+    else
+        out[o] = '\0';
 }
 
 static bool is_rust_rant(int r) { return r == R_RUST_NAME || r == R_RUST_TEXT || r == R_RUST_MENTION; }
@@ -846,8 +1072,8 @@ static void toned(char *out, size_t cap, const char *body, ccr_finding_level lev
             open = pick(g_cat_open[g_lang], h >> 2);
         close = pick(level >= CCR_FINDING_WARNING ? g_cat_close[g_lang] : g_linus_close[g_lang], h >> 7);
     }
-    snprintf(out, cap, "%s%s%s%s%s", open ? open : "", open ? "\n\n" : "", body, close ? "\n\n" : "",
-             close ? close : "");
+    PRINT(out, cap, "%s%s%s%s%s", open ? open : "", open ? "\n\n" : "", body, close ? "\n\n" : "",
+          close ? close : "");
 }
 
 static void say(uint32_t node, int r, const char *x, int n)
@@ -907,7 +1133,7 @@ static void say_all(void)
         pending *p = &g_pend[i];
         if (p->more) {
             const size_t l = strlen(p->msg);
-            snprintf(p->msg + l, sizeof p->msg - l, more[g_brutal][g_lang], p->more);
+            PRINT(p->msg + l, sizeof p->msg - l, more[g_brutal][g_lang], p->more);
         }
         F->report(F, p->node, g_rants[p->r].level, p->title, p->msg);
         if (p->poke && FILE_HAS(F, poke) && F->poke)
@@ -954,12 +1180,27 @@ static bool kept_in(uint32_t i, uint32_t v, const char *name)
         return false;   /* not its own initialiser */
     if (is(i, "Ref") && named(i, name)) {
         uint32_t at = i, p = N(i)->parent;
-        while (is(p, "Cast") || (is(p, "UnaryOp") && strcmp(N(p)->op, "&") == 0)) {
+        /* (char *)p, &p, p + 1, ok ? p : NULL: still that memory */
+        while (is(p, "Cast") || (is(p, "UnaryOp") && strcmp(N(p)->op, "&") == 0) ||
+               (is(p, "BinaryOp") && (strcmp(N(p)->op, "+") == 0 || strcmp(N(p)->op, "-") == 0)) ||
+               (is(p, "Ternary") && N(p)->first_child != at)) {
             at = p;
             p = N(p)->parent;
         }
-        if (is(p, "Call"))
-            return named(p, "free") || !in_list(N(p)->name, g_borrowers);
+        if (is(p, "Call")) {
+            if (named(p, "free") || !in_list(N(p)->name, g_borrowers))
+                return true;
+            /* return memcpy(d, s, n): what memcpy gives back is d */
+            static const char *const gives_back[] = { "memcpy", "memmove", "memset", "strcpy", "strncpy", "strcat",
+                                                      "strncat", NULL };
+            if (in_list(N(p)->name, gives_back) && N(p)->first_child == at) {
+                uint32_t q = N(p)->parent;
+                while (is(q, "Cast"))
+                    q = N(q)->parent;
+                return is(q, "Return") || is(q, "Var") || (is(q, "BinaryOp") && strcmp(N(q)->op, "=") == 0);
+            }
+            return false;
+        }
         if (is(p, "Return") || is(p, "Var") || is(p, "InitList") || is(p, "CompoundLiteral"))
             return true;
         if (is(p, "BinaryOp") && strcmp(N(p)->op, "=") == 0)
@@ -970,21 +1211,6 @@ static bool kept_in(uint32_t i, uint32_t v, const char *name)
         if (kept_in(c, v, name))
             return true;
     return false;
-}
-
-/* The first Ref to `name` in the subtree at `i`, or NONE. */
-static uint32_t first_ref(uint32_t i, const char *name)
-{
-    if (i == NONE || is(i, "Sizeof"))
-        return NONE;
-    if (is(i, "Ref") && named(i, name))
-        return i;
-    for (uint32_t c = N(i)->first_child; c != NONE; c = N(c)->next_sibling) {
-        const uint32_t r = first_ref(c, name);
-        if (r != NONE)
-            return r;
-    }
-    return NONE;
 }
 
 /* The Var `name` declared in the subtree at `i`, or NONE. */
@@ -1009,11 +1235,14 @@ static void check_var(uint32_t v)
     const char *type = N(v)->type;
     /* a VLA: "char[n]" - a constant one is spelled with its number */
     const char *br = strchr(type, '[');
-    if (br && br[1] != ']') {
+    if (br && br[1] != ']' && function_of(v) != NONE) {
         bool digits = true;
         for (const char *p = br + 1; *p && *p != ']'; ++p)
             digits &= isdigit((unsigned char)*p) != 0;
-        if (!digits && function_of(v) != NONE)
+        /* in C++ a size that is not a number is a template's (buf[sizeof(T)]):
+         * a constant, just not yet. char (*p)[n] points at one, on nobody's stack */
+        const char *star = strstr(type, "(*");
+        if (!digits && !g_cpp && !(star && star < br) && !decl_is_static(v))
             say(v, R_VLA, name, 0);
     }
     /* what it starts as */
@@ -1029,10 +1258,12 @@ static void check_var(uint32_t v)
     /* malloc(n * sizeof(int)) for an int *: sizeof *p would follow it */
     if (named(call, "malloc") || named(call, "calloc")) {
         for (uint32_t a = N(call)->first_child; a != NONE; a = N(a)->next_sibling) {
-            /* a type-only sizeof has no child */
+            /* a type-only sizeof has no child; malloc(sizeof(struct hdr) + len) is not one thing of
+             * that type: only sizeof(T) or n * sizeof(T) */
             bool typed = is(a, "Sizeof") && N(a)->first_child == NONE;
-            for (uint32_t b = N(a)->first_child; b != NONE && !typed; b = N(b)->next_sibling)
-                typed = is(b, "Sizeof") && N(b)->first_child == NONE;
+            if (is(a, "BinaryOp") && strcmp(N(a)->op, "*") == 0)
+                for (uint32_t b = N(a)->first_child; b != NONE && !typed; b = N(b)->next_sibling)
+                    typed = is(b, "Sizeof") && N(b)->first_child == NONE;
             if (typed) {
                 say(v, R_SIZEOF_TYPE, name, 0);
                 break;
@@ -1045,18 +1276,27 @@ static void check_var(uint32_t v)
 
     /* the first statement after it that touches it: is it a check? */
     uint32_t stmt = statement_of(v);
+    uint32_t prev_end = has_text(stmt) ? N(stmt)->src_end : 0;
     for (uint32_t t = stmt != NONE ? N(stmt)->next_sibling : NONE; t != NONE; t = N(t)->next_sibling) {
+        if (has_text(t)) {
+            if (prev_end && words_in(prev_end, N(t)->src_begin, name) > 0)
+                break;   /* a statement clang could not read uses it first: no telling */
+            prev_end = N(t)->src_end;
+        }
         if (!mentions(t, name))
             continue;
         const bool checks = ((is(t, "If") || is(t, "While") || is(t, "Return")) && mentions(child(t, 0), name)) ||
-                            (is(t, "Call") && named(t, "assert"));
-        if (!checks && derefs(t, name))
+                            (is(t, "For") && N(t)->first_child != NONE &&
+                             (mentions(child(t, 0), name) || mentions(child(t, 1), name))) ||
+                            (is(t, "Call") && named(t, "assert")) || guarded(t, name);
+        if (!checks && derefs(t, name) && !tree_short(t, name))
             say(t, R_UNCHECKED, name, 0);
         break;
     }
 
-    /* given back? freed, returned, stored, handed to someone */
-    if (!kept_in(fn, v, name))
+    /* given back? freed, returned, stored, handed to someone; unless the
+     * text names it somewhere the tree lost */
+    if (!kept_in(fn, v, name) && !tree_short(fn, name))
         say(v, R_LEAK, name, 0);
 }
 
@@ -1067,26 +1307,38 @@ static void check_free(uint32_t call)
     if (!is(arg, "Ref"))
         return;
     const char *name = N(arg)->name;
+    if (!call_arg_is(call, name))
+        return;   /* free(p->x) the tree read as free(p), or a macro: not about p */
     const uint32_t stmt = statement_of(call);
-    if (stmt != call && !is(N(stmt)->parent, "Block"))
-        return;
+    if (stmt != call)
+        return;   /* if (x) free(p);: freed or not, depends */
+    uint32_t prev_end = has_text(stmt) ? N(stmt)->src_end : 0;
     for (uint32_t t = N(stmt)->next_sibling; t != NONE; t = N(t)->next_sibling) {
-        /* p = something: alive again (unless something is p itself) */
-        if (is(t, "BinaryOp") && strcmp(N(t)->op, "=") == 0 && is(uncast(child(t, 0)), "Ref") &&
-            named(uncast(child(t, 0)), name)) {
-            if (mentions(child(t, 1), name))
-                say(t, R_UAF, name, 0);
+        if (has_text(t)) {
+            if (prev_end && words_in(prev_end, N(t)->src_begin, name) > 0)
+                return;   /* text the tree lost names p: maybe p = something new */
+            prev_end = N(t)->src_end;
+        }
+        if (is(t, "Label"))
+            return;       /* reached from somewhere else too */
+        bool write = false;
+        const uint32_t ref = first_touch(t, name, &write);
+        if (ref != NONE) {
+            if (write || tree_short(t, name))
+                return;   /* p = something: alive again */
+            uint32_t at = ref, p = N(ref)->parent;
+            while (is(p, "Cast")) {
+                at = p;
+                p = N(p)->parent;
+            }
+            if (is(p, "Call") && named(p, "free") && N(p)->first_child == at && call_arg_is(p, name))
+                say(statement_of(p), R_DOUBLE_FREE, name, 0);
+            else
+                say(statement_of(ref), R_UAF, name, 0);
             return;
         }
-        if (is(t, "Call") && named(t, "free") && is(uncast(child(t, 0)), "Ref") && named(uncast(child(t, 0)), name)) {
-            say(t, R_DOUBLE_FREE, name, 0);
+        if (leaves(t))
             return;
-        }
-        const uint32_t ref = first_ref(t, name);
-        if (ref != NONE) {   /* on the innermost statement that does it */
-            say(statement_of(ref), R_UAF, name, 0);
-            return;
-        }
     }
 }
 
@@ -1126,16 +1378,8 @@ static void check_return(uint32_t r)
             return;   /* a parameter, a global: not this function's stack */
         /* static lives on: say nothing */
         const ccr_plugin_node *v = N(k);
-        if (v->src_end > v->src_begin) {
-            uint32_t b = v->src_begin;
-            while (b > 0 && F->source[b - 1] != '\n' && F->source[b - 1] != ';' && F->source[b - 1] != '{')
-                --b;
-            const size_t len = v->src_end - b;
-            char head[160];
-            snprintf(head, sizeof head, "%.*s", (int)(len < sizeof head - 1 ? len : sizeof head - 1), F->source + b);
-            if (strstr(head, "static"))
-                return;
-        }
+        if (decl_is_static(k))
+            return;
         if (addr)
             say(r, R_DANGLING, name, 0);
         else if (strchr(v->type, '['))
@@ -1227,6 +1471,16 @@ static void check_condition(uint32_t s)
     const uint32_t cond = is(s, "DoWhile") ? child(s, 1) : child(s, 0);
     if (cond == NONE || is(cond, "Block"))
         return;
+    /* FIX(x) that expands to an if: the condition is in the macro, and what
+     * the tree says of it may be half of it */
+    if (has_text(s)) {
+        const char *kw = is(s, "If") ? "if" : is(s, "While") ? "while" : "do";
+        const size_t kl = strlen(kw);
+        const char *t = F->source + N(s)->src_begin;
+        if (N(s)->src_end - N(s)->src_begin < kl || strncmp(t, kw, kl) != 0 ||
+            isalnum((unsigned char)t[kl]) || t[kl] == '_')
+            return;
+    }
     /* the condition is what is between its parentheses; a statement the
      * compiler could not read (a type it did not know) has none, and its
      * body is no condition: no guessing */
@@ -1282,30 +1536,35 @@ static bool letter(char c)
     return isalpha((unsigned char)c) != 0;
 }
 
-/* "rust" as a word of its own (not trust, crust, frustrated...), or a
- * phrase only a Rustacean writes. Where, and how long, in *at / *len. */
+/* "rust" as a word of its own (not trust, crust, frustrated, and not "my C
+ * is a bit rusty" or a rusty_sword), rustc, rustup, rustacean, or a phrase
+ * only a Rustacean writes. Where, and how long, in *at / *len. */
 static bool rusty(const char *s, size_t n, size_t *at, size_t *len)
 {
     static const char *const phrases[] = { "rewrite it in rust", "riir", "blazingly fast", "borrow checker",
-                                           "fearless concurrency", "memory safe", "rustacean", "cargo build",
-                                           "unwrap()", "ferris", NULL };
+                                           "fearless concurrency", "rustacean", "cargo build", "unwrap()", NULL };
+    static const char *const tails[] = { "", "acean", "aceans", "c", "up", "fmt", "doc", "lang", NULL };
     for (size_t i = 0; i < n; ++i) {
+        if (i > 0 && letter(s[i - 1]))
+            continue;
         for (const char *const *p = phrases; *p; ++p) {
             const size_t pl = strlen(*p);
-            if (i + pl <= n && strncasecmp(s + i, *p, pl) == 0 && (i == 0 || !letter(s[i - 1]))) {
+            if (i + pl <= n && strncasecmp(s + i, *p, pl) == 0 && (i + pl == n || !letter(s[i + pl]))) {
                 *at = i;
                 *len = pl;
                 return true;
             }
         }
-        if (i + 4 <= n && strncasecmp(s + i, "rust", 4) == 0 && (i == 0 || !letter(s[i - 1])) &&
-            (i + 4 == n || !letter(s[i + 4]) || tolower((unsigned char)s[i + 4]) == 'a' ||
-             tolower((unsigned char)s[i + 4]) == 'y')) {   /* rust, Rust's, rustacean, rusty */
-            *at = i;
-            *len = 4;
-            while (i + *len < n && letter(s[i + *len]))
-                ++*len;
-            return true;
+        if (i + 4 <= n && strncasecmp(s + i, "rust", 4) == 0) {
+            size_t e = i + 4;
+            while (e < n && letter(s[e]))
+                ++e;
+            for (const char *const *t = tails; *t; ++t)
+                if (e - (i + 4) == strlen(*t) && strncasecmp(s + i + 4, *t, e - (i + 4)) == 0) {
+                    *at = i;
+                    *len = e - i;
+                    return true;
+                }
         }
     }
     return false;
@@ -1317,7 +1576,7 @@ static bool advocates(const char *s, size_t n)
 {
     static const char *const pushy[] = { "rewrite", "riir", "port ", "porting", "migrat", "should", "better",
                                          "safer", "blazing", "fearless", "todo", "switch to", "move to",
-                                         "memory safe", "borrow checker", "rustacean", "cargo build", "love",
+                                         "memory safe", "memory-safe", "borrow checker", "rustacean", "cargo build", "love",
                                          "перепис", "переход", "лучше", "безопасн", "надо", "нужно", "стоит", NULL };
     char low[600];
     size_t m = n < sizeof low - 1 ? n : sizeof low - 1;
@@ -1332,7 +1591,11 @@ static bool advocates(const char *s, size_t n)
 
 static bool rusty_name(const char *name)
 {
-    static const char *const words[] = { "unwrap", "borrow", "lifetime", "rustc", "cargo", "ferris", "crab", NULL };
+    /* Rust's own words, not C's: a bignum's borrow, Python's borrowed
+     * reference, a cache entry's lifetime, a ship's cargo, AES key unwrap,
+     * a game's crab enemy are all just C */
+    static const char *const words[] = { "unwrap_or", "unwrap_unchecked", "unwrap_err", "borrowck", "borrow_checker",
+                                         "borrowchecker", "borrow_mut", "rustc", "rustup", "rustacean", NULL };
     char low[128];
     size_t n = 0;
     for (; name[n] && n < sizeof low - 1; ++n)
@@ -1347,6 +1610,8 @@ static bool rusty_name(const char *name)
     for (const char *const *w = words; *w; ++w)
         if (strstr(low, *w))
             return true;
+    if (strcmp(low, "unwrap") == 0 || (n > 7 && strcmp(low + n - 7, "_unwrap") == 0))
+        return true;   /* unwrap(), result_unwrap(): Rust in C clothes; aes_unwrap_key is crypto */
     size_t at, len;
     return rusty(name, strlen(name), &at, &len);
 }
@@ -1557,6 +1822,8 @@ static void base_op(const char *m, char *out, size_t cap)
     for (; m[n] && n + 1 < cap; ++n)
         out[n] = (char)tolower((unsigned char)m[n]);
     out[n] = '\0';
+    if (n > 2 && out[n - 2] == '.' && (out[n - 1] == 'w' || out[n - 1] == 'n'))
+        out[n - 2] = '\0';   /* Thumb-2's push.w, ldr.n: the same instruction */
 }
 
 static bool op_is(const char *m, const char *const *bases)
@@ -1628,9 +1895,214 @@ static bool is_insn(uint32_t k)
            N(k)->name[0] != '%' && N(k)->name[0] != '[' && !*N(k)->type;
 }
 
+/* --- the pieces both machines share ------------------------------------ */
+
+/* A number as an operand says it: $16, #-16, -48, 0x10. */
+static bool imm_value(const char *t, long *v)
+{
+    while (*t == ' ' || *t == '$' || *t == '#')
+        ++t;
+    if (!*t)
+        return false;
+    char *end;
+    *v = strtol(t, &end, 0);
+    if (end == t)
+        return false;
+    while (*end == ' ')
+        ++end;
+    return *end == '\0';
+}
+
+/* The same, of t[0..n). */
+static bool imm_value_n(const char *t, size_t n, long *v)
+{
+    char buf[40];
+    if (n >= sizeof buf)
+        return false;
+    memcpy(buf, t, n);
+    buf[n] = '\0';
+    return imm_value(buf, v);
+}
+
+/* A call that never comes back: exit, abort, __stack_chk_fail, a throw. */
+static bool noreturn_name(const char *t)
+{
+    char low[96];
+    size_t n = 0;
+    while (t[n] && t[n] != '@' && n < sizeof low - 1) {   /* exit@PLT */
+        low[n] = (char)tolower((unsigned char)t[n]);
+        ++n;
+    }
+    low[n] = '\0';
+    static const char *const parts[] = { "exit", "abort", "panic", "fatal", "_fail", "throw", "terminate",
+                                         "unreachable", "longjmp", "trap", "unwind_resume", NULL };
+    for (const char *const *p = parts; *p; ++p)
+        if (strstr(low, *p))
+            return true;
+    return strcmp(low, "die") == 0 || strncmp(low, "die_", 4) == 0 || (n > 4 && strcmp(low + n - 4, "_die") == 0) ||
+           strcmp(low, "err") == 0 || strcmp(low, "errx") == 0;
+}
+
+/* The functions of this file that never return (no ret, no jump anywhere):
+ * a call to one is the end of the road too. */
+static const char *g_noreturn[64];
+static int         g_nnoreturn;
+
+static bool calls_noreturn(uint32_t k)
+{
+    if (!is(k, "Call") || N(k)->first_child == NONE)
+        return false;
+    char b[24];
+    base_op(N(k)->name, b, sizeof b);
+    if (strcmp(b, "call") != 0 && strcmp(b, "callq") != 0 && strcmp(b, "calll") != 0 && strcmp(b, "bl") != 0 &&
+        strcmp(b, "blx") != 0)
+        return false;
+    const char *target = N(N(k)->first_child)->name;
+    if (noreturn_name(target))
+        return true;
+    const size_t tl = strcspn(target, "@");   /* die@PLT */
+    for (int i = 0; i < g_nnoreturn; ++i)
+        if (strlen(g_noreturn[i]) == tl && strncmp(g_noreturn[i], target, tl) == 0)
+            return true;
+    return false;
+}
+
+/* The code of a hat: its Block. */
+static uint32_t body_of(uint32_t fn)
+{
+    uint32_t blk = NONE;
+    for (uint32_t c = N(fn)->first_child; c != NONE; c = N(c)->next_sibling)
+        if (is(c, "Block"))
+            blk = c;
+    return blk;
+}
+
+/* --- ARM's registers ----------------------------------------------------- */
+
+/* An ARM register's number (x5, w5, r5: 5; fp, lr, sp, pc by name), or -1.
+ * AArch64: 31 the zero register, 32 sp. */
+static int arm_reg(const char *op, bool a64)
+{
+    char w[8];
+    size_t n = 0;
+    while (*op == ' ' || *op == '{')
+        ++op;
+    while (n < sizeof w - 1 && isalnum((unsigned char)op[n])) {
+        w[n] = (char)tolower((unsigned char)op[n]);
+        ++n;
+    }
+    w[n] = '\0';
+    if (op[n] && op[n] != ' ' && op[n] != '!' && op[n] != '}' && op[n] != ',' && op[n] != ']')
+        return -1;
+    if (a64) {
+        if (strcmp(w, "xzr") == 0 || strcmp(w, "wzr") == 0) return 31;
+        if (strcmp(w, "sp") == 0 || strcmp(w, "wsp") == 0) return 32;
+        if (strcmp(w, "fp") == 0) return 29;
+        if (strcmp(w, "lr") == 0) return 30;
+        if ((w[0] == 'x' || w[0] == 'w') && isdigit((unsigned char)w[1]) && n <= 3 &&
+            (n == 2 || isdigit((unsigned char)w[2])) && atoi(w + 1) <= 30)
+            return atoi(w + 1);
+        return -1;
+    }
+    static const struct { const char *name; int r; } named[] = {
+        { "fp", 11 }, { "ip", 12 }, { "sp", 13 }, { "lr", 14 }, { "pc", 15 } };
+    for (size_t i = 0; i < sizeof named / sizeof named[0]; ++i)
+        if (strcmp(w, named[i].name) == 0)
+            return named[i].r;
+    if (w[0] == 'r' && isdigit((unsigned char)w[1]) && n <= 3 && (n == 2 || isdigit((unsigned char)w[2])) &&
+        atoi(w + 1) <= 15)
+        return atoi(w + 1);
+    return -1;
+}
+
+/* The registers of {r4-r7, lr}, as bits; *count: how many (d8-d15 too). */
+static unsigned arm_list(const char *s, int *count)
+{
+    unsigned bits = 0;
+    int prev = -1, n = 0, prev_d = -1;
+    bool range = false;
+    while (*s) {
+        if (*s == '-') {
+            range = true;
+            ++s;
+            continue;
+        }
+        if (!isalpha((unsigned char)*s)) {
+            ++s;
+            continue;
+        }
+        if ((*s == 'd' || *s == 's' || *s == 'q') && isdigit((unsigned char)s[1])) {   /* vpush {d8-d15} */
+            const int r = atoi(s + 1);
+            n += range && prev_d >= 0 && r > prev_d ? r - prev_d : 1;
+            prev_d = r;
+        } else {
+            const int r = arm_reg(s, false);
+            if (r >= 0) {
+                if (range && prev >= 0)
+                    for (int k = prev + 1; k <= r; ++k) {
+                        bits |= 1u << k;
+                        ++n;
+                    }
+                else
+                    ++n;
+                bits |= 1u << r;
+                prev = r;
+            }
+        }
+        range = false;
+        while (isalnum((unsigned char)*s))
+            ++s;
+    }
+    if (count)
+        *count = n;
+    return bits;
+}
+
+/* [sp, #-16]!, [x29, 16], [sp]: the base register, the offset, the ! */
+typedef struct arm_mem {
+    int  base;
+    long off;
+    bool off_known;   /* no offset, or a number (not a register) */
+    bool pre;         /* written back: [sp, #-16]! */
+} arm_mem;
+
+static bool arm_mem_of(const char *t, bool a64, arm_mem *m)
+{
+    while (*t == ' ')
+        ++t;
+    if (*t != '[')
+        return false;
+    ++t;
+    m->base = arm_reg(t, a64);
+    const char *close = strchr(t, ']');
+    const char *comma = strchr(t, ',');
+    m->off = 0;
+    m->off_known = true;
+    if (comma && close && comma < close)
+        m->off_known = imm_value_n(comma + 1, (size_t)(close - comma - 1), &m->off);
+    m->pre = close && close[1] == '!';
+    return true;
+}
+
 /* --- asm("...") in C --------------------------------------------------- */
 
-/* The constraints of the outputs and the clobbers of asm(...), from its text. */
+/* Past a C comment at p (p itself if there is none). */
+static const char *past_comment(const char *p, const char *e)
+{
+    if (p + 1 < e && p[0] == '/' && p[1] == '/') {
+        while (p < e && *p != '\n')
+            ++p;
+    } else if (p + 1 < e && p[0] == '/' && p[1] == '*') {
+        p += 2;
+        while (p + 1 < e && !(p[0] == '*' && p[1] == '/'))
+            ++p;
+        p = p + 2 <= e ? p + 2 : e;
+    }
+    return p;
+}
+
+/* The constraints of the outputs and the clobbers of asm(...), from its
+ * text (comments in it skipped: a "// XXX:" has a colon too). */
 static void asm_operands(uint32_t a, unsigned *out_regs, bool *mem_out, unsigned *clobbered, bool *memory)
 {
     *out_regs = *clobbered = 0;
@@ -1644,6 +2116,11 @@ static void asm_operands(uint32_t a, unsigned *out_regs, bool *mem_out, unsigned
         return;
     int depth = 0, section = -1;
     for (++p; p < e; ++p) {
+        const char *after = past_comment(p, e);
+        if (after != p) {
+            p = after - 1;
+            continue;
+        }
         if (*p == '"') {
             const char *q = p + 1;
             while (q < e && *q != '"') {
@@ -1685,11 +2162,49 @@ static void asm_operands(uint32_t a, unsigned *out_regs, bool *mem_out, unsigned
     }
 }
 
+/* Is this asm() written for ARM? x86 names its registers %%eax (or eax in
+ * Intel), ARM r0, x0, w0 (%w0 for an operand) and says #1 and {r4, lr}. */
+static bool asm_block_is_arm(uint32_t blk)
+{
+    int x86 = 0, arm = 0;
+    static const char *const arm_ops[] = { "ldr", "str", "ldp", "stp", "ldrb", "strb", "adr", "adrp", "bl", "blr",
+                                           "bx", "blx", "cbz", "cbnz", "svc", "msr", "mrs", "dmb", "dsb", "isb",
+                                           "wfi", "wfe", "sev", "ldxr", "stxr", "ldaxr", "stlxr", "ldrex", "strex",
+                                           NULL };
+    for (uint32_t k = N(blk)->first_child; k != NONE; k = N(k)->next_sibling) {
+        if (!is_insn(k))
+            continue;
+        char b[24];
+        base_op(N(k)->name, b, sizeof b);
+        arm += in_list(b, arm_ops);
+        for (uint32_t c = N(k)->first_child; c != NONE; c = N(c)->next_sibling) {
+            const char *t = N(c)->name;
+            if (t[0] == '%' && t[1] == '%')
+                ++x86;
+            else if (t[0] == '%' && (t[1] == 'w' || t[1] == 'x') && isdigit((unsigned char)t[2]))
+                ++arm;   /* %w0: an AArch64 operand */
+            else if (t[0] == '#' || t[0] == '{' || (t[0] != '%' && arm_reg(t, true) >= 0 && arm_reg(t, true) <= 30 &&
+                                                    (t[0] == 'x' || t[0] == 'w')) ||
+                     (t[0] == 'r' && arm_reg(t, false) >= 0 && arm_reg(t, false) <= 7) || strcmp(t, "lr") == 0)
+                ++arm;
+            else if (t[0] == '$' || (reg_family(t) >= 0 && reg_family(t) < 8 && strlen(t) >= 3))
+                ++x86;
+        }
+    }
+    return arm > x86;
+}
+
 static void check_inline_asm(uint32_t a)
 {
     const uint32_t blk = N(a)->first_child;
     if (blk == NONE || !is(blk, "Block"))
         return;
+    if (asm_block_is_arm(blk))
+        return;   /* the x86 rules below are not ARM's */
+    bool att = true;
+    for (uint32_t k = N(blk)->first_child; k != NONE; k = N(k)->next_sibling)
+        if (is(k, "Call") && strcmp(N(k)->name, ".intel_syntax") == 0)
+            att = false;
     unsigned outs, clob;
     bool mem_out, memory;
     asm_operands(a, &outs, &mem_out, &clob, &memory);
@@ -1715,16 +2230,16 @@ static void check_inline_asm(uint32_t a)
             }
         /* a register written that the compiler was not told about */
         unsigned wrote = implicit_writes(m, operand_count(k));
-        const uint32_t d = dest_of(k, true);
+        const uint32_t d = dest_of(k, att);
         if (d != NONE && writes_dest(m)) {
             const int f = reg_family(N(d)->name);
             if (f >= 0 && f != 7)
                 wrote |= 1u << f;
-            if (strchr(N(d)->name, '(') && !memory && !mem_out)
+            if ((strchr(N(d)->name, '(') || strchr(N(d)->name, '[')) && !memory && !mem_out)
                 say(k, R_ASM_MEMORY, N(d)->name, 0);
         }
         if (op_is(m, (const char *const[]){ "xchg", "xadd", NULL }) && operand_count(k) == 2) {
-            const int f = reg_family(N(child(k, 0))->name);   /* both are written */
+            const int f = reg_family(N(child(k, att ? 0 : 1))->name);   /* both are written */
             if (f >= 0 && f != 7)
                 wrote |= 1u << f;
         }
@@ -1751,13 +2266,61 @@ static bool ends_flow(uint32_t k)
     const size_t n = strlen(b);
     if (n > 2 && b[n - 2] == '.' && (b[n - 1] == 'w' || b[n - 1] == 'n'))
         b[n - 2] = '\0';   /* Thumb's b.w */
-    if ((strcmp(b, "pop") == 0 || strncmp(b, "ldm", 3) == 0) && is(k, "Call"))
+    if (is(k, "Call") && (strcmp(b, "pop") == 0 || strncmp(b, "ldm", 3) == 0))
         for (uint32_t c = N(k)->first_child; c != NONE; c = N(c)->next_sibling)
-            if (strstr(N(c)->name, "pc"))
+            if (strchr(N(c)->name, '{') && (arm_list(N(c)->name, NULL) & (1u << 15)))
                 return true;   /* pop {r4, pc}: ARM's way back */
-    return strcmp(b, "jmp") == 0 || strcmp(b, "jmpq") == 0 || strncmp(b, "ret", 3) == 0 || strcmp(b, "ud2") == 0 ||
-           strcmp(b, "hlt") == 0 || strncmp(b, "iret", 4) == 0 || strcmp(b, "b") == 0 || strcmp(b, "br") == 0 ||
-           strcmp(b, "bx") == 0 || strcmp(b, "eret") == 0 || strcmp(b, "udf") == 0;
+    if (is(k, "Call") && N(k)->first_child != NONE && strcasecmp(N(N(k)->first_child)->name, "pc") == 0 &&
+        (strcmp(b, "ldr") == 0 || strcmp(b, "mov") == 0))
+        return true;   /* ldr pc, [sp], #4; mov pc, lr: the old ways back */
+    return strcmp(b, "jmp") == 0 || strcmp(b, "jmpq") == 0 || strcmp(b, "jmpl") == 0 || strncmp(b, "ret", 3) == 0 ||
+           strcmp(b, "ud2") == 0 || strcmp(b, "hlt") == 0 || strncmp(b, "iret", 4) == 0 || strcmp(b, "b") == 0 ||
+           strcmp(b, "br") == 0 || strcmp(b, "bx") == 0 || strcmp(b, "eret") == 0 || strcmp(b, "udf") == 0 ||
+           strcmp(b, "brk") == 0 || strcmp(b, "bkpt") == 0 || strcmp(b, "int3") == 0;
+}
+
+/* Code that never gets out: no ret, no jump (die: ... call exit). */
+static bool never_leaves(uint32_t fn)
+{
+    const uint32_t blk = body_of(fn);
+    bool code = false;
+    for (uint32_t k = blk != NONE ? N(blk)->first_child : NONE; k != NONE; k = N(k)->next_sibling) {
+        if (is(k, "Goto") || (is(k, "Call") && is_insn(k) && ends_flow(k)) || (!is(k, "Call") && !is(k, "Label")))
+            return false;   /* (what an #ifdef holds: maybe) */
+        code |= is(k, "Call") && is_insn(k);
+    }
+    return code;
+}
+
+/* The end of a function: ret, jmp, a call that never returns, exit's syscall. */
+static bool ends_function(uint32_t last)
+{
+    if (ends_flow(last) || calls_noreturn(last))
+        return true;
+    if (!is(last, "Call"))
+        return false;
+    char b[24];
+    long v = 0;
+    base_op(N(last)->name, b, sizeof b);
+    /* a syscall or svc last: exit, most likely; a program without the C library ends so */
+    return strcmp(b, "syscall") == 0 || strcmp(b, "svc") == 0 || strcmp(b, "swi") == 0 ||
+           (strcmp(b, "int") == 0 && N(last)->first_child != NONE &&
+            imm_value(N(N(last)->first_child)->name, &v) && v == 0x80);   /* int $0x80, int $128 */
+}
+
+/* Never comes back to its caller: no ret, no jump, and it ends in exit
+ * (sigreturn, a thread's own exit). A function that just stops, without
+ * ret, is not that: it falls into the next one. */
+static bool never_returns(uint32_t fn)
+{
+    if (!never_leaves(fn))
+        return false;
+    const uint32_t blk = body_of(fn);
+    uint32_t last = NONE;
+    for (uint32_t k = N(blk)->first_child; k != NONE; k = N(k)->next_sibling)
+        if (is(k, "Call") && is_insn(k))
+            last = k;
+    return last != NONE && ends_function(last);
 }
 
 /* A label's depth, as the jumps to it left the stack. */
@@ -1766,292 +2329,460 @@ typedef struct label_depth {
     int         depth;
 } label_depth;
 
-static void check_asm_function(uint32_t fn, bool att)
+/* Where the stack is at each label: as the jumps to it left it, or as the
+ * code fell into it. */
+typedef struct stack_walk {
+    label_depth jumps[64];   /* the first jump to each label, and its depth */
+    int         nj;
+    label_depth seen[64];    /* each label passed, at its depth */
+    int         ns;
+} stack_walk;
+
+/* At label `name`; `fell`: the code before it goes on into it. */
+static void walk_label(stack_walk *w, const char *name, bool fell, int *depth, bool *known)
 {
-    uint32_t blk = NONE;
-    for (uint32_t c = N(fn)->first_child; c != NONE; c = N(c)->next_sibling)
-        if (is(c, "Block"))
-            blk = c;
-    if (blk == NONE)
+    bool jumped = false;
+    for (int i = 0; i < w->nj; ++i)
+        if (strcmp(w->jumps[i].name, name) == 0) {
+            *depth = w->jumps[i].depth;
+            jumped = true;
+        }
+    if (jumped)
+        *known = true;
+    else if (!fell)
+        *known = false;   /* nobody said how they get here */
+    if (*known && w->ns < 64)
+        w->seen[w->ns++] = (label_depth){ name, *depth };
+}
+
+/* A jump to `name` at `depth`. Back to a label passed at another depth: a
+ * loop that moves the stack (stack probes, alloca): where it ends, no
+ * telling. */
+static void walk_jump(stack_walk *w, const char *name, int depth, bool *known)
+{
+    if (!*known)
         return;
-    label_depth labels[64];
-    int nl = 0, depth = 0;
-    bool known = true, after_end = false, dead_said = false, code = false;
+    for (int i = 0; i < w->ns; ++i)
+        if (strcmp(w->seen[i].name, name) == 0) {
+            if (w->seen[i].depth != depth)
+                *known = false;
+            return;
+        }
+    for (int i = 0; i < w->nj; ++i)
+        if (strcmp(w->jumps[i].name, name) == 0)
+            return;
+    if (w->nj < 64)
+        w->jumps[w->nj++] = (label_depth){ name, depth };
+}
+
+static const char *const g_reg32[16] = { "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
+                                         "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d" };
+
+/* How much a push or pop moves the stack: by its letter, else its register. */
+static int push_size(const char *m, const char *operand, int slot)
+{
+    char b[24];
+    base_op(m, b, sizeof b);
+    const size_t n = strlen(b);
+    if (n > 4 && (strncmp(b, "push", 4) == 0 || strncmp(b, "pop", 3) == 0)) {
+        const char last = b[n - 1];
+        if (last == 'q')
+            return 8;
+        if (last == 'l')
+            return 4;
+        if (last == 'w')
+            return 2;
+    }
+    while (*operand == '%' || *operand == ' ')
+        ++operand;
+    if (reg_family(operand) >= 0)
+        return tolower((unsigned char)operand[0]) == 'e' ? 4 : tolower((unsigned char)operand[0]) == 'r' ? 8 :
+                                                                                                            2;
+    return slot;
+}
+
+/* lea -8(%rsp), %rsp / lea rsp, [rsp+8]: how far it moves rsp. */
+static bool lea_rsp(const char *src, long *off)
+{
+    const char *at = strchr(src, '(');
+    if (at) {   /* AT&T */
+        if (!strstr(at, "sp)") || strchr(at, ','))
+            return false;
+        if (at == src) {
+            *off = 0;
+            return true;
+        }
+        return imm_value_n(src, (size_t)(at - src), off);
+    }
+    const char *br = strchr(src, '[');
+    if (!br || !strstr(br, "sp"))
+        return false;
+    const char *sign = strpbrk(br, "+-");
+    if (!sign) {
+        *off = 0;
+        return true;
+    }
+    const char *close = strchr(sign, ']');
+    if (!close || !imm_value_n(sign + 1, (size_t)(close - sign - 1), off))
+        return false;
+    if (*sign == '-')
+        *off = -*off;
+    return true;
+}
+
+/* ARM instructions whose first operand is not written. */
+static const char *const g_arm_no_write[] = { "cmp", "cmn", "tst", "teq", "b", "bl", "blr", "blx", "bx", "br",
+                                              "ret", "svc", "nop", "push", "pop", "prfm", "dmb", "dsb", "isb",
+                                              "vpush", "vpop", NULL };
+
+/* Does the function load the stack pointer from somewhere (longjmp,
+ * swapcontext, a thread's start)? Then it switches stacks and puts back
+ * the callee's registers on purpose: an ordinary function's rules are not
+ * its rules. arch: 0 x86, 1 AArch64, 2 32-bit ARM. */
+static bool switches_stack(uint32_t fn, int arch, bool att)
+{
+    const uint32_t blk = body_of(fn);
+    for (uint32_t k = blk != NONE ? N(blk)->first_child : NONE; k != NONE; k = N(k)->next_sibling) {
+        if (!is(k, "Call") || !is_insn(k))
+            continue;
+        const char *m = N(k)->name;
+        char b[24];
+        base_op(m, b, sizeof b);
+        const int nops = operand_count(k);
+        long imm;
+        if (arch == 0) {
+            const uint32_t d = dest_of(k, att);
+            if (d == NONE || reg_family(N(d)->name) != 7)
+                continue;
+            const uint32_t src = nops == 2 ? child(k, att ? 0 : 1) : NONE;
+            if (op_is(m, (const char *const[]){ "pop", NULL }))
+                return true;
+            if (!writes_dest(m) || op_is(m, (const char *const[]){ "and", NULL }))
+                continue;
+            if (op_is(m, (const char *const[]){ "add", "sub", NULL }) && src != NONE && imm_value(N(src)->name, &imm))
+                continue;
+            if (op_is(m, (const char *const[]){ "mov", NULL }) && src != NONE && reg_family(N(src)->name) == 6)
+                continue;
+            if (op_is(m, (const char *const[]){ "lea", NULL }) && src != NONE && lea_rsp(N(src)->name, &imm))
+                continue;
+            return true;
+        }
+        const bool a64 = arch == 1;
+        const int spr = a64 ? 32 : 13;
+        if (nops == 0 || arm_reg(N(child(k, 0))->name, a64) != spr)
+            continue;
+        const int r1 = nops > 1 ? arm_reg(N(child(k, 1))->name, a64) : -1;
+        const bool frame = r1 == spr || r1 == (a64 ? 29 : 11) || (!a64 && r1 == 7);
+        if ((strncmp(b, "add", 3) == 0 || strncmp(b, "sub", 3) == 0) && frame)
+            continue;
+        if (strcmp(b, "mov") == 0 && frame)
+            continue;
+        if (strncmp(b, "st", 2) == 0 || in_list(b, g_arm_no_write))
+            continue;
+        return true;
+    }
+    return false;
+}
+
+/* The function's code ends without getting out (no ret, no jump): it runs
+ * on into whatever is next. Said by the file, which knows what is next. */
+static bool check_asm_function(uint32_t fn, bool att, bool wide, bool continued, int *ninsn)
+{
+    const uint32_t blk = body_of(fn);
+    *ninsn = 0;
+    if (blk == NONE)
+        return false;
+    stack_walk w = { .nj = 0 };
+    int depth = 0, frame = 0;   /* depth: bytes pushed since the function began */
+    const bool context = switches_stack(fn, 0, att);
+    const int slot = wide ? 8 : 4;
+    bool known = true, after_end = false, dead_said = false, code = false, pp_tail = false, frame_set = false,
+         frame_known = false;
     unsigned saved = 0, said_callee = 0;
-    if (strcmp(N(fn)->name, "_start") == 0)
-        said_callee = ~0u;   /* the entry point: nobody called it, nothing to give back */
+    /* the entry point (nobody called it), the rest of a function cut in two
+     * by a label of its own (what it pushed, who knows), or a longjmp: nothing
+     * to give back the usual way */
+    if (strcmp(N(fn)->name, "_start") == 0 || continued || context || never_returns(fn))
+        said_callee = ~0u;
+    if (continued || context)
+        known = false;
     uint32_t last = NONE;
-    const unsigned callee = (1u << 1) | (1u << 6) | (1u << 12) | (1u << 13) | (1u << 14) | (1u << 15);
+    /* the callee's: rbx, rbp, r12-r15 (32-bit: ebx, ebp; esi and edi are too
+     * in i386's cdecl, but x32's arguments: not said) */
+    const unsigned callee = wide ? (1u << 1) | (1u << 6) | (1u << 12) | (1u << 13) | (1u << 14) | (1u << 15)
+                                 : (1u << 1) | (1u << 6);
     for (uint32_t k = N(blk)->first_child; k != NONE; k = N(k)->next_sibling) {
         if (outside(k))
             continue;
         if (is(k, "Label")) {
             after_end = false;
-            known = false;   /* where jumps to it left the stack, if any said */
-            for (int i = 0; i < nl; ++i)
-                if (strcmp(labels[i].name, N(k)->name) == 0) {
-                    depth = labels[i].depth;
-                    known = true;
-                }
-            if (!known && (last == NONE || !ends_flow(last)))
-                known = true;   /* fell into it (or it is where the function starts) */   /* fell into it: the same depth */
+            walk_label(&w, N(k)->name, last == NONE || !ends_flow(last), &depth, &known);
             continue;
         }
-        const bool directive = is(k, "Call") && !is_insn(k);
-        if (directive)
-            continue;   /* .size, .cfi_...: not code */
+        if (!is(k, "Call") && !is(k, "Goto")) {   /* #ifdef ... #endif: what is in it, maybe */
+            known = false;
+            after_end = false;
+            pp_tail = true;
+            continue;
+        }
+        if (is(k, "Call") && !is_insn(k)) {   /* .size, .cfi_...: not code */
+            if (strcmp(N(k)->name, ".intel_syntax") == 0)
+                att = false;
+            else if (strcmp(N(k)->name, ".att_syntax") == 0)
+                att = true;
+            else if (strncmp(N(k)->name, ".inst", 5) == 0 || strcmp(N(k)->name, ".byte") == 0) {
+                pp_tail = true;   /* an instruction written as a number: what it does, who knows */
+                after_end = false;
+            }
+            continue;
+        }
+        pp_tail = false;
         if (after_end && !dead_said) {
             say(k, R_ASM_DEAD, is(k, "Goto") ? N(k)->op : N(k)->name, 0);
             dead_said = true;
         }
         code = true;
         last = k;
+        ++*ninsn;
         if (is(k, "Goto")) {
-            if (known && nl < 64) {
-                bool there = false;
-                for (int i = 0; i < nl; ++i)
-                    there |= strcmp(labels[i].name, N(k)->name) == 0;
-                if (!there)
-                    labels[nl++] = (label_depth){ N(k)->name, depth };
-            }
+            walk_jump(&w, N(k)->name, depth, &known);
             after_end = ends_flow(k);
             continue;
         }
-        if (!is(k, "Call"))
-            continue;
         const char *m = N(k)->name;
         char b[24];
         base_op(m, b, sizeof b);
+        const int nops = operand_count(k);
         const uint32_t d = dest_of(k, att);
         const int f = d != NONE ? reg_family(N(d)->name) : -1;
-        if (op_is(m, (const char *const[]){ "push", NULL })) {
-            ++depth;
+        const uint32_t src = nops == 2 ? child(k, att ? 0 : 1) : NONE;
+        const int sf = src != NONE ? reg_family(N(src)->name) : -1;
+        long imm = 0;
+        if (op_is(m, (const char *const[]){ "call", NULL }) && nops == 1) {
+            /* call 1f / 1: pop %edx: a call to the very next line pushes its
+             * address (i386's way to know where it is) */
+            uint32_t nx = N(k)->next_sibling;
+            while (nx != NONE && is(nx, "Call") && !is_insn(nx))
+                nx = N(nx)->next_sibling;
+            const char *t = N(child(k, 0))->name;
+            const size_t tl = strlen(t);
+            if (nx != NONE && is(nx, "Label") &&
+                (strcmp(t, N(nx)->name) == 0 ||
+                 (tl > 1 && t[tl - 1] == 'f' && strlen(N(nx)->name) == tl - 1 && strncmp(t, N(nx)->name, tl - 1) == 0)))
+                depth += slot;
+        }
+        if (op_is(m, (const char *const[]){ "push", "pushf", NULL })) {
+            depth += push_size(m, nops ? N(child(k, 0))->name : "", slot);
             if (f >= 0)
                 saved |= 1u << f;
-        } else if (op_is(m, (const char *const[]){ "pop", NULL })) {
-            --depth;
-        } else if (strncmp(b, "ret", 3) == 0 && known && depth != 0) {
-            say(k, R_ASM_STACK, "", depth > 0 ? depth : -depth);
-        } else if (f >= 0 && ((1u << f) & callee) && writes_dest(m) && !((1u << f) & saved) &&
-                   !((1u << f) & said_callee)) {
+        } else if (op_is(m, (const char *const[]){ "pop", "popf", NULL })) {
+            depth -= push_size(m, nops ? N(child(k, 0))->name : "", slot);
+        } else if (strncmp(b, "ret", 3) == 0) {
+            if (known && depth != 0 && !context)
+                say(k, R_ASM_STACK, "", depth > 0 ? depth : -depth);
+        } else if (strcmp(b, "leave") == 0 || strcmp(b, "leaveq") == 0 || strcmp(b, "leavel") == 0) {
+            depth = frame - slot;   /* mov %rbp, %rsp; pop %rbp */
+            known = frame_set && frame_known;
+        } else if (f == 7 && writes_dest(m)) {   /* rsp itself */
+            if (op_is(m, (const char *const[]){ "sub", NULL }) && src != NONE && imm_value(N(src)->name, &imm))
+                depth += (int)imm;
+            else if (op_is(m, (const char *const[]){ "add", NULL }) && src != NONE && imm_value(N(src)->name, &imm))
+                depth -= (int)imm;
+            else if (op_is(m, (const char *const[]){ "mov", NULL }) && sf == 6 && frame_set) {
+                depth = frame;   /* mov %rbp, %rsp: back to the frame */
+                known = frame_known;
+            } else if (op_is(m, (const char *const[]){ "lea", NULL }) && src != NONE && lea_rsp(N(src)->name, &imm))
+                depth -= (int)imm;
+            else
+                known = false;   /* and $-16, %rsp: where it is now, nobody can say */
+        }
+        if (sf >= 0 && d != NONE && f < 0 && op_is(m, (const char *const[]){ "mov", NULL }) &&
+            (strchr(N(d)->name, '(') || strchr(N(d)->name, '[')))
+            saved |= 1u << sf;   /* mov %rbx, 8(%rdi): kept somewhere, to be put back */
+        if (f == 6 && sf == 7 && op_is(m, (const char *const[]){ "mov", NULL })) {
+            frame = depth;   /* mov %rsp, %rbp */
+            frame_set = true;
+            frame_known = known;
+        }
+        if (f >= 0 && ((1u << f) & callee) && writes_dest(m) && !op_is(m, (const char *const[]){ "pop", NULL }) &&
+            !((1u << f) & saved) && !((1u << f) & said_callee)) {
             said_callee |= 1u << f;
-            g_y = "rax, rcx, rdx, rsi, rdi, r8-r11";
-            say(k, R_ASM_CALLEE, g_reg64[f], 0);
+            g_y = wide ? "rax, rcx, rdx, rsi, rdi, r8-r11" : "eax, ecx, edx";
+            say(k, R_ASM_CALLEE, wide ? g_reg64[f] : g_reg32[f], 0);
             g_y = "";
         }
         /* mov $0, %eax: xor is shorter */
-        if (operand_count(k) == 2 && op_is(m, (const char *const[]){ "mov", NULL }) && f >= 0) {
-            const char *src = N(child(k, att ? 0 : 1))->name;
-            if (strcmp(src, att ? "$0" : "0") == 0)
+        if (nops == 2 && op_is(m, (const char *const[]){ "mov", NULL }) && f >= 0) {
+            const char *s = N(child(k, att ? 0 : 1))->name;
+            if (strcmp(s, att ? "$0" : "0") == 0)
                 say(k, R_ASM_ZERO, N(d)->name[0] == '%' ? N(d)->name + 1 : N(d)->name, 0);
         }
         after_end = ends_flow(k);
     }
-    /* the end: ret, jmp, or into the next function */
-    /* (a syscall last: exit, most likely; a program without the C library ends so) */
-    if (code && last != NONE && !ends_flow(last) && !(is(last, "Call") && strcmp(N(last)->name, "syscall") == 0) &&
-        !(is(last, "Call") && strcmp(N(last)->name, "call") == 0 && N(last)->first_child != NONE &&
-          (strstr(N(N(last)->first_child)->name, "exit") || strstr(N(N(last)->first_child)->name, "abort"))))
-        say(fn, R_ASM_FALLTHROUGH, N(fn)->name, 0);
+    return code && last != NONE && !pp_tail && !ends_function(last);
 }
-
 
 /* --- ARM ---------------------------------------------------------------- */
 
-/* An ARM register's number (x5, w5, r5: 5; fp, lr, sp, pc by name), or -1.
- * AArch64: 31 the zero register, 32 sp. */
-static int arm_reg(const char *op, bool a64)
+static bool check_arm_function(uint32_t fn, bool a64, bool continued, int *ninsn)
 {
-    char w[8];
-    size_t n = 0;
-    while (*op == ' ' || *op == '{')
-        ++op;
-    while (n < sizeof w - 1 && isalnum((unsigned char)op[n])) {
-        w[n] = (char)tolower((unsigned char)op[n]);
-        ++n;
-    }
-    w[n] = '\0';
-    if (op[n] && op[n] != ' ' && op[n] != '!' && op[n] != '}' && op[n] != ',')
-        return -1;
-    if (a64) {
-        if (strcmp(w, "xzr") == 0 || strcmp(w, "wzr") == 0) return 31;
-        if (strcmp(w, "sp") == 0 || strcmp(w, "wsp") == 0) return 32;
-        if (strcmp(w, "fp") == 0) return 29;
-        if (strcmp(w, "lr") == 0) return 30;
-        if ((w[0] == 'x' || w[0] == 'w') && isdigit((unsigned char)w[1]) && n <= 3 &&
-            (n == 2 || isdigit((unsigned char)w[2])) && atoi(w + 1) <= 30)
-            return atoi(w + 1);
-        return -1;
-    }
-    static const struct { const char *name; int r; } named[] = {
-        { "fp", 11 }, { "ip", 12 }, { "sp", 13 }, { "lr", 14 }, { "pc", 15 } };
-    for (size_t i = 0; i < sizeof named / sizeof named[0]; ++i)
-        if (strcmp(w, named[i].name) == 0)
-            return named[i].r;
-    if (w[0] == 'r' && isdigit((unsigned char)w[1]) && n <= 3 && (n == 2 || isdigit((unsigned char)w[2])) &&
-        atoi(w + 1) <= 15)
-        return atoi(w + 1);
-    return -1;
-}
-
-/* The registers of {r4-r7, lr}, as bits. */
-static unsigned arm_list(const char *s)
-{
-    unsigned bits = 0;
-    int prev = -1;
-    bool range = false;
-    while (*s) {
-        if (*s == '-') {
-            range = true;
-            ++s;
-            continue;
-        }
-        if (!isalpha((unsigned char)*s)) {
-            ++s;
-            continue;
-        }
-        const int r = arm_reg(s, false);
-        if (r >= 0) {
-            if (range && prev >= 0)
-                for (int k = prev; k <= r; ++k)
-                    bits |= 1u << k;
-            bits |= 1u << r;
-            prev = r;
-        }
-        range = false;
-        while (isalnum((unsigned char)*s))
-            ++s;
-    }
-    return bits;
-}
-
-/* x86 or ARM, from the registers the operands name. 0, 1 (AArch64), 2. */
-static int asm_arch(void)
-{
-    int x86 = 0, a64 = 0, a32 = 0;
-    for (uint32_t k = 0; k < F->node_count; ++k) {
-        if (!is(k, "Text") || N(k)->parent == NONE || !(N(N(k)->parent)->flags & CCR_PNODE_ASM))
-            continue;
-        const char *t = N(k)->name;
-        if (t[0] == '%' || t[0] == '$')
-            ++x86;
-        else if (t[0] == '{' || (arm_reg(t, false) >= 0 && arm_reg(t, false) <= 7))
-            ++a32;
-        else if (arm_reg(t, true) >= 0 && arm_reg(t, true) <= 30 && (t[0] == 'x' || t[0] == 'w'))
-            ++a64;
-    }
-    if (x86 >= a64 + a32)
-        return 0;
-    return a64 >= a32 ? 1 : 2;
-}
-
-static bool has_sp(const char *t) { return strstr(t, "sp") != NULL; }
-
-static void check_arm_function(uint32_t fn, bool a64)
-{
-    uint32_t blk = NONE;
-    for (uint32_t c = N(fn)->first_child; c != NONE; c = N(c)->next_sibling)
-        if (is(c, "Block"))
-            blk = c;
+    const uint32_t blk = body_of(fn);
+    *ninsn = 0;
     if (blk == NONE)
-        return;
+        return false;
+    const bool context = switches_stack(fn, a64 ? 1 : 2, true);
     const unsigned callee = a64 ? 0x3FF80000u /* x19-x29 */ : 0x0FF0u /* r4-r11 */;
-    const int lr = a64 ? 30 : 14;
-    label_depth labels[64];
-    int nl = 0, depth = 0, frame = -1;   /* frame: the depth when fp took sp */
-    bool known = true, after_end = false, dead_said = false, code = false, lr_saved = false, said_stack = false;
-    unsigned saved = 0, said_callee = strcmp(N(fn)->name, "_start") == 0 ? ~0u : 0u;
+    const int lr = a64 ? 30 : 14, spr = a64 ? 32 : 13, fpr = a64 ? 29 : 11;
+    stack_walk w = { .nj = 0 };
+    int depth = 0, frame = 0, frame_reg = -1;   /* depth in bytes; frame: the depth when fp took sp */
+    bool known = true, after_end = false, dead_said = false, code = false, lr_saved = false, said_stack = false,
+         table = false, pp_tail = false, frame_known = false;
+    /* (nor a function that never comes back: sigreturn, exit) */
+    unsigned saved = 0, said_callee = strcmp(N(fn)->name, "_start") == 0 || continued || context || never_returns(fn)
+                                          ? ~0u : 0u;
+    if (continued || context)
+        known = false;
     uint32_t last = NONE, unsaved_bl = NONE;
     for (uint32_t k = N(blk)->first_child; k != NONE; k = N(k)->next_sibling) {
         if (outside(k))
             continue;
         if (is(k, "Label")) {
             after_end = false;
-            known = false;
-            for (int i = 0; i < nl; ++i)
-                if (strcmp(labels[i].name, N(k)->name) == 0) {
-                    depth = labels[i].depth;
-                    known = true;
-                }
-            if (!known && (last == NONE || !ends_flow(last)))
-                known = true;   /* fell into it (or it is where the function starts) */
+            walk_label(&w, N(k)->name, last == NONE || !ends_flow(last), &depth, &known);
             continue;
         }
-        if (is(k, "Call") && !is_insn(k))
+        if (!is(k, "Call") && !is(k, "Goto")) {   /* #ifdef ... #endif */
+            known = false;
+            after_end = false;
+            pp_tail = true;
             continue;
-        if (after_end && !dead_said) {
+        }
+        if (is(k, "Call") && !is_insn(k)) {
+            if (strncmp(N(k)->name, ".inst", 5) == 0) {
+                pp_tail = true;   /* .inst 0xe7f000f0: an instruction written as a number (a trap, here) */
+                after_end = false;
+            }
+            continue;
+        }
+        pp_tail = false;
+        if (after_end && !dead_said && !table) {
             say(k, R_ASM_DEAD, is(k, "Goto") ? N(k)->op : N(k)->name, 0);
             dead_said = true;
         }
         code = true;
         last = k;
+        ++*ninsn;
         if (is(k, "Goto")) {
-            if (known && nl < 64) {
-                bool there = false;
-                for (int i = 0; i < nl; ++i)
-                    there |= strcmp(labels[i].name, N(k)->name) == 0;
-                if (!there)
-                    labels[nl++] = (label_depth){ N(k)->name, depth };
-            }
+            walk_jump(&w, N(k)->name, depth, &known);
             after_end = ends_flow(k);
             continue;
         }
-        if (!is(k, "Call"))
-            continue;
         char b[24];
         base_op(N(k)->name, b, sizeof b);
         const int nops = operand_count(k);
         const char *op0 = nops > 0 ? N(child(k, 0))->name : "";
+        const char *op1 = nops > 1 ? N(child(k, 1))->name : "";
+        const char *op2 = nops > 2 ? N(child(k, 2))->name : "";
         const char *opl = nops > 0 ? N(child(k, nops - 1))->name : "";
+        const int r0 = arm_reg(op0, a64), r1 = arm_reg(op1, a64);
         bool returns = false;
-        if (a64) {
-            if ((strcmp(b, "stp") == 0 || strncmp(b, "str", 3) == 0) && nops >= 2 && has_sp(opl) == false &&
-                nops >= 3 && has_sp(N(child(k, nops - 2))->name) && opl[0] == '#') {
-                /* str x, [sp], #N: post-index store, not a push */
-            } else if ((strcmp(b, "stp") == 0 || strcmp(b, "str") == 0) && has_sp(opl)) {
-                for (int q = 0; q + 1 < nops; ++q) {
-                    const int r = arm_reg(N(child(k, q))->name, true);
-                    if (r >= 0 && r <= 30)
-                        saved |= 1u << r;
+        /* the memory operand of a load or store, and what comes after it */
+        int mem_at = -1;
+        arm_mem mem = { -1, 0, true, false };
+        for (int q = 0; q < nops; ++q)
+            if (arm_mem_of(N(child(k, q))->name, a64, &mem)) {
+                mem_at = q;
+                break;
+            }
+        long post = 0;
+        const bool has_post = mem_at >= 0 && mem_at + 1 < nops && imm_value(N(child(k, mem_at + 1))->name, &post);
+        const bool store = strncmp(b, "st", 2) == 0 && strncmp(b, "stm", 3) != 0;
+        const bool load = strncmp(b, "ld", 2) == 0 && strncmp(b, "ldm", 3) != 0;
+        if ((store || load) && mem_at >= 0 && mem.base == spr) {
+            if (mem.pre && mem.off_known)
+                depth -= (int)mem.off;    /* [sp, #-16]! */
+            else if (mem.pre)
+                known = false;
+            if (has_post)
+                depth -= (int)post;       /* [sp], #16 */
+        }
+        if (store && mem_at > 0)
+            for (int q = 0; q < mem_at; ++q) {   /* stp x19, x20, [sp, #16], or into a jmp_buf: saved */
+                const int r = arm_reg(N(child(k, q))->name, a64);
+                if (r >= 0 && r <= 30) {
+                    saved |= 1u << r;
                     lr_saved |= r == lr;
                 }
-                if (strchr(opl, '!') && strstr(opl, "#-"))
-                    ++depth;   /* stp x29, x30, [sp, #-16]! */
-            } else if ((strcmp(b, "ldp") == 0 || strcmp(b, "ldr") == 0) && nops >= 3 &&
-                       strcmp(N(child(k, nops - 2))->name, "[sp]") == 0) {
-                --depth;       /* ldp x29, x30, [sp], #16 */
             }
-            if (nops >= 2 && strcmp(b, "sub") == 0 && arm_reg(op0, true) == 32 && arm_reg(N(child(k, 1))->name, true) == 32)
-                ++depth;
-            if (nops >= 2 && strcmp(b, "add") == 0 && arm_reg(op0, true) == 32 && arm_reg(N(child(k, 1))->name, true) == 32)
-                --depth;
-            if (nops == 2 && strcmp(b, "mov") == 0 && arm_reg(op0, true) == 29 && arm_reg(N(child(k, 1))->name, true) == 32)
-                frame = depth;   /* mov x29, sp */
-            if (nops == 2 && strcmp(b, "mov") == 0 && arm_reg(op0, true) == 32 && frame >= 0)
-                depth = frame;   /* mov sp, x29: back to the frame */
-            returns = strcmp(b, "ret") == 0;
-        } else {
-            const bool push = strcmp(b, "push") == 0 || ((strcmp(b, "stmfd") == 0 || strcmp(b, "stmdb") == 0) && nops == 2 && has_sp(op0));
-            const bool pop = strcmp(b, "pop") == 0 || ((strcmp(b, "ldmfd") == 0 || strcmp(b, "ldmia") == 0) && nops == 2 && has_sp(op0));
+        if (load && mem_at >= 0 && r0 == 15 && !a64)
+            returns = true;   /* ldr pc, [sp], #4 */
+        if (!a64) {
+            const bool sp_list = nops == 2 && arm_reg(op0, false) == 13 && strchr(op0, '!');
+            const bool push = strcmp(b, "push") == 0 || strcmp(b, "vpush") == 0 ||
+                              ((strcmp(b, "stmfd") == 0 || strcmp(b, "stmdb") == 0 || strcmp(b, "vstmdb") == 0) &&
+                               sp_list);
+            const bool pop = strcmp(b, "pop") == 0 || strcmp(b, "vpop") == 0 ||
+                             ((strcmp(b, "ldmfd") == 0 || strcmp(b, "ldmia") == 0 || strcmp(b, "ldm") == 0 ||
+                               strcmp(b, "vldmia") == 0) &&
+                              sp_list);
+            int count = 0;
+            const unsigned bits = arm_list(opl, &count);
+            const int unit = b[0] == 'v' && strchr(opl, 'd') ? 8 : 4;
             if (push) {
-                const unsigned bits = arm_list(opl);
                 saved |= bits;
                 lr_saved |= (bits >> lr) & 1u;
-                ++depth;
+                depth += count * unit;
             } else if (pop) {
-                --depth;
-                returns = (arm_list(opl) >> 15) & 1u;
+                depth -= count * unit;
+                returns |= (bits >> 15) & 1u;
+            } else if (strncmp(b, "stm", 3) == 0 && nops == 2 && (arm_reg(op0, false) == 13 || arm_reg(op0, false) == 11)) {
+                saved |= bits;   /* stm sp, {ip, lr} */
+                lr_saved |= (bits >> lr) & 1u;
             }
-            if (nops >= 2 && strcmp(b, "sub") == 0 && arm_reg(op0, false) == 13 && arm_reg(N(child(k, 1))->name, false) == 13)
-                ++depth;
-            if (nops >= 2 && strcmp(b, "add") == 0 && arm_reg(op0, false) == 13 && arm_reg(N(child(k, 1))->name, false) == 13)
-                --depth;
-            returns |= strcmp(b, "bx") == 0 && arm_reg(op0, false) == 14;
-            if (nops == 2 && strcmp(b, "mov") == 0 && arm_reg(op0, false) == 11 && arm_reg(N(child(k, 1))->name, false) == 13)
-                frame = depth;   /* mov r11, sp */
-            if (nops == 2 && strcmp(b, "mov") == 0 && arm_reg(op0, false) == 13 && frame >= 0)
-                depth = frame;   /* mov sp, r11 */
+            returns |= strcmp(b, "bx") == 0 && r0 == 14;
+            returns |= strcmp(b, "mov") == 0 && r0 == 15 && r1 == 14;
+            /* add pc, pc, r3, lsl #2: a jump table, what follows is reached */
+            if (r0 == 15 && !returns && strcmp(b, "bx") != 0 && !(load && mem.base == spr))
+                table = true;
         }
+        /* sp moved by hand, and the frame register */
+        const bool add = strcmp(b, "add") == 0 || strcmp(b, "adds") == 0 || strcmp(b, "addw") == 0;
+        const bool sub = strcmp(b, "sub") == 0 || strcmp(b, "subs") == 0 || strcmp(b, "subw") == 0;
+        const char *const *no_write = g_arm_no_write;
+        long imm = 0;
+        bool imm_ok = nops >= 3 && imm_value(op2, &imm);
+        if (imm_ok && nops >= 4) {   /* #1, lsl #12 */
+            const char *sh = N(child(k, 3))->name;
+            long amount;
+            if (strncasecmp(sh, "lsl", 3) == 0 && imm_value(sh + 3, &amount) && amount >= 0 && amount < 31)
+                imm <<= amount;
+            else
+                imm_ok = false;
+        }
+        if (r0 == spr && (add || sub || strcmp(b, "mov") == 0)) {
+            if ((add || sub) && r1 == spr && imm_ok)
+                depth += sub ? (int)imm : -(int)imm;
+            else if ((add || sub) && r1 >= 0 && r1 == frame_reg && imm_ok) {
+                depth = sub ? frame + (int)imm : frame - (int)imm;   /* sub sp, fp, #4 */
+                known = frame_known;
+            } else if (strcmp(b, "mov") == 0 && r1 >= 0 && r1 == frame_reg) {
+                depth = frame;   /* mov sp, x29 */
+                known = frame_known;
+            } else {
+                known = false;
+            }
+        } else if (r0 == spr && !store && !in_list(b, no_write)) {
+            known = false;   /* sp written some other way: where it is now, nobody can say */
+        } else if (r0 >= 0 && r0 != spr && r1 == spr && (strcmp(b, "mov") == 0 || ((add || sub) && imm_ok)) &&
+                   (r0 == fpr || (!a64 && r0 == 7))) {
+            frame_reg = r0;   /* mov x29, sp; add fp, sp, #4; add r7, sp, #0 */
+            frame = strcmp(b, "mov") == 0 ? depth : add ? depth - (int)imm : depth + (int)imm;
+            frame_known = known;
+        } else if (r0 >= 0 && r0 == frame_reg && r1 == frame_reg && (add || sub) && imm_ok) {
+            frame += add ? -(int)imm : (int)imm;   /* adds r7, r7, #32 */
+        }
+        if (a64)
+            returns |= strcmp(b, "ret") == 0;
         /* bl: the way back gets overwritten, unless it was saved */
         if ((strcmp(b, "bl") == 0 || strcmp(b, "blr") == 0 || strcmp(b, "blx") == 0) && !lr_saved &&
             unsaved_bl == NONE)
@@ -2059,20 +2790,17 @@ static void check_arm_function(uint32_t fn, bool a64)
         if (returns) {
             if (unsaved_bl != NONE) {
                 g_y = a64 ? "x30" : "lr";
-                say(unsaved_bl, R_ARM_LR, nops ? N(child(unsaved_bl, 0))->name : "", 0);
+                say(unsaved_bl, R_ARM_LR, operand_count(unsaved_bl) ? N(child(unsaved_bl, 0))->name : "", 0);
                 g_y = "";
                 unsaved_bl = NONE;
             }
-            if (known && depth != 0 && !said_stack) {
+            if (known && depth != 0 && !said_stack && !context) {
                 say(k, R_ARM_STACK, "", depth > 0 ? depth : -depth);
                 said_stack = true;
             }
         }
         /* writing a register that is the caller's */
-        static const char *const no_write[] = { "cmp", "cmn", "tst", "teq", "b", "bl", "blr", "blx", "bx", "br",
-                                                "ret", "svc", "nop", "push", "pop", "prfm", "dmb", "dsb", "isb", NULL };
-        if (nops > 0 && !in_list(b, no_write) && strncmp(b, "str", 3) != 0 && strncmp(b, "stp", 3) != 0 &&
-            strncmp(b, "stm", 3) != 0 && strncmp(b, "stur", 4) != 0 && strncmp(b, "ldm", 3) != 0 &&
+        if (nops > 0 && !in_list(b, no_write) && !store && strncmp(b, "stm", 3) != 0 && strncmp(b, "ldm", 3) != 0 &&
             strncmp(b, "cb", 2) != 0 && strncmp(b, "tb", 2) != 0) {
             const int r = arm_reg(op0, a64);
             if (r >= 0 && r < 31 && ((1u << r) & callee) && !((1u << r) & saved) && !((1u << r) & said_callee)) {
@@ -2084,11 +2812,62 @@ static void check_arm_function(uint32_t fn, bool a64)
         }
         after_end = ends_flow(k);
     }
-    if (code && last != NONE && !ends_flow(last) &&
-        !(is(last, "Call") && (strcmp(N(last)->name, "svc") == 0 || strcmp(N(last)->name, "swi") == 0)) &&
-        !(is(last, "Call") && strcmp(N(last)->name, "bl") == 0 && N(last)->first_child != NONE &&
-          (strstr(N(N(last)->first_child)->name, "exit") || strstr(N(N(last)->first_child)->name, "abort"))))
-        say(fn, R_ASM_FALLTHROUGH, N(fn)->name, 0);
+    return code && last != NONE && !pp_tail && !ends_function(last);
+}
+
+/* Which machine the file is for, from what its operands say: 0 x86, 1
+ * AArch64, 2 32-bit ARM; -1 none of those (MIPS, RISC-V, PowerPC, SuperH...):
+ * their rules are not these, so nothing is said about their functions. */
+static int asm_arch(void)
+{
+    int x86 = 0, a64 = 0, a32 = 0, armish = 0, other = 0, armops = 0;
+    /* what only ARM says (SuperH, IA-64, SPARC have r1 and #1 too) */
+    static const char *const arm_only[] = { "ldr", "str", "ldrb", "strb", "ldrh", "strh", "ldp", "stp", "ldm",
+                                            "ldmia", "ldmfd", "stm", "stmdb", "stmfd", "bl", "bx", "blx", "svc",
+                                            "swi", "adr", "adrp", "cbz", "cbnz", "movw", "movt", "mrs", "msr",
+                                            "push", "pop", NULL };
+    for (uint32_t k = 0; k < F->node_count; ++k) {
+        if ((is(k, "Call") || is(k, "Goto")) && (N(k)->flags & CCR_PNODE_ASM) && (is(k, "Goto") || is_insn(k))) {
+            const char *m = is(k, "Goto") ? N(k)->op : N(k)->name;
+            const size_t n = strlen(m);
+            other += strncmp(m, "l.", 2) == 0 || (n > 2 && m[n - 2] == '.' && (m[n - 1] == 'l' || m[n - 1] == 'b'));
+            char b[24];
+            base_op(m, b, sizeof b);
+            armops += in_list(b, arm_only) || (strncmp(b, "b.", 2) == 0 && is(k, "Goto"));
+            continue;   /* or1k's l.addi, SuperH's mov.l */
+        }
+        if (!is(k, "Text") || N(k)->parent == NONE || !(N(N(k)->parent)->flags & CCR_PNODE_ASM))
+            continue;
+        const char *t = N(k)->name;
+        const int f = reg_family(t);
+        const char *w = t;
+        while (*w == '%')
+            ++w;
+        const size_t wl = strlen(w);
+        if (f >= 0 && (f < 8 ? wl >= 3 || (t[0] == '%' && f < 4) : strchr("dwb", w[wl - 1]) != NULL))
+            ++x86;   /* rax, %eax, %al, %r8d; not a bare r8, s390's %r15, m68k's and SPARC's %sp */
+        else if (t[0] == '@')
+            ++other;   /* SuperH: @r15 */
+        else if (t[0] == '#' || t[0] == '{' || t[0] == '[')
+            ++armish;
+        else if ((t[0] == 'x' || t[0] == 'w') && arm_reg(t, true) >= 0 && arm_reg(t, true) <= 30)
+            ++a64;
+        else if (t[0] == 'r' && isdigit((unsigned char)t[1]) && arm_reg(t, false) >= 0)
+            ++a32;
+    }
+    if (x86 > 0 && x86 >= a64 + a32)
+        return 0;
+    if (other > 0 || armish == 0 || a64 + a32 == 0 || armops == 0)
+        return -1;
+    return a64 >= a32 ? 1 : 2;
+}
+
+/* .section .note.GNU-stack, or clang's ".note.GNU-stack" */
+static bool is_note_stack(const char *s)
+{
+    if (*s == '"')
+        ++s;
+    return strncmp(s, ".note.GNU-stack", 15) == 0 && (s[15] == '\0' || s[15] == '"');
 }
 
 static void check_asm_file(void)
@@ -2096,24 +2875,76 @@ static void check_asm_file(void)
     const size_t pl = strlen(F->path);
     const bool nasm = (pl > 4 && strcasecmp(F->path + pl - 4, ".asm") == 0) ||
                       (pl > 5 && strcasecmp(F->path + pl - 5, ".nasm") == 0);
-    /* AT&T unless it says otherwise: registers with %, the destination last */
-    const bool att = !nasm && !says(F->source, F->source_len, ".intel_syntax");
+    /* AT&T unless it says otherwise (.intel_syntax, not a string that
+     * mentions it): registers with %, the destination last */
+    bool att = !nasm;
     const int arch = nasm ? 0 : asm_arch();
+    /* 64-bit x86 unless only 32-bit registers are named */
+    bool wide = nasm || says(F->source, F->source_len, "rsp") || says(F->source, F->source_len, "rax") ||
+                says(F->source, F->source_len, "rbp") || says(F->source, F->source_len, "rdi") ||
+                !(says(F->source, F->source_len, "esp") || says(F->source, F->source_len, "eax"));
+    /* the functions of this file that never come back */
+    g_nnoreturn = 0;
+    for (uint32_t h = N(F->root)->first_child; h != NONE; h = N(h)->next_sibling)
+        if (is(h, "Function") && body_of(h) != NONE && never_leaves(h) && g_nnoreturn < 64)
+            g_noreturn[g_nnoreturn++] = N(h)->name;
     bool any_code = false, note = false;
+    /* a function that runs off its end: said when what comes next is known */
+    uint32_t falls = NONE;
+    int falls_insns = 0;
+    char section[64] = ".text";
     for (uint32_t h = N(F->root)->first_child; h != NONE; h = N(h)->next_sibling) {
         if (!is(h, "Function") || outside(h))
             continue;
-        if (strcmp(N(h)->type, "label") == 0 || strcmp(N(h)->type, "function") == 0) {
-            if (arch)
-                check_arm_function(h, arch == 1);
-            else
-                check_asm_function(h, att);
+        if (strcmp(N(h)->type, "section") == 0)
+            snprintf(section, sizeof section, "%s", N(h)->name);
+        const bool code = strcmp(N(h)->type, "label") == 0 || strcmp(N(h)->type, "function") == 0;
+        /* the rest of the one before, cut off by a label of its own */
+        const bool continued = falls != NONE && strcmp(N(h)->type, "label") == 0;
+        if (falls != NONE) {
+            /* into a label of its own (a function cut in two: musl's __cp_begin),
+             * or a one-liner that is another name for the next one (ldexp: nop,
+             * then scalbn): on purpose. Into anything else: say it */
+            if (!(code && (strcmp(N(h)->type, "label") == 0 || falls_insns <= 1)))
+                say(falls, R_ASM_FALLTHROUGH, N(falls)->name, 0);
+            falls = NONE;
+        }
+        if (code) {
+            /* .init and .fini are glued together from several files (crti.s,
+             * crtn.s): running on is how they work */
+            const bool glued = strncmp(section, ".init", 5) == 0 || strncmp(section, ".fini", 5) == 0;
+            bool fell = false;
+            int n = 0;
+            if (arch == 1 || arch == 2)
+                fell = check_arm_function(h, arch == 1, continued, &n);
+            else if (arch == 0)
+                fell = check_asm_function(h, att, wide, continued, &n);
+            if (fell && !glued) {
+                falls = h;
+                falls_insns = n;
+            }
             any_code = true;
         }
+        const uint32_t blk = body_of(h);   /* the syntax and section it leaves for the next one */
+        for (uint32_t k = blk != NONE ? N(blk)->first_child : NONE; k != NONE; k = N(k)->next_sibling) {
+            if (!is(k, "Call"))
+                continue;
+            const char *d = N(k)->name;
+            if (strcmp(d, ".intel_syntax") == 0 && !nasm)
+                att = false;
+            else if (strcmp(d, ".att_syntax") == 0 && !nasm)
+                att = true;
+            else if (strcmp(d, ".section") == 0 && N(k)->first_child != NONE)
+                snprintf(section, sizeof section, "%s", N(N(k)->first_child)->name);
+            else if (strcmp(d, ".text") == 0 || strcmp(d, ".data") == 0 || strcmp(d, ".bss") == 0)
+                snprintf(section, sizeof section, "%s", d);
+        }
     }
+    if (falls != NONE)
+        say(falls, R_ASM_FALLTHROUGH, N(falls)->name, 0);
     for (uint32_t k = 0; k < F->node_count; ++k)
         note |= is(k, "Call") && strcmp(N(k)->name, ".section") == 0 && N(k)->first_child != NONE &&
-                strcmp(N(N(k)->first_child)->name, ".note.GNU-stack") == 0;
+                is_note_stack(N(N(k)->first_child)->name);
     if (!nasm && any_code && !note) {
         uint32_t first = N(F->root)->first_child;
         say(first, R_ASM_NOSTACK, "", 0);

@@ -29,7 +29,7 @@ typedef struct ccr_finding {
     int               plugin;    /* which one (ccr_plugins_*(i)) */
     ccr_node_id       node;
     ccr_find_level    level;
-    char              title[96];
+    char              title[128];
     char              message[1400];
     bool              poke;      /* the plugin wants the user's nose rubbed in it */
     char              say[160];  /* ...shouting this */

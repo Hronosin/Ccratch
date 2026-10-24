@@ -370,6 +370,21 @@ static const char *on_setting(const ccr_plugin_file *file, const char *key)
 static void on_report(const ccr_plugin_file *file, uint32_t node, ccr_finding_level level, const char *title,
                       const char *message);
 
+/* A plugin's text into one of ours: cut where it does not fit, but on a
+ * whole letter (a Russian title cut in half shows as garbage). */
+static void copy_text(char *dst, size_t cap, const char *src)
+{
+    size_t n = src ? strlen(src) : 0;
+    if (n >= cap) {
+        n = cap - 1;
+        while (n > 0 && ((unsigned char)src[n] & 0xC0u) == 0x80u)
+            --n;   /* back to the first byte of the letter that did not fit */
+    }
+    if (n)
+        memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
 static void on_poke(const ccr_plugin_file *file, uint32_t node, const char *say)
 {
     collect *c = file->host_data;
@@ -379,13 +394,13 @@ static void on_poke(const ccr_plugin_file *file, uint32_t node, const char *say)
     for (int k = c->n - 1; k >= 0; --k)
         if (c->list[k].plugin == c->plugin && c->list[k].node == node) {
             c->list[k].poke = true;
-            snprintf(c->list[k].say, sizeof c->list[k].say, "%s", say ? say : "");
+            copy_text(c->list[k].say, sizeof c->list[k].say, say);
             return;
         }
     on_report(file, node, CCR_FINDING_ERROR, say, say);
     if (c->n && c->list[c->n - 1].node == node) {
         c->list[c->n - 1].poke = true;
-        snprintf(c->list[c->n - 1].say, sizeof c->list[c->n - 1].say, "%s", say ? say : "");
+        copy_text(c->list[c->n - 1].say, sizeof c->list[c->n - 1].say, say);
     }
 }
 
@@ -409,8 +424,8 @@ static void on_report(const ccr_plugin_file *file, uint32_t node, ccr_finding_le
     f->level = (ccr_find_level)level;
     f->poke = false;
     f->say[0] = '\0';
-    snprintf(f->title, sizeof f->title, "%s", title ? title : "");
-    snprintf(f->message, sizeof f->message, "%s", message ? message : "");
+    copy_text(f->title, sizeof f->title, title);
+    copy_text(f->message, sizeof f->message, message);
 }
 
 static const ccr_ast *g_sort_ast;
