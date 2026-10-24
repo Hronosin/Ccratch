@@ -1627,6 +1627,19 @@ static void test_pick_value(void)
     ccr_editor_free(&ed);
 }
 
+/* A string of the tree interned again, while interning grows (and moves)
+ * the strings: it must be read before the move, not after (ASan says). */
+static void test_intern_own_string(void)
+{
+    ccr_ast a;
+    CHECK(ccr_ast_init(&a), "init");
+    ccr_str s = ccr_ast_intern(&a, "operator+=");
+    for (int i = 0; i < 3000; ++i)
+        s = ccr_ast_intern(&a, ccr_ast_str(&a, s) + (i == 0 ? 8 : 0));   /* "+=", then itself */
+    CHECK(strcmp(ccr_ast_str(&a, s), "+=") == 0, "interned from its own strings: %s", ccr_ast_str(&a, s));
+    ccr_ast_free(&a);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -1640,6 +1653,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    test_intern_own_string();
     test_unchanged();
     test_pick_value();
     test_move_with_comment();

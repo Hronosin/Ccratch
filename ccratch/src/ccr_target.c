@@ -202,6 +202,8 @@ void ccr_target_probe(ccr_target_kind k, ccr_target_info *out)
         return;
     }
     const triples *t = linux_triples(k);
+    if (!t)
+        return;   /* not a machine there is: nothing builds for it */
     char gcc[300], path[600];
     snprintf(gcc, sizeof gcc, "%s-gcc", t->gnu);
     /* CCRATCH_CROSS=gcc|zig|clang: only that one (the tests try each) */

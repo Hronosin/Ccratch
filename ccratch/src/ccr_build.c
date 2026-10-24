@@ -306,15 +306,15 @@ char *ccr_build_cmake_text(const char *project, const char *main_hint, int *file
             asm_main[f] = NULL;
         }
     fputs(nasm_note, out);
-    if (any_asm) {
+    int fams = 0;
+    for (int f = 0; f < 3; ++f)
+        fams += asm_main[f] || nasm_src[f];
+    if (any_asm && fams) {   /* (every one left out, a main of its own: no section, and no endif() alone) */
         /* each machine its own assembly: one project builds for a PC, a Pi and a phone */
         static const char *const cond[3] = { "", "CMAKE_SYSTEM_PROCESSOR MATCHES \"^(aarch64|arm64|ARM64)$\"",
                                               "CMAKE_SYSTEM_PROCESSOR MATCHES \"^arm\"" };
         static const char *const what[3] = { "x86", "64-bit ARM (AArch64)", "32-bit ARM" };
         bool first = true;
-        int fams = 0;
-        for (int f = 0; f < 3; ++f)
-            fams += asm_main[f] || nasm_src[f];
         fprintf(out, "\n# the assembly, for the machine it is built for\n");
         for (int f = 1; f <= 3; ++f) {
             const int fam = f % 3;   /* the ARMs first: x86 is what is left */
@@ -332,7 +332,6 @@ char *ccr_build_cmake_text(const char *project, const char *main_hint, int *file
             fprintf(out, ")\n");
             first = false;
         }
-        (void)fams;
         fprintf(out, "endif()\n");
     }
 

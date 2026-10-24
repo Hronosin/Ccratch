@@ -41,6 +41,7 @@ You drag `while`, `switch` and `break` around yourself, and the cat can segfault
 - Step 30: ARM assembly too: 64-bit (AArch64: phones, Apple M chips, Raspberry Pi 4/5) and 32-bit ARM/Thumb, told from x86 by what the file says; Code Hater learns ARM's ways back (`bl` and the link register).
 - Step 31: builds for other machines: Linux on 64-bit and 32-bit ARM (a Raspberry Pi) and Android, with a cross gcc, zig, clang or the NDK, run in qemu or on a phone over adb; one CMakeLists picks each machine's assembly.
 - Step 32: Code Hater stops crying wolf: checked against 5,500 C, C++ and assembly files and against what gcc and clang write for x86, AArch64, ARM and Thumb; the stack counted in bytes (`sub`, `leave`, frames, stack probes), the tree checked against the text where a missing header made clang drop a piece, machines it does not know left alone.
+- Step 33: Ccratch's own bugs, hunted with Code Hater, gcc's and clang's analyzers, every block of 3,800 real files rebuilt, and a monkey at the keyboard: `static int a, b;` outside a function no longer stops every save in the file, a braceless body's new `{` no longer lands inside a `// comment`, `else if` stays `else if`, a tab-indented file gets tabs, typed-back expressions get no parentheses they did not have, a project whose assembly all has its own `main` gets a CMakeLists that reads, and a use after free in reading a file is gone.
 
 ![examples/tour.c as blocks](docs/tour.png)
 

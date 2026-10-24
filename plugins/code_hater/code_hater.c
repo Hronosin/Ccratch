@@ -1103,6 +1103,8 @@ static void say(uint32_t node, int r, const char *x, int n)
     for (int k = 0; k < 3; ++k)
         if (g_extra[r][g_lang][k])
             ways[nw++] = g_extra[r][g_lang][k];
+    if (nw == 0)
+        return;   /* nothing to say it with in this language */
     const char *tmpl = ways[(h >> 5) % (unsigned)nw];
     pending *p = &g_pend[g_npend++];
     p->node = node;
@@ -1242,7 +1244,8 @@ static void check_var(uint32_t v)
         /* in C++ a size that is not a number is a template's (buf[sizeof(T)]):
          * a constant, just not yet. char (*p)[n] points at one, on nobody's stack */
         const char *star = strstr(type, "(*");
-        if (!digits && !g_cpp && !(star && star < br) && !decl_is_static(v))
+        const bool constant = strstr(br, "sizeof") || strstr(br, "alignof");   /* buf[sizeof x.field] */
+        if (!digits && !g_cpp && !constant && !(star && star < br) && !decl_is_static(v))
             say(v, R_VLA, name, 0);
     }
     /* what it starts as */

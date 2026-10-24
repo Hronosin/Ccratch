@@ -30,13 +30,22 @@ static int same_as_source(const ccr_ast *ast, const char *what, const char *path
         fprintf(stderr, "%s: %s: codegen refused: %s\n", path, what, err);
         return 1;
     }
-    int bad = len != ast->source_len || memcmp(text, ast->source, len) != 0;
+    /* the file: the translation unit's text (asm() text decoded for its
+     * blocks is kept after it, in the same buffer) */
+    const size_t file_len = ast->node_count && ast->nodes[0].src_e ? ast->nodes[0].src_e : ast->source_len;
+    int bad = len != file_len || memcmp(text, ast->source, len) != 0;
     if (bad) {
         size_t i = 0;
-        while (i < len && i < ast->source_len && text[i] == ast->source[i])
+        while (i < len && i < file_len && text[i] == ast->source[i])
             ++i;
         fprintf(stderr, "%s: %s: differs at byte %zu: \"%.40s\" vs \"%.40s\"\n", path, what, i,
                 text + i, ast->source + i);
+        const char *dump = getenv("CCR_REBUILD_DUMP");   /* where to see what came out */
+        FILE *f = dump ? fopen(dump, "wb") : NULL;
+        if (f) {
+            fwrite(text, 1, len, f);
+            fclose(f);
+        }
     }
     free(text);
     return bad;
@@ -146,6 +155,7 @@ int main(int argc, char **argv)
     size_t len = 0;
     if (!ccr_codegen(&ast, &text, &len, err, sizeof err)) {
         fprintf(stderr, "%s: codegen refused: %s\n", in_path, err);
+        ccr_ast_free(&ast);
         return 1;
     }
     FILE *f = fopen(out_path, "wb");

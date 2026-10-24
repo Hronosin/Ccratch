@@ -2,6 +2,7 @@
 #include "ccr_asm.h"
 #include "ccr_lang.h"
 
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -208,6 +209,64 @@ static void rebuild_cmake(gen *g, ccr_node_id id, unsigned depth)
 static void rebuild_asm(gen *g, ccr_node_id id, unsigned depth);
 static void rebuild_asm_literal(gen *g, ccr_node_id id, unsigned depth);
 
+/* Which child of `parent` `id` is. */
+static int kid_index(const gen *g, ccr_node_id parent, ccr_node_id id)
+{
+    int k = 0;
+    for (ccr_node_id c = N(g, parent)->first_child; c != CCR_NONE && c != id; c = N(g, c)->next_sibling)
+        ++k;
+    return k;
+}
+
+/* Where the code on a line ends: after its last character that is not a
+ * comment or a space (strings and characters are code). */
+static size_t code_end_of_line(const char *s, size_t n)
+{
+    size_t end = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (s[i] == ' ' || s[i] == '\t' || s[i] == '\r') {
+            continue;
+        } else if (s[i] == '/' && i + 1 < n && s[i + 1] == '/') {
+            break;
+        } else if (s[i] == '/' && i + 1 < n && s[i + 1] == '*') {
+            for (i += 2; i + 1 < n && !(s[i] == '*' && s[i + 1] == '/'); ++i) {
+            }
+            ++i;
+        } else if (s[i] == '"' || s[i] == '\'') {
+            const char q = s[i];
+            for (++i; i < n && s[i] != q; ++i)
+                if (s[i] == '\\')
+                    ++i;
+            end = i + 1 < n ? i + 1 : n;
+        } else {
+            end = i + 1;
+        }
+    }
+    return end;
+}
+
+/* buf[0..len) ends with code, maybe followed by comments (on its line, or
+ * on lines of their own): where the " {" of a braceless body goes, right
+ * after the code (not into a // comment, where it would be commented out). */
+static size_t brace_spot(const char *buf, size_t len)
+{
+    size_t end = len;
+    for (;;) {
+        size_t ls = end;
+        while (ls > 0 && buf[ls - 1] != '\n')
+            --ls;
+        const size_t ce = code_end_of_line(buf + ls, end - ls);
+        if (ce > 0)
+            return ls + ce;
+        if (ls == 0)
+            return len;
+        end = ls - 1;   /* only comments on it: the line above */
+        while (end > 0 && (buf[end - 1] == ' ' || buf[end - 1] == '\t' || buf[end - 1] == '\r' ||
+                           buf[end - 1] == '\n'))
+            --end;
+    }
+}
+
 /* A Block whose statements moved: written anew from their original text. */
 static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
 {
@@ -233,12 +292,37 @@ static void rebuild_block(gen *g, ccr_node_id id, unsigned depth)
     const char *indent = ccr_ast_str(g->ast, b->indent);
     const char *close = ccr_ast_str(g->ast, b->close_indent);
 
+    /* `else if`: the else's body is the next if, and stays one, not
+     * `else { if ... }` */
+    if (implicit && b->first_child != CCR_NONE && N(g, b->first_child)->next_sibling == CCR_NONE &&
+        N(g, b->first_child)->kind == CCR_NODE_IF && b->parent != CCR_NONE && N(g, b->parent)->kind == CCR_NODE_IF &&
+        kid_index(g, b->parent, id) == 2) {
+        const ccr_node *k = N(g, b->first_child);
+        if (k->ext_b == k->src_b || k->ext_e <= k->ext_b) {   /* no comment of its own in front */
+            while (g->len > 0 && (g->buf[g->len - 1] == ' ' || g->buf[g->len - 1] == '\t' ||
+                                  g->buf[g->len - 1] == '\n' || g->buf[g->len - 1] == '\r'))
+                g->len--;
+            puts_(g, " ");
+            emit(g, b->first_child, depth);
+            if (k->ext_e > k->src_e)
+                put_src(g, k->src_e, k->ext_e);   /* its comment at the end of the line */
+            return;
+        }
+    }
+
     if (implicit) {
-        /* `if (x)\n    y;` becomes `if (x) {` */
+        /* `if (x)\n    y;` becomes `if (x) {`; and `if (x) // why` or a
+         * comment on a line of its own under it: the brace goes after the
+         * code, not into the comment (where it would be commented out) */
         while (g->len > 0 && (g->buf[g->len - 1] == ' ' || g->buf[g->len - 1] == '\t' ||
                               g->buf[g->len - 1] == '\n' || g->buf[g->len - 1] == '\r'))
             g->len--;
+        const size_t at = brace_spot(g->buf, g->len);
         puts_(g, " {");
+        if (g->ok && at < g->len - 2) {
+            memmove(g->buf + at + 2, g->buf + at, g->len - 2 - at);
+            memcpy(g->buf + at, " {", 2);
+        }
     } else {
         puts_(g, "{");
     }
@@ -332,6 +416,8 @@ static int text_prec(const char *s)
     int prec = 16;
     bool want_operand = true;   /* at the start, after an operator */
     bool after_group = false;   /* just closed a ( ) at the top */
+    bool in_new = false;        /* new unsigned int[n]: its type's words side by side */
+    bool after_string = false;  /* "a" "b": one literal, glued */
     const char *p = s;
     while (*p) {
         const char c = *p;
@@ -357,18 +443,79 @@ static int text_prec(const char *s)
             continue;
         }
         const bool word = c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-                          (c >= 'A' && c <= 'Z');
+                          (c >= 'A' && c <= 'Z') || (c == '.' && p[1] >= '0' && p[1] <= '9');   /* .5 */
+        if (c == '"' && after_string) {   /* the next piece of the same literal */
+            const char *q = p + 1;
+            while (*q && *q != '"')
+                q += (*q == '\\' && q[1]) ? 2 : 1;
+            if (!*q)
+                return 0;
+            p = q + 1;
+            continue;
+        }
         if (word || c == '"' || c == '\'') {
-            if (!want_operand) {
+            /* (int)sizeof x: a prefix word after a cast */
+            bool prefix_next = false;
+            if (word && !want_operand && after_group)
+                for (const char *const *k = (const char *const[]){ "sizeof", "alignof", "_Alignof", NULL }; *k; ++k)
+                    if (strncmp(p, *k, strlen(*k)) == 0 && !isalnum((unsigned char)p[strlen(*k)]) &&
+                        p[strlen(*k)] != '_')
+                        prefix_next = true;
+            if (prefix_next) {
+                want_operand = true;
+                after_group = false;
+            }
+            if (!want_operand && !in_new) {
                 if (!after_group)
                     return 0;           /* two things side by side */
                 if (prec > 14)
                     prec = 14;          /* (int)x: a cast */
             }
             if (word) {
+                const char *w = p;
                 while (*p == '_' || *p == '.' || (*p >= '0' && *p <= '9') ||
-                       (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))
-                    ++p;
+                       (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (p[0] == ':' && p[1] == ':'))
+                    p += p[0] == ':' ? 2 : 1;   /* std::move: one name */
+                /* C++'s static_cast<T *>: its < > are brackets, not comparisons */
+                static const char *const casts[] = { "static_cast", "dynamic_cast", "const_cast",
+                                                     "reinterpret_cast" };
+                const char *q = p;
+                while (*q == ' ' || *q == '\t')
+                    ++q;
+                for (size_t k = 0; k < sizeof casts / sizeof casts[0] && *q == '<'; ++k)
+                    if ((size_t)(p - w) == strlen(casts[k]) && strncmp(w, casts[k], (size_t)(p - w)) == 0) {
+                        int angle = 0;
+                        for (; *q; ++q) {
+                            angle += *q == '<';
+                            angle -= *q == '>';
+                            if (angle == 0)
+                                break;
+                        }
+                        if (!*q)
+                            return 0;
+                        p = q + 1;
+                        break;
+                    }
+                const size_t wl = (size_t)(p - w);
+                /* L"x", u8"x": the prefix is the literal's own */
+                if ((*p == '"' || *p == '\'') &&
+                    ((wl == 1 && (*w == 'L' || *w == 'u' || *w == 'U')) || (wl == 2 && strncmp(w, "u8", 2) == 0)))
+                    continue;
+                /* sizeof x, alignof, new T, delete p, throw e: words that work as prefix operators */
+                static const char *const prefix_words[] = { "sizeof", "alignof", "_Alignof", "__alignof__",
+                                                            "__real__", "__imag__", "__extension__", "new",
+                                                            "delete", "throw" };
+                bool is_prefix = false;
+                for (size_t k = 0; k < sizeof prefix_words / sizeof prefix_words[0] && !is_prefix; ++k)
+                    is_prefix = wl == strlen(prefix_words[k]) && strncmp(w, prefix_words[k], wl) == 0;
+                if (is_prefix && want_operand) {
+                    const int pp = wl == 5 && strncmp(w, "throw", 5) == 0 ? 2 : 14;
+                    if (prec > pp)
+                        prec = pp;
+                    in_new = wl == 3 && strncmp(w, "new", 3) == 0;
+                    after_group = false;
+                    continue;   /* still wants its operand */
+                }
             } else {
                 const char q = *p++;
                 while (*p && *p != q)
@@ -377,10 +524,12 @@ static int text_prec(const char *s)
                     return 0;
                 ++p;
             }
+            after_string = c == '"';
             want_operand = false;
             after_group = false;
             continue;
         }
+        after_string = false;
         if (c == '(' || c == '[' || c == '{') {
             /* a group: parentheses, a call, an index, a compound literal */
             int depth = 0;
@@ -403,7 +552,10 @@ static int text_prec(const char *s)
             if (!*p)
                 return 0;
             ++p;
-            after_group = c == '(' && want_operand;
+            /* (int)x, and (void *)(uintptr_t)x: a cast after a cast */
+            if (c == '(' && after_group && prec > 14)
+                prec = 14;
+            after_group = c == '(' && (want_operand || after_group);
             want_operand = false;
             continue;
         }
@@ -415,6 +567,7 @@ static int text_prec(const char *s)
             return 0;
         p += strlen(op);
         after_group = false;
+        in_new = false;
         if (want_operand) {
             /* prefix: -x, !x, *p, &x, ++x */
             if (strchr("-+!~*&", op[0]) && (strlen(op) == 1 || strcmp(op, "++") == 0 ||
@@ -826,7 +979,8 @@ static char *take_escaped(gen *g, size_t from, const char *sep)
         fail(g, "out of memory");
         return NULL;
     }
-    memcpy(raw, g->buf + from, n);
+    if (n)
+        memcpy(raw, g->buf + from, n);   /* (nothing written yet: no buffer to copy from) */
     raw[n] = '\0';
     g->len = from;
     size_t o = 0;

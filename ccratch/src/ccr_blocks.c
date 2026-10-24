@@ -1794,6 +1794,14 @@ static size2 emit_decl_block(layout *L, ccr_node_id id, float x, float y, float 
             const ccr_node *f = N(L, c);
             if (f->kind == CCR_NODE_FIELD) {
                 it_decl(&line, S(L, f->type), S(L, f->name), false);
+            } else if (f->kind == CCR_NODE_DECL_GROUP) {   /* int x, y; on one line */
+                for (ccr_node_id g = f->first_child; g != CCR_NONE; g = N(L, g)->next_sibling) {
+                    if (N(L, g)->kind != CCR_NODE_FIELD)
+                        continue;
+                    if (g != f->first_child)
+                        it_text(&line, ",");
+                    it_decl(&line, S(L, N(L, g)->type), S(L, N(L, g)->name), false);
+                }
             } else if (f->kind == CCR_NODE_ENUM_CONST) {
                 it_fmt(&line, "%s%s", S(L, f->name), f->first_child != CCR_NONE ? " =" : "");
                 it_expr(&line, f->first_child);

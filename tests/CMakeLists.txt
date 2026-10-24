@@ -236,15 +236,30 @@ add_test(NAME dump_ast_cpp
          COMMAND ${CCR_BIN} --dump-ast ${PROJECT_SOURCE_DIR}/tests/data/templates.cpp)
 set_tests_properties(dump_ast_cpp PROPERTIES PASS_REGULAR_EXPRESSION " 0 errors")
 
+# an assembly file left out (a main of its own): no assembly section, and
+# no endif() without its if
+add_test(NAME make_cmake_asm_left_out
+         COMMAND sh -c "${CCR_BIN} --make-cmake ${PROJECT_SOURCE_DIR}/tests/data/two_mains > ${CMAKE_CURRENT_BINARY_DIR}/two_mains.cmake && ${CCR_BIN} --dump-ast ${CMAKE_CURRENT_BINARY_DIR}/two_mains.cmake")
+set_tests_properties(make_cmake_asm_left_out PROPERTIES
+    PASS_REGULAR_EXPRESSION " 0 errors"
+    FAIL_REGULAR_EXPRESSION "does not fit")
+
 # Rebuild every block of real files and read them back.
 add_executable(test_rebuild test_rebuild.c)
 target_link_libraries(test_rebuild PRIVATE ccratch_core)
-foreach(f examples/tour.c tests/data/save.c)
+foreach(f examples/tour.c tests/data/save.c tests/data/rebuild_decls.c tests/data/rebuild_retype.c)
     get_filename_component(stem ${f} NAME_WE)
     add_test(NAME rebuild_${stem}
              COMMAND test_rebuild ${CMAKE_CURRENT_BINARY_DIR}/saved/rebuilt_${stem}.c
                      ${PROJECT_SOURCE_DIR}/${f})
 endforeach()
+# braces of braceless bodies: after the code, not in a comment; else if kept
+set(CCR_REBUILT_COMMENTS ${CMAKE_CURRENT_BINARY_DIR}/saved/rebuilt_rebuild_comments.c)
+add_test(NAME rebuild_braces_and_comments
+         COMMAND sh -c "$<TARGET_FILE:test_rebuild> ${CCR_REBUILT_COMMENTS} ${PROJECT_SOURCE_DIR}/tests/data/rebuild_comments.c && cat ${CCR_REBUILT_COMMENTS}")
+set_tests_properties(rebuild_braces_and_comments PROPERTIES
+    PASS_REGULAR_EXPRESSION "if \\(x > 1\\) \\{ // big.*if \\(x < 0\\) \\{.*else if \\(x == 0\\) \\{ // .*else if \\(x == 5\\) \\{"
+    FAIL_REGULAR_EXPRESSION "else \\{|// big \\{|MISMATCH")
 set(RAYLIB_SRC ${raylib_SOURCE_DIR}/src)
 foreach(f rshapes rtextures rtext rmodels raudio rcore utils)
     add_test(NAME rebuild_raylib_${f}

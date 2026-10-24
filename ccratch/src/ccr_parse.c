@@ -1139,6 +1139,75 @@ static void cpp_cleanup(ccr_ast *ast)
 }
 
 
+static bool shares_text(ccr_node_kind k)
+{
+    return k == CCR_NODE_VAR || k == CCR_NODE_FIELD || k == CCR_NODE_TYPEDEF || k == CCR_NODE_STRUCT ||
+           k == CCR_NODE_UNION || k == CCR_NODE_ENUM;
+}
+
+/*
+ * `static int a, b;`, `typedef int A, *B;`, `struct p {...} one, two;` and
+ * `int x, y;` in a struct: clang gives each name its own node, all over the
+ * same text from its start. Inside a function a DeclStmt holds them; here
+ * nothing does, and saving anything near them failed ("overlapping code").
+ * So: one DeclGroup around them, as inside a function, and each one after
+ * the first starts where the one before ended (`b`, `*B`, `two`).
+ */
+static void group_shared_decls(ccr_ast *ast, ccr_node_id parent)
+{
+    ccr_node_id c = ast->nodes[parent].first_child;
+    while (c != CCR_NONE) {
+        if (ast->nodes[c].kind == CCR_NODE_STRUCT || ast->nodes[c].kind == CCR_NODE_UNION)
+            group_shared_decls(ast, c);   /* its fields */
+        ccr_node_id run[64];
+        int n = 0;
+        run[n++] = c;
+        uint32_t end = ast->nodes[c].src_e;
+        ccr_node_id next = ast->nodes[c].next_sibling;
+        while (next != CCR_NONE && n < 64 && shares_text(ast->nodes[c].kind) && shares_text(ast->nodes[next].kind) &&
+               ast->nodes[next].src_e > ast->nodes[next].src_b && ast->nodes[next].src_b < end) {
+            if (ast->nodes[next].src_e > end)
+                end = ast->nodes[next].src_e;
+            run[n++] = next;
+            next = ast->nodes[next].next_sibling;
+        }
+        /* `typedef struct point {...} point;` is one thing already: the struct
+         * under its typedef is shown and saved as such */
+        int names = 0, typedefs = 0;
+        for (int k = 0; k < n; ++k) {
+            names += ast->nodes[run[k]].kind == CCR_NODE_VAR || ast->nodes[run[k]].kind == CCR_NODE_FIELD ||
+                     ast->nodes[run[k]].kind == CCR_NODE_TYPEDEF;
+            typedefs += ast->nodes[run[k]].kind == CCR_NODE_TYPEDEF;
+        }
+        if (n > 1 && names >= 1 && !(names == 1 && typedefs == 1)) {
+            const ccr_node_id g = ccr_ast_add(ast, CCR_NODE_DECL_GROUP, CCR_NONE);
+            if (g == CCR_NONE)
+                return;
+            ast->nodes[g].src_b = ast->nodes[run[0]].src_b;
+            ast->nodes[g].src_e = end;
+            ast->nodes[g].line = ast->nodes[run[0]].line;
+            ast->nodes[g].column = ast->nodes[run[0]].column;
+            ccr_ast_insert_after(ast, run[n - 1], g);
+            uint32_t prev_end = 0;
+            for (int k = 0; k < n; ++k) {
+                ccr_node *m = &ast->nodes[run[k]];
+                if (k > 0 && m->src_b < prev_end) {   /* `, b`: from after the one before */
+                    uint32_t b = prev_end;
+                    while (b < m->src_e && (ast->source[b] == ' ' || ast->source[b] == '\t' ||
+                                            ast->source[b] == '\n' || ast->source[b] == '\r' || ast->source[b] == ','))
+                        ++b;
+                    if (b < m->src_e)
+                        m->src_b = b;
+                }
+                prev_end = m->src_e > prev_end ? m->src_e : prev_end;
+                ccr_ast_unlink(ast, run[k]);
+                ccr_ast_append(ast, g, run[k]);
+            }
+        }
+        c = next;
+    }
+}
+
 bool ccr_parse_file(const char *path, const char *const *args, int arg_count, ccr_ast *out)
 {
     return parse_any(path, NULL, 0, args, arg_count, out);
@@ -1246,6 +1315,8 @@ static bool parse_any(const char *path, const char *text, size_t text_len, const
 
     if (out->cpp)
         cpp_cleanup(out);
+    if (root != CCR_NONE)
+        group_shared_decls(out, root);
     ccr_ast_wrap_bodies(out);
     ccr_ast_finish_ranges(out);
     ccr_asm_split_inline(out);   /* asm("..."): its instructions, as blocks */

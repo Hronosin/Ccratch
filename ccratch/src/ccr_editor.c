@@ -2536,7 +2536,8 @@ static void draw_jumps(const ccr_editor *ed, const ccr_canvas *cv)
 
             if (st == CCR_JUMP_MISSING) {
                 ccr_rect from;
-                ccr_editor_node_rect(ed, go, &from);
+                if (!ccr_editor_node_rect(ed, go, &from))
+                    continue;   /* the goto is not drawn: no outline around nothing */
                 ccr_vec2 tl = ccr_canvas_to_screen(cv, (ccr_vec2){ from.x, from.y });
                 ccr_rect r = { tl.x - 3, tl.y - 3, from.w * z + 6, from.h * z + 6 };
                 ccr_gui_rect_rounded(r, 0.3f, alpha_of(ccr_th(CCR_C_ERROR), 0xC0u));
@@ -3095,6 +3096,8 @@ static const char *script_name(const ccr_editor *ed, uint32_t i)
 static void call_depths(const ccr_editor *ed, const uint32_t *order, uint32_t n, int *depth, uint32_t *reached)
 {
     uint32_t qn = 0;
+    for (uint32_t k = 0; k < n; ++k)
+        depth[k] = -1;   /* first: out of memory below still leaves them said */
     bool *fn = calloc(n ? n : 1, sizeof *fn);
     if (!fn)
         return;

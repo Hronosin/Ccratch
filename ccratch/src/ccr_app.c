@@ -1553,11 +1553,11 @@ static void eula_frame(eula_view *ev, int width, int height, ccr_document *doc)
     }
     if (ev->first_run) {
         const float bw = 180.0f;
-        const ccr_rect rust = { panel.x + panel.w - pad - bw, by, bw, 34.0f };
-        const ccr_rect ok = { rust.x - 12.0f - bw, by, bw, 34.0f };
+        const ccr_rect confess = { panel.x + panel.w - pad - bw, by, bw, 34.0f };
+        const ccr_rect ok = { confess.x - 12.0f - bw, by, bw, 34.0f };
         const ccr_rect no = { panel.x + pad, by, 160.0f, 34.0f };
         bool accepted = ccr_gui_button(ok, ccr_tr(CCR_T_EULA_ACCEPT), button_style(true));
-        bool rusted = !accepted && ccr_gui_button(rust, ccr_tr(CCR_T_EULA_RUST), button_style(false));
+        bool rusted = !accepted && ccr_gui_button(confess, ccr_tr(CCR_T_EULA_RUST), button_style(false));
         const ccr_button_style plain = *button_style(false);
         if (!accepted && !rusted && ccr_gui_button(no, ccr_tr(CCR_T_EULA_DECLINE), &plain)) {
             if (!ccr_config_set("eula", "declined"))

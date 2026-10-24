@@ -62,8 +62,14 @@ ccr_str ccr_ast_intern(ccr_ast *ast, const char *s)
     size_t n = strlen(s) + 1;
     if (n > UINT32_MAX - ast->str_len)
         return 0;
+    /* `s` may be one of ours (ccr_ast_str, name + 8): growing moves it */
+    const uintptr_t p = (uintptr_t)s, b = (uintptr_t)ast->strings;
+    const bool ours = ast->strings && p >= b && p < b + ast->str_len;
+    const size_t from = ours ? (size_t)(p - b) : 0;
     if (!grow((void **)&ast->strings, &ast->str_cap, ast->str_len + (uint32_t)n, 1))
         return 0;
+    if (ours)
+        s = ast->strings + from;
     ccr_str at = ast->str_len;
     memcpy(ast->strings + at, s, n);
     ast->str_len += (uint32_t)n;
@@ -656,8 +662,10 @@ static void finish_block(ccr_ast *ast, ccr_node_id id)
         }
     }
 
-    /* each statement's indent beyond the block's own */
-    const char *base = ccr_ast_str(ast, b->indent);
+    /* each statement's indent beyond the block's own (a copy: interning
+     * below may move the strings it lives in) */
+    char base[512];
+    snprintf(base, sizeof base, "%s", ccr_ast_str(ast, b->indent));
     const uint32_t base_n = (uint32_t)strlen(base);
     for (ccr_node_id c = b->first_child; c != CCR_NONE; c = ast->nodes[c].next_sibling) {
         ccr_node *k = &ast->nodes[c];
@@ -666,9 +674,18 @@ static void finish_block(ccr_ast *ast, ccr_node_id id)
             k->extra_indent = intern_n(ast, s + start + base_n, len - base_n);
     }
 
-    if (b->indent == 0) {   /* empty block: one level deeper than the brace */
+    if (b->indent == 0) {   /* empty block, or `if (x) y;` on one line: one level deeper than the brace */
+        const char *ci = ccr_ast_str(ast, b->close_indent);
+        /* a level is a tab where the file indents with tabs */
+        bool tabs = *ci == '\t';
+        if (!*ci)
+            for (uint32_t i = 0; i + 1 < ast->source_len; ++i)
+                if (s[i] == '\n' && (s[i + 1] == '\t' || s[i + 1] == ' ')) {
+                    tabs = s[i + 1] == '\t';
+                    break;
+                }
         char buf[300];
-        snprintf(buf, sizeof buf, "%s    ", ccr_ast_str(ast, b->close_indent));
+        snprintf(buf, sizeof buf, "%s%s", ci, tabs ? "\t" : "    ");
         b->indent = ccr_ast_intern(ast, buf);
     }
 }
